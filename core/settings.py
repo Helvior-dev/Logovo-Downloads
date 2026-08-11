@@ -23,13 +23,13 @@ class SettingsManager:
             'cookie_file': '',
             'quality_settings': {
                 'YouTube': 'Best video',
-                'Twitch': 'Best',
-                'SoundCloud': 'Best',
-                'Spotify': 'Best',
-                'Facebook': 'Best',
-                'Instagram': 'Best',
-                'Twitter (X)': 'Best',
-                'TikTok': 'Best'
+                'Twitch': 'Source (Best)',
+                'SoundCloud': 'Best Audio',
+                'Spotify': 'Best Audio',
+                'Facebook': 'Best video',
+                'Instagram': 'Best video',
+                'Twitter (X)': 'Best video',
+                'TikTok': 'Best video'
             }
         }
         self.settings = self.load()

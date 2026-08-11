@@ -123,6 +123,10 @@ class MainWindow(QMainWindow):
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.info_label)
         
+        # We place a stretch here so the Top (URL + Preview) stays at the top,
+        # and the Bottom (Queue controls, Progress, Download buttons) stays at the bottom.
+        layout.addStretch()
+        
         # Format Selection & Add to Queue
         queue_layout = QHBoxLayout()
         queue_layout.addWidget(QLabel("Format:"))
@@ -160,12 +164,6 @@ class MainWindow(QMainWindow):
         
         self.status_label = QLabel("Ready")
         layout.addWidget(self.status_label)
-        
-        # Add a stretch here to push the bottom bar to the very bottom
-        # Wait, if we use AlignTop, addStretch won't push to the bottom. 
-        # So we remove AlignTop and just use a stretch here instead.
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignJustify) # Undo AlignTop, use stretch
-        layout.addStretch()
         
         # Bottom Bar
         bottom_bar = QHBoxLayout()
@@ -293,13 +291,13 @@ class MainWindow(QMainWindow):
         
         platforms = [
             ("YouTube", ["Best video", "Audio only (MP3)", "144p", "240p", "360p", "480p", "720p (HD)", "1080p (Full HD)", "1440p (2K)", "2160p (4K)"]),
-            ("Twitch", ["Best", "Audio only (MP3)", "Video only (no audio)", "Worst"]),
-            ("SoundCloud", ["Best", "Audio only (MP3)", "Video only (no audio)", "Worst"]),
-            ("Spotify", ["Best", "Audio only (MP3)", "Video only (no audio)", "Worst"]),
-            ("Facebook", ["Best", "Audio only (MP3)", "Video only (no audio)", "Worst"]),
-            ("Instagram", ["Best", "Audio only (MP3)", "Video only (no audio)", "Worst"]),
-            ("Twitter (X)", ["Best", "Audio only (MP3)", "Video only (no audio)", "Worst"]),
-            ("TikTok", ["Best", "Audio only (MP3)", "Video only (no audio)", "Worst"])
+            ("Twitch", ["Source (Best)", "1080p", "720p", "480p", "360p", "160p", "Audio only (MP3)"]),
+            ("SoundCloud", ["Best Audio", "Worst Audio"]),
+            ("Spotify", ["Best Audio", "Worst Audio"]),
+            ("Facebook", ["Best video", "1080p", "720p", "480p", "360p", "240p", "Audio only (MP3)"]),
+            ("Instagram", ["Best video", "1080p", "720p", "Audio only (MP3)"]),
+            ("Twitter (X)", ["Best video", "1080p", "720p", "480p", "Audio only (MP3)"]),
+            ("TikTok", ["Best video", "1080p", "720p", "Audio only (MP3)"])
         ]
         
         for i, (plat, options) in enumerate(platforms):
@@ -491,6 +489,12 @@ class MainWindow(QMainWindow):
         media_type = self.format_combo.currentText()
         title = getattr(self, 'current_preview_title', url)
         specific_subs = self.subs_combo.currentText()
+        
+        # Prevent exact duplication (same URL and media type)
+        for item in self.download_queue:
+            if item['url'] == url and item['media_type'] == media_type:
+                self.status_label.setText("Item already in queue with this format.")
+                return
         
         self.download_queue.append({
             'url': url,

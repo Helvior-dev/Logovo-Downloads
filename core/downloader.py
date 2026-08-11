@@ -34,11 +34,11 @@ class MediaDownloader:
             os.makedirs(self.output_dir)
 
     def _map_quality(self, quality: str) -> str:
-        if quality == "Best video" or quality == "Best":
+        if quality in ("Best video", "Best", "Source (Best)"):
             return 'bestvideo+bestaudio/best'
-        elif quality == "Worst":
+        elif quality in ("Worst", "Worst Audio"):
             return 'worst'
-        elif quality == "Audio only (MP3)":
+        elif quality in ("Audio only (MP3)", "Best Audio"):
             return 'bestaudio/best'
         elif quality == "Video only (no audio)":
             return 'bestvideo'
@@ -96,7 +96,7 @@ class MediaDownloader:
         if download_thumbnail_only:
             ydl_opts['skip_download'] = True
         else:
-            if media_type == "audio" or quality == "Audio only (MP3)":
+            if media_type == "audio" or quality in ("Audio only (MP3)", "Best Audio"):
                 ydl_opts['format'] = 'bestaudio/best'
                 ydl_opts['postprocessors'] = [{
                     'key': 'FFmpegExtractAudio',
@@ -128,7 +128,7 @@ class MediaDownloader:
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                is_audio = (media_type == "audio" or quality == "Audio only (MP3)")
+                is_audio = (media_type == "audio" or quality in ("Audio only (MP3)", "Best Audio"))
                 if is_audio and embed_thumbnail and not download_thumbnail_only:
                     ydl.add_post_processor(SquareCropPP(ydl), when='post_process')
                     ydl.add_post_processor(EmbedThumbnailPP(ydl), when='post_process')

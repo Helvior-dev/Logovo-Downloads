@@ -63,7 +63,7 @@ def get_stylesheet():
     QComboBox::drop-down {
         subcontrol-origin: padding;
         subcontrol-position: top right;
-        width: 25px;
+        width: 30px;
         border: none;
         background: transparent;
     }
@@ -72,9 +72,10 @@ def get_stylesheet():
         border-left: 5px solid transparent;
         border-right: 5px solid transparent;
         border-top: 5px solid #94a3b8;
+        border-bottom: 0px solid transparent;
         width: 0px;
         height: 0px;
-        margin-right: 8px;
+        margin-right: 12px;
     }
     QLineEdit:focus, QComboBox:focus {
         border: 1px solid #1b7a78;
