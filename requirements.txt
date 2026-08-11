@@ -1,0 +1,4 @@
+PyQt6>=6.6.0
+yt-dlp[curl-cffi]>=2024.4.9
+requests>=2.31.0
+Pillow>=10.0.0
