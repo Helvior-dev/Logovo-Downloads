@@ -89,7 +89,43 @@ def get_stylesheet():
     }
     QProgressBar::chunk {
         background-color: #1b7a78;
-        border-radius: 3px;
+        border-radius: 4px;
+    }
+    
+    QScrollArea#QueueScrollArea {
+        background: transparent;
+        border: none;
+    }
+    QWidget#QueueContainer {
+        background: transparent;
+    }
+    QWidget#QueueItemCard {
+        background-color: #1e293b;
+        border-radius: 8px;
+        margin: 0px 5px;
+    }
+    QWidget#QueueItemCard:hover {
+        background-color: #334155;
+    }
+    
+    QScrollBar:vertical {
+        border: none;
+        background: #0f172a;
+        width: 8px;
+        border-radius: 4px;
+    }
+    QScrollBar::handle:vertical {
+        background: #475569;
+        border-radius: 4px;
+    }
+    QScrollBar::handle:vertical:hover {
+        background: #64748b;
+    }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        height: 0px;
+    }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+        background: none;
     }
     QLabel {
         color: #94a3b8;
@@ -102,19 +138,22 @@ def get_stylesheet():
     }
     QHeaderView::section {
 
-        background-color: #0f172a;
+        background-color: transparent;
         color: #94a3b8;
         padding: 5px;
-        border: 1px solid #1e293b;
+        border: none;
+        border-bottom: 1px solid #1e293b;
+        font-weight: bold;
     }
     QTableWidget {
         background-color: #0b0e14;
-        gridline-color: #1e293b;
-        border: 1px solid #334155;
-        border-radius: 6px;
+        gridline-color: transparent;
+        border: none;
+        outline: none;
     }
     QTableWidget::item {
-        padding: 5px;
+        padding: 8px 5px;
+        border-bottom: 1px solid #1e293b;
     }
     QTableWidget::item:selected {
         background-color: #1e293b;

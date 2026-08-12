@@ -1,30 +1,117 @@
 import yt_dlp
 import os
+import sys
 from typing import Dict, Any, Callable, Optional
 from yt_dlp.postprocessor.common import PostProcessor
 from yt_dlp.postprocessor import EmbedThumbnailPP, FFmpegMetadataPP
 from PIL import Image
+import io
 
-class SquareCropPP(PostProcessor):
+try:
+    from mutagen.id3 import ID3, APIC
+    from mutagen.flac import FLAC
+except ImportError:
+    ID3, APIC, FLAC = None, None, None
+
+def crop_to_square(img: Image.Image) -> Image.Image:
+    w, h = img.size
+    side = min(w, h)
+    left, top = (w - side) // 2, (h - side) // 2
+    resample = getattr(Image, "Resampling", Image).LANCZOS
+    return img.crop((left, top, left + side, top + side)).resize((1000, 1000), resample)
+
+class MutagenCoverFixPP(PostProcessor):
+    def __init__(self, downloader=None, playlist_index=None, playlist_count=None):
+        super().__init__(downloader)
+        self.playlist_index = playlist_index
+        self.playlist_count = playlist_count
+
     def run(self, info):
-        self.to_screen("Cropping thumbnail to square using PIL...")
-        for thumb in info.get('thumbnails', []):
-            filepath = thumb.get('filepath')
-            if filepath and os.path.exists(filepath):
-                try:
-                    img = Image.open(filepath)
-                    width, height = img.size
-                    if width != height:
-                        new_size = min(width, height)
-                        left = (width - new_size) / 2
-                        top = (height - new_size) / 2
-                        right = (width + new_size) / 2
-                        bottom = (height + new_size) / 2
-                        img = img.crop((left, top, right, bottom))
-                        img.save(filepath)
-                        self.to_screen(f"Successfully cropped thumbnail to {new_size}x{new_size}")
-                except Exception as e:
-                    self.to_screen(f"Error cropping thumbnail: {e}")
+        filepath = info.get('filepath')
+        if not filepath or not os.path.exists(filepath):
+            return [], info
+            
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext == '.mp3' and ID3:
+            self.to_screen("Fixing MP3 cover with mutagen...")
+            try:
+                tags = ID3(filepath)
+                apic_keys = [k for k in tags if k.startswith("APIC")]
+                changed = False
+                for key in apic_keys:
+                    apic = tags[key]
+                    img = Image.open(io.BytesIO(apic.data))
+                    if img.width == img.height == 1000:
+                        continue
+                    buf = io.BytesIO()
+                    crop_to_square(img).save(buf, format="JPEG", quality=95)
+                    tags[key] = APIC(encoding=apic.encoding, mime="image/jpeg", type=apic.type, desc=apic.desc, data=buf.getvalue())
+                    changed = True
+                    
+                # Add TRCK tag
+                if self.playlist_index is not None:
+                    from mutagen.id3 import TRCK
+                    track_str = str(self.playlist_index)
+                    if self.playlist_count:
+                        track_str += f"/{self.playlist_count}"
+                    tags["TRCK"] = TRCK(encoding=3, text=[track_str])
+                    changed = True
+                    self.to_screen(f"Set MP3 track number to {track_str}")
+                    
+                if changed:
+                    tags.save(v2_version=3)
+                    self.to_screen("Successfully fixed MP3 tags/cover.")
+            except Exception as e:
+                self.to_screen(f"Error fixing MP3 cover: {e}")
+                
+        elif ext == '.flac' and FLAC:
+            self.to_screen("Fixing FLAC cover with mutagen...")
+            try:
+                audio = FLAC(filepath)
+                pictures = audio.pictures
+                changed = False
+                for pic in pictures:
+                    img = Image.open(io.BytesIO(pic.data))
+                    if img.width == img.height == 1000:
+                        continue
+                    buf = io.BytesIO()
+                    crop_to_square(img).save(buf, format="JPEG", quality=95)
+                    pic.data, pic.mime = buf.getvalue(), "image/jpeg"
+                    pic.width, pic.height, pic.depth = 1000, 1000, 24
+                    changed = True
+                if changed:
+                    audio.clear_pictures()
+                    for pic in pictures:
+                        audio.add_picture(pic)
+                        
+                # Add tracknumber tag
+                if self.playlist_index is not None:
+                    track_str = str(self.playlist_index)
+                    if self.playlist_count:
+                        track_str += f"/{self.playlist_count}"
+                    audio["tracknumber"] = [track_str]
+                    changed = True
+                    self.to_screen(f"Set FLAC track number to {track_str}")
+                    
+                if changed:
+                    audio.save()
+                    self.to_screen("Successfully fixed FLAC tags/cover.")
+            except Exception as e:
+                self.to_screen(f"Error fixing FLAC tags/cover: {e}")
+                
+        # Fix file timestamp for playlist sorting
+        if self.playlist_index is not None:
+            import time
+            try:
+                base_time = time.time()
+                # Subtract a day then add index seconds to ensure proper relative sorting
+                # independent of download duration
+                new_time = base_time - 86400 + self.playlist_index
+                os.utime(filepath, (new_time, new_time))
+                self.to_screen(f"Adjusted file timestamp for sorting (index {self.playlist_index})")
+            except Exception as e:
+                self.to_screen(f"Error adjusting timestamp: {e}")
+                
         return [], info
 
 class MediaDownloader:
@@ -52,30 +139,78 @@ class MediaDownloader:
             
         return 'bestvideo+bestaudio/best'
 
-    def download(self, url: str, 
-                 media_type: str = "video", 
-                 quality: str = "Best video",
-                 cookies: dict = None,
-                 subtitles: dict = None,
-                 embed_thumbnail: bool = True,
-                 download_thumbnail_only: bool = False,
-                 progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> bool:
+    def download(self, url: str, media_type: str = "video", quality: str = "Best", cookies: Optional[Dict[str, Any]] = None, subtitles: Optional[Dict[str, Any]] = None, progress_callback: Optional[Callable] = None, playlist_index: int = None, playlist_count: int = None) -> bool:
+        """Download media from the given URL."""
+        if not os.path.exists(self.output_dir):
+            os.makedirs(self.output_dir)
+
+        # Download thumbnail only if format is audio and quality is Best Audio
+        embed_thumbnail = True
+        download_thumbnail_only = False
         
-        outtmpl = os.path.join(self.output_dir, '%(playlist_index)s - %(title)s.%(ext)s') if 'playlist' in url else os.path.join(self.output_dir, '%(title)s.%(ext)s')
+        outtmpl = os.path.join(self.output_dir, '%(title)s - %(artist,uploader,creator,channel)s.%(ext)s')
         
         ydl_opts = {
             'outtmpl': outtmpl,
             'writethumbnail': embed_thumbnail or download_thumbnail_only,
             'quiet': False,
             'no_warnings': True,
+            'retries': 15,
+            'fragment_retries': 15,
+            'retry_sleep_functions': {'http': lambda n: min(4 * 2 ** n, 60)},
+            'socket_timeout': 30,
+            'ignoreerrors': True,
+            'convertthumbnails': 'jpg',
+            'parse_metadata': ['%(artist,uploader,creator,channel)s:%(meta_artist)s'],
         }
+        
+        class YtDlpLogger:
+            def __init__(self, log_path, parent):
+                self.log_path = log_path
+                self.parent = parent
+            def debug(self, msg): pass
+            def warning(self, msg): pass
+            def info(self, msg):
+                if "has already been recorded in the archive" in msg.lower() or "has already been downloaded" in msg.lower():
+                    self.parent.was_skipped = True
+            def error(self, msg):
+                import re
+                clean_msg = re.sub(r'\x1b\[[0-9;]*m', '', msg)
+                self.parent.last_error = clean_msg
+                import datetime
+                try:
+                    with open(self.log_path, "a", encoding="utf-8") as f:
+                        f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {clean_msg}\n")
+                except: pass
+                
+        # Setup global app logs
+        from core.settings import get_app_data_dir
+        log_file = get_app_data_dir() / "app_logs.txt"
+        ydl_opts['logger'] = YtDlpLogger(log_file, self)
 
         # Cookies
         if cookies and cookies.get('use'):
             if cookies.get('source') == 'browser':
-                ydl_opts['cookiesfrombrowser'] = (cookies.get('browser', 'chrome'),)
-            elif cookies.get('source') == 'file' and cookies.get('file'):
-                ydl_opts['cookiefile'] = cookies.get('file')
+                browser = cookies.get('browser')
+                if browser:
+                    ydl_opts['cookiesfrombrowser'] = (browser,)
+            elif cookies.get('source') == 'file':
+                cookie_file = cookies.get('file')
+                if cookie_file and os.path.exists(cookie_file):
+                    ydl_opts['cookiefile'] = cookie_file
+
+        # Playlist Archive (skip downloaded)
+        if playlist_index is not None:
+            archive_path = os.path.join(self.output_dir, "downloaded_archive.txt")
+            ydl_opts['download_archive'] = archive_path
+            
+            # Hide archive file on Windows if it's newly created
+            if sys.platform == 'win32' and not os.path.exists(archive_path):
+                # Write an empty file so we can hide it immediately
+                with open(archive_path, 'w') as f: pass
+                import ctypes
+                try: ctypes.windll.kernel32.SetFileAttributesW(archive_path, 0x02)
+                except Exception: pass
 
         # Subtitles
         if subtitles and subtitles.get('download'):
@@ -130,12 +265,18 @@ class MediaDownloader:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 is_audio = (media_type == "audio" or quality in ("Audio only (MP3)", "Best Audio"))
                 if is_audio and embed_thumbnail and not download_thumbnail_only:
-                    ydl.add_post_processor(SquareCropPP(ydl), when='post_process')
                     ydl.add_post_processor(EmbedThumbnailPP(ydl), when='post_process')
                     ydl.add_post_processor(FFmpegMetadataPP(ydl, add_metadata=True), when='post_process')
+                    ydl.add_post_processor(MutagenCoverFixPP(ydl, playlist_index=playlist_index, playlist_count=playlist_count), when='post_process')
                     
-                ydl.download([url])
-            return True
+                self.last_error = ""
+                self.was_skipped = False
+                retcode = ydl.download([url])
+            
+            success = retcode == 0
+            if not success and not self.last_error:
+                self.last_error = "Unknown error occurred (see console or logs)."
+            return success, self.last_error, getattr(self, 'was_skipped', False)
         except Exception as e:
             print(f"Download error: {e}")
-            return False
+            return False, str(e), False
