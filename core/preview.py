@@ -47,7 +47,10 @@ def get_video_preview(url: str) -> dict:
                 'title': info.get('title', 'Unknown Title'),
                 'thumbnail': info.get('thumbnail'),
                 'duration': info.get('duration'),
-                'subtitles_available': subs_available
+                'subtitles_available': subs_available,
+                'uploader': info.get('uploader'),
+                'channel': info.get('channel'),
+                'artist': info.get('artist')
             }
     except Exception as e:
         print(f"Error fetching preview: {e}")

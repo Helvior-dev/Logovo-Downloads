@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QPushButton, QLabel, QProgressBar, 
     QComboBox, QMessageBox, QTabWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QCheckBox, QFileDialog, QFormLayout,
-    QApplication, QRadioButton, QButtonGroup, QGroupBox, QScrollArea
+    QApplication, QRadioButton, QButtonGroup, QGroupBox, QScrollArea, QDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QDesktopServices
@@ -89,7 +89,6 @@ class MainWindow(QMainWindow):
         self.downloads_tab = QWidget()
         
         layout = QVBoxLayout(self.downloads_tab)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
         # Top Toolbar
         toolbar = QHBoxLayout()
@@ -129,8 +128,6 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(url_layout)
         layout.addWidget(self.queue_scroll_area)
-        
-        layout.addStretch()
         
         # Format Selection & Add to Queue
         queue_layout = QHBoxLayout()
@@ -212,12 +209,13 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(btn_clear_hist)
         layout.addLayout(toolbar)
         
-        self.history_table = QTableWidget(0, 4)
-        self.history_table.setHorizontalHeaderLabels(["Date", "Download History", "Platform", "Status"])
+        self.history_table = QTableWidget(0, 5)
+        self.history_table.setHorizontalHeaderLabels(["Date", "Author", "Title", "Platform", "Status"])
         self.history_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.history_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.history_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         
         # Hide the vertical header (row numbers) for a cleaner look
         self.history_table.verticalHeader().setVisible(False)
@@ -430,14 +428,17 @@ class MainWindow(QMainWindow):
             date_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.history_table.setItem(row, 0, date_item)
             
-            self.history_table.setItem(row, 1, QTableWidgetItem(entry.get('title', '')))
+            author_item = QTableWidgetItem(entry.get('author', 'Unknown Author'))
+            self.history_table.setItem(row, 1, author_item)
+            
+            self.history_table.setItem(row, 2, QTableWidgetItem(entry.get('title', '')))
             
             # Determine platform from URL
             url = entry.get('url', '')
             platform = "YouTube" if "youtube.com" in url or "youtu.be" in url else ("Twitch" if "twitch.tv" in url else "Unknown")
             plat_item = QTableWidgetItem(platform)
             plat_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.history_table.setItem(row, 2, plat_item)
+            self.history_table.setItem(row, 3, plat_item)
             
             status = entry.get('status', '')
             status_item = QTableWidgetItem(status)
@@ -450,7 +451,7 @@ class MainWindow(QMainWindow):
                 status_item.setText("Error")
                 status_item.setForeground(Qt.GlobalColor.red)
                 errors += 1
-            self.history_table.setItem(row, 3, status_item)
+            self.history_table.setItem(row, 4, status_item)
             
         self.history_stats_label.setText(f"Total: {len(entries)} | Completed: {completed} | Errors: {errors}")
 
@@ -545,24 +546,60 @@ class MainWindow(QMainWindow):
                                 
                         orphan_ids = archived_ids - playlist_ids
                         if orphan_ids and local_files:
-                            reply = QMessageBox.question(self, "Orphan Detection", f"Found {len(orphan_ids)} tracks in this folder's archive that were removed from the YouTube playlist.\n\nDo you want to delete the unknown local files?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-                            if reply == QMessageBox.StandardButton.Yes:
-                                # We don't have a perfect mapping from ID to filename if the template changed,
-                                # but we know playlist_ids. We can delete any file that doesn't match the new naming format?
-                                # A safer approach: parse the files, if their names don't match any current playlist entry titles (fuzzy), delete.
-                                # Or just delete all local files that aren't in the new title list.
-                                current_titles = [e.get('title', '').lower() for e in preview.get('entries', [])]
-                                deleted_count = 0
-                                for f in local_files:
-                                    # Simple naive check: if the filename doesn't contain any current title
-                                    f_lower = f.lower()
-                                    if not any(t in f_lower for t in current_titles if len(t) > 3):
+                            current_titles = [e.get('title', '').lower() for e in preview.get('entries', []) if e.get('title')]
+                            valid_exts = ('.mp3', '.mp4', '.webm', '.m4a', '.wav', '.flac', '.opus', '.ogg', '.mkv', '.avi')
+                            files_to_delete = []
+                            for f in local_files:
+                                f_lower = f.lower()
+                                if not f_lower.endswith(valid_exts):
+                                    continue
+                                if not any(t in f_lower for t in current_titles if len(t) >= 2):
+                                    files_to_delete.append(f)
+                            
+                            if files_to_delete:
+                                links_text = "\n".join([f"https://youtube.com/watch?v={oid}" for oid in orphan_ids])
+                                files_text = "\n".join(files_to_delete)
+                                
+                                msg = f"Found {len(orphan_ids)} tracks in this folder's archive that were removed from the YouTube playlist.\n\n"
+                                msg += f"Removed Links:\n{links_text}\n\n"
+                                msg += f"Suspected Local Files:\n{files_text}\n\n"
+                                msg += "Do you want to delete these local files?"
+                                
+                                class OrphanDialog(QDialog):
+                                    def __init__(self, msg_text, parent=None):
+                                        super().__init__(parent)
+                                        self.setWindowTitle("Orphan Detection")
+                                        self.resize(600, 500)
+                                        layout = QVBoxLayout(self)
+                                        scroll = QScrollArea()
+                                        scroll.setWidgetResizable(True)
+                                        content = QWidget()
+                                        content_layout = QVBoxLayout(content)
+                                        label = QLabel(msg_text)
+                                        label.setWordWrap(True)
+                                        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                                        content_layout.addWidget(label)
+                                        scroll.setWidget(content)
+                                        layout.addWidget(scroll)
+                                        btn_layout = QHBoxLayout()
+                                        btn_yes = QPushButton("Yes, delete them")
+                                        btn_no = QPushButton("No, keep them")
+                                        btn_yes.clicked.connect(self.accept)
+                                        btn_no.clicked.connect(self.reject)
+                                        btn_layout.addWidget(btn_yes)
+                                        btn_layout.addWidget(btn_no)
+                                        layout.addLayout(btn_layout)
+                                
+                                dialog = OrphanDialog(msg, self)
+                                if dialog.exec() == QDialog.DialogCode.Accepted:
+                                    deleted_count = 0
+                                    for f in files_to_delete:
                                         try:
                                             os.remove(os.path.join(out_dir, f))
                                             deleted_count += 1
                                         except Exception:
                                             pass
-                                QMessageBox.information(self, "Orphans Deleted", f"Deleted {deleted_count} orphaned files.")
+                                    QMessageBox.information(self, "Orphans Deleted", f"Deleted {deleted_count} orphaned files.")
                         
                     for i, entry in enumerate(preview.get('entries', [])):
                         entry['playlist_output_dir'] = out_dir
@@ -755,6 +792,7 @@ class MainWindow(QMainWindow):
         
         item_data = self.current_widget.item_data
         title = item_data.get('title', 'Unknown')
+        author = item_data.get('uploader') or item_data.get('artist') or item_data.get('creator') or item_data.get('channel', 'Unknown')
         url = item_data.get('url')
         media_type = item_data.get('media_type')
         status_text = "Success" if success else "Failed"
@@ -772,7 +810,7 @@ class MainWindow(QMainWindow):
             self.current_widget.set_status("Error", "Error")
             self.failed_queue.append((item_data, error_msg))
             
-        self.history.add_entry(title, url, media_type, status_text)
+        self.history.add_entry(title, author, url, media_type, status_text)
         self.refresh_history()
         
         self.current_widget = None

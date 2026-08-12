@@ -20,10 +20,11 @@ class HistoryManager:
         with open(self.history_file, 'w', encoding='utf-8') as f:
             json.dump(self.history, f, indent=4)
 
-    def add_entry(self, title: str, url: str, media_type: str, status: str):
+    def add_entry(self, title: str, author: str, url: str, media_type: str, status: str):
         entry = {
             'date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'title': title,
+            'author': author,
             'url': url,
             'type': media_type,
             'status': status

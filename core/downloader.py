@@ -168,11 +168,10 @@ class MediaDownloader:
             def __init__(self, log_path, parent):
                 self.log_path = log_path
                 self.parent = parent
-            def debug(self, msg): pass
-            def warning(self, msg): pass
-            def info(self, msg):
+            def debug(self, msg):
                 if "has already been recorded in the archive" in msg.lower() or "has already been downloaded" in msg.lower():
                     self.parent.was_skipped = True
+            def warning(self, msg): pass
             def error(self, msg):
                 import re
                 clean_msg = re.sub(r'\x1b\[[0-9;]*m', '', msg)
