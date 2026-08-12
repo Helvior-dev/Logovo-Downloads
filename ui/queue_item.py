@@ -1,5 +1,5 @@
 import re
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QProgressBar, QPushButton, QSizePolicy
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QProgressBar, QPushButton, QSizePolicy, QComboBox
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QPixmap
 import requests
@@ -132,10 +132,35 @@ class QueueItemWidget(QWidget):
         """)
         self.btn_remove.clicked.connect(self._on_remove)
         controls_layout.addWidget(self.btn_remove)
+        
+        formats = item_data.get('formats_available', [])
+        if formats:
+            self.format_combo = QComboBox()
+            self.format_combo.addItems(formats)
+            
+            # Add visual separator between Audio and Video
+            for i, f in enumerate(formats):
+                if f.startswith("Video") and i > 0 and formats[i-1].startswith("Audio"):
+                    self.format_combo.insertSeparator(i)
+                    break
+            
+            global_format = item_data.get('media_type', '')
+            if global_format in formats:
+                self.format_combo.setCurrentText(global_format)
+            elif "audio" in global_format.lower() and "Audio (Best)" in formats:
+                self.format_combo.setCurrentText("Audio (Best)")
+            elif "video" in global_format.lower() and "Video (Best)" in formats:
+                self.format_combo.setCurrentText("Video (Best)")
+                
+            self.format_combo.currentTextChanged.connect(self._on_format_changed)
+            controls_layout.addWidget(self.format_combo)
         controls_layout.addStretch()
         
         main_layout.addLayout(controls_layout)
 
+    def _on_format_changed(self, text):
+        self.item_data['media_type'] = text
+        
     def _on_load_preview(self):
         self.btn_load_preview.hide()
         

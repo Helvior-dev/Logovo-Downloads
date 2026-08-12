@@ -162,6 +162,7 @@ class MediaDownloader:
             'ignoreerrors': True,
             'convertthumbnails': 'jpg',
             'parse_metadata': ['%(artist,uploader,creator,channel)s:%(meta_artist)s'],
+            'color': 'no_color',
         }
         
         class YtDlpLogger:
@@ -230,11 +231,16 @@ class MediaDownloader:
         if download_thumbnail_only:
             ydl_opts['skip_download'] = True
         else:
-            if media_type == "audio" or quality in ("Audio only (MP3)", "Best Audio"):
+            if media_type.startswith("Audio") or quality in ("Audio only (MP3)", "Best Audio"):
                 ydl_opts['format'] = 'bestaudio/best'
+                codec = "mp3"
+                if "FLAC" in media_type: codec = "flac"
+                elif "Opus" in media_type: codec = "opus"
+                elif "WAV" in media_type: codec = "wav"
+                
                 ydl_opts['postprocessors'] = [{
                     'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
+                    'preferredcodec': codec,
                     'preferredquality': '192',
                 }]
                 if embed_thumbnail:
@@ -243,8 +249,15 @@ class MediaDownloader:
                         'format': 'jpg',
                     })
             else:
-                ydl_opts['format'] = self._map_quality(quality)
-                ydl_opts['merge_output_format'] = 'mp4'
+                if "H.264" in media_type:
+                    ydl_opts['format'] = 'bestvideo[vcodec^=avc]+bestaudio/best'
+                    ydl_opts['merge_output_format'] = 'mp4'
+                elif "H.265" in media_type:
+                    ydl_opts['format'] = 'bestvideo[vcodec^=hev]+bestaudio/best'
+                    ydl_opts['merge_output_format'] = 'mkv'
+                else:
+                    ydl_opts['format'] = self._map_quality(quality)
+                    ydl_opts['merge_output_format'] = 'mp4'
                 
                 if embed_thumbnail:
                     ydl_opts['postprocessors'] = [{
@@ -262,7 +275,7 @@ class MediaDownloader:
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                is_audio = (media_type == "audio" or quality in ("Audio only (MP3)", "Best Audio"))
+                is_audio = (media_type.startswith("Audio") or quality in ("Audio only (MP3)", "Best Audio"))
                 if is_audio and embed_thumbnail and not download_thumbnail_only:
                     ydl.add_post_processor(EmbedThumbnailPP(ydl), when='post_process')
                     ydl.add_post_processor(FFmpegMetadataPP(ydl, add_metadata=True), when='post_process')

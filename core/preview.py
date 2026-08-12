@@ -6,6 +6,7 @@ def get_video_preview(url: str) -> dict:
         'no_warnings': True,
         'skip_download': True,
         'extract_flat': 'in_playlist',
+        'color': 'no_color',
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -41,6 +42,22 @@ def get_video_preview(url: str) -> dict:
                 for k in info['automatic_captions'].keys():
                     if k not in subs_available:
                         subs_available.append(f"{k} (auto)")
+            # Extract available formats
+            formats_available = set()
+            for f in info.get('formats', []):
+                vcodec = f.get('vcodec', 'none')
+                acodec = f.get('acodec', 'none')
+                
+                if vcodec != 'none':
+                    if 'avc1' in vcodec or 'h264' in vcodec: formats_available.add('Video (H.264)')
+                    elif 'hev' in vcodec or 'h265' in vcodec: formats_available.add('Video (H.265)')
+                
+                if acodec != 'none':
+                    if 'mp4a' in acodec: formats_available.add('Audio (M4A)')
+                    elif 'opus' in acodec: formats_available.add('Audio (Opus)')
+                    elif 'mp3' in acodec: formats_available.add('Audio (MP3)')
+            
+            formats_available.update(['Audio (Best)', 'Video (Best)', 'Audio (FLAC)'])
             
             return {
                 'is_playlist': False,
@@ -48,6 +65,7 @@ def get_video_preview(url: str) -> dict:
                 'thumbnail': info.get('thumbnail'),
                 'duration': info.get('duration'),
                 'subtitles_available': subs_available,
+                'formats_available': sorted(list(formats_available)),
                 'uploader': info.get('uploader'),
                 'channel': info.get('channel'),
                 'artist': info.get('artist')

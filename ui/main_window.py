@@ -7,10 +7,11 @@ from PyQt6.QtWidgets import (
     QLineEdit, QPushButton, QLabel, QProgressBar, 
     QComboBox, QMessageBox, QTabWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QCheckBox, QFileDialog, QFormLayout,
-    QApplication, QRadioButton, QButtonGroup, QGroupBox, QScrollArea, QDialog
+    QApplication, QRadioButton, QButtonGroup, QGroupBox, QScrollArea, QDialog,
+    QSystemTrayIcon, QMenu
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap, QDesktopServices
+from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon
 from PyQt6.QtCore import QUrl
 
 from core.preview import get_video_preview
@@ -60,8 +61,20 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(850, 700)
         self.setStyleSheet(get_stylesheet())
         
+        self.setup_tray()
+        
         self.settings = SettingsManager()
         self.history = HistoryManager()
+        
+        # Add session divider to logs
+        try:
+            from core.settings import get_app_data_dir
+            import datetime
+            log_file = get_app_data_dir() / "app_logs.txt"
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"\n{'-'*20} New Session: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {'-'*20}\n")
+        except:
+            pass
         
         self.download_queue = []  # List of QueueItemWidget
         self.failed_queue = []    # List of (item_data, error_msg)
@@ -84,6 +97,29 @@ class MainWindow(QMainWindow):
         self.setup_about_tab()
         
         self.worker = None
+
+    def setup_tray(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(QIcon("media/icon.ico"))
+        
+        tray_menu = QMenu()
+        show_action = QAction("Restore", self)
+        show_action.triggered.connect(self.showNormal)
+        
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(QApplication.instance().quit)
+        
+        tray_menu.addAction(show_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(quit_action)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.tray_icon_activated)
+        self.tray_icon.show()
+
+    def tray_icon_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.showNormal()
 
     def setup_downloads_tab(self):
         self.downloads_tab = QWidget()
@@ -133,7 +169,16 @@ class MainWindow(QMainWindow):
         queue_layout = QHBoxLayout()
         queue_layout.addWidget(QLabel("Format:"))
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["audio", "video"])
+        self.format_combo.addItems([
+            "Audio (Best)",
+            "Audio (MP3)",
+            "Audio (FLAC)",
+            "Audio (Opus)",
+            "Video (Best)",
+            "Video (H.264)",
+            "Video (H.265)"
+        ])
+        self.format_combo.insertSeparator(4)
         queue_layout.addWidget(self.format_combo)
         
         queue_layout.addWidget(QLabel(" Subs:"))
@@ -713,6 +758,10 @@ class MainWindow(QMainWindow):
             self.btn_stop.setEnabled(False)
             self.status_label.setText("All downloads finished!")
             self.update_queue_ui()
+            
+            if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
+                self.tray_icon.showMessage("Logovo Downloads", "All downloads finished!", QSystemTrayIcon.MessageIcon.Information, 3000)
+                
             if getattr(self, 'failed_queue', None):
                 self.show_failed_summary()
             return
