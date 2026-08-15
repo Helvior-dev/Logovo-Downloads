@@ -127,6 +127,41 @@ def crop_to_square(img: Image.Image) -> Image.Image:
     return img.crop((left, top, left + side, top + side)).resize((1000, 1000), resample)
 
 
+def is_root_or_general_folder(folder_path: Path | str) -> bool:
+    """Return True if path is a drive root, user standard directories, or the global download directory."""
+    if not folder_path:
+        return True
+    try:
+        p = Path(folder_path).resolve()
+        # Protect drive roots (e.g. C:\, D:\)
+        if len(p.parts) <= 1 or p.parent == p:
+            return True
+        # Protect user home and top-level user libraries
+        home = Path.home().resolve()
+        protected = {
+            home,
+            (home / "Downloads").resolve(),
+            (home / "Desktop").resolve(),
+            (home / "Music").resolve(),
+            (home / "Videos").resolve(),
+            (home / "Documents").resolve(),
+        }
+        if p in protected:
+            return True
+        # Protect global download_path configured in settings
+        try:
+            from core.settings import SettingsManager
+            mgr = SettingsManager()
+            global_dp = Path(mgr.get("download_path", str(home / "Downloads"))).resolve()
+            if p == global_dp:
+                return True
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return False
+
+
 def set_folder_icon(folder_path: Path | str, image_source: Any) -> bool:
     """
     Sets the Windows folder icon from an image URL, PIL Image, or local image file.
@@ -134,7 +169,7 @@ def set_folder_icon(folder_path: Path | str, image_source: Any) -> bool:
     """
     if sys.platform != "win32":
         return False
-    if not image_source:
+    if not image_source or is_root_or_general_folder(folder_path):
         return False
 
     try:
@@ -216,7 +251,7 @@ def set_folder_icon(folder_path: Path | str, image_source: Any) -> bool:
 
 def save_playlist_cover_image(folder_path: Path | str, image_source: Any) -> Optional[Path]:
     """Save playlist cover as 1:1 square-cropped cover.jpg / cover.png in 1000x1000 quality."""
-    if not image_source:
+    if not image_source or is_root_or_general_folder(folder_path):
         return None
     try:
         folder = Path(folder_path)
@@ -274,7 +309,7 @@ def save_playlist_cover_image(folder_path: Path | str, image_source: Any) -> Opt
 
 def apply_playlist_cover_settings(folder_path: Path | str, image_source: Any, mode: str = "both") -> None:
     """Apply playlist cover according to user settings mode: 'both', 'icon', 'file', 'none'."""
-    if not image_source or mode == "none":
+    if not image_source or mode == "none" or is_root_or_general_folder(folder_path):
         return
     if mode in ("file", "both"):
         save_playlist_cover_image(folder_path, image_source)
@@ -1620,17 +1655,6 @@ class MediaDownloader:
                 hide_file(out_path / "downloaded_archive.txt")
                 hide_file(out_path / "stem_vid_map.json")
                 hide_file(out_path / "playlist_order.txt")
-
-            # Ensure playlist cover/icon is applied if downloading a playlist/album
-            if should_track_playlist or playlist_count:
-                cover_mode = self.settings.get('playlist_cover_mode', 'both')
-                if cover_mode != 'none':
-                    ico_exists = (out_path / "folder_icon.ico").exists()
-                    img_exists = (out_path / "cover.jpg").exists() or (out_path / "cover.png").exists()
-                    if (not ico_exists or not img_exists) and (extracted_thumb or processed_files):
-                        thumb_src = extracted_thumb or (processed_files[0] if processed_files else None)
-                        if thumb_src:
-                            apply_playlist_cover_settings(self.output_dir, thumb_src, mode=cover_mode)
 
             # If download failed, log to failed_downloads.txt in playlist folder
             if not success and self.last_error and not self.was_skipped:

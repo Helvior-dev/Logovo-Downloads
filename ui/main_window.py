@@ -545,18 +545,30 @@ class MainWindow(QMainWindow):
             thumb = preview.get('thumbnail', '') if preview else ''
             count = preview.get('count', 0) if preview else 0
 
-            # If folder is parent, create subfolder with title
-            if not os.path.exists(folder):
-                os.makedirs(folder, exist_ok=True)
+            # Sanitize playlist title
+            clean_title = title
+            for ch in r'\/:*?"<>|':
+                clean_title = clean_title.replace(ch, '_').strip()
+            if not clean_title:
+                clean_title = "Playlist"
+
+            # Check if chosen folder already ends with playlist title
+            chosen_p = Path(folder).resolve()
+            if chosen_p.name.lower() == clean_title.lower():
+                final_folder = str(chosen_p)
+            else:
+                final_folder = str(chosen_p / clean_title)
+
+            os.makedirs(final_folder, exist_ok=True)
 
             cover_mode = self.settings.get('playlist_cover_mode', 'both')
             if thumb and cover_mode != 'none':
-                apply_playlist_cover_settings(folder, thumb, mode=cover_mode)
+                apply_playlist_cover_settings(final_folder, thumb, mode=cover_mode)
 
             self.playlists_mgr.add_playlist(
                 url=url,
                 title=title,
-                folder_path=folder,
+                folder_path=final_folder,
                 thumbnail=thumb,
                 track_count=count,
                 media_type=type_combo.currentText()
@@ -1452,9 +1464,9 @@ class MainWindow(QMainWindow):
                     f"Total tracks found: <b>{count}</b><br><br>"
                     "Where would you like to save this playlist?"
                 )
-                btn_auto_new = msgBox.addButton(f"Save to Downloads ({playlist_title})", QMessageBox.ButtonRole.YesRole)
-                btn_custom_new = msgBox.addButton("Choose Custom Parent Folder...", QMessageBox.ButtonRole.ActionRole)
-                btn_sync = msgBox.addButton("Continue Existing Playlist Folder...", QMessageBox.ButtonRole.AcceptRole)
+                btn_auto_new = msgBox.addButton(f"Save to '{playlist_title}' in Downloads", QMessageBox.ButtonRole.YesRole)
+                btn_custom_new = msgBox.addButton("Choose Custom Folder...", QMessageBox.ButtonRole.ActionRole)
+                btn_sync = msgBox.addButton("Sync into Existing Playlist Folder...", QMessageBox.ButtonRole.AcceptRole)
                 btn_cancel = msgBox.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
                 msgBox.setDefaultButton(btn_auto_new)
                 msgBox.exec()
@@ -1466,7 +1478,7 @@ class MainWindow(QMainWindow):
                     return
 
                 cover_mode = self.settings.get('playlist_cover_mode') or 'both'
-                playlist_thumb = preview.get('thumbnail') or (preview.get('entries', [{}])[0].get('thumbnail') if preview.get('entries') else None)
+                playlist_thumb = preview.get('thumbnail')
 
                 if clicked_btn == btn_auto_new:
                     out_dir = default_path
@@ -1476,12 +1488,16 @@ class MainWindow(QMainWindow):
                         apply_playlist_cover_settings(out_dir, playlist_thumb, mode=cover_mode)
 
                 elif clicked_btn == btn_custom_new:
-                    chosen_parent = QFileDialog.getExistingDirectory(self, "Select Parent Folder for Playlist", global_path)
-                    if not chosen_parent:
+                    chosen = QFileDialog.getExistingDirectory(self, "Select Save Folder for Playlist", global_path)
+                    if not chosen:
                         self.status_label.setText("Playlist addition cancelled.")
                         self.btn_add_queue.setEnabled(True)
                         return
-                    out_dir = os.path.join(chosen_parent, playlist_title)
+                    chosen_p = Path(chosen).resolve()
+                    if chosen_p.name.lower() == playlist_title.lower():
+                        out_dir = str(chosen_p)
+                    else:
+                        out_dir = str(chosen_p / playlist_title)
                     if not os.path.exists(out_dir):
                         os.makedirs(out_dir, exist_ok=True)
                     if playlist_thumb and cover_mode != 'none':
