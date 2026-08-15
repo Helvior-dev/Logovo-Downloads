@@ -82,13 +82,31 @@ import shutil
 def get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
-    return Path(__file__).parent.parent
+    return Path(__file__).resolve().parent.parent
+
+
+def get_ffmpeg_dir() -> Optional[Path]:
+    """Find the directory containing bundled or system ffmpeg/ffprobe binaries."""
+    candidates = []
+    # 1. PyInstaller _MEIPASS temp directory
+    if hasattr(sys, "_MEIPASS"):
+        meipass = Path(sys._MEIPASS)
+        candidates.extend([meipass / "bin", meipass])
+    
+    # 2. Application executable or project root directory
+    base_dir = get_base_dir()
+    candidates.extend([base_dir / "bin", base_dir])
+
+    for c in candidates:
+        if (c / "ffmpeg.exe").exists():
+            return c
+    return None
 
 
 def get_ffmpeg_path() -> Optional[str]:
-    local_ffmpeg = get_base_dir() / "ffmpeg.exe"
-    if local_ffmpeg.exists():
-        return str(local_ffmpeg)
+    f_dir = get_ffmpeg_dir()
+    if f_dir and (f_dir / "ffmpeg.exe").exists():
+        return str(f_dir / "ffmpeg.exe")
     which_ffmpeg = shutil.which("ffmpeg")
     if which_ffmpeg:
         return which_ffmpeg
@@ -96,14 +114,22 @@ def get_ffmpeg_path() -> Optional[str]:
 
 
 def get_ffprobe_path() -> Optional[str]:
-    local_ffprobe = get_base_dir() / "ffprobe.exe"
-    if local_ffprobe.exists():
-        return str(local_ffprobe)
+    f_dir = get_ffmpeg_dir()
+    if f_dir and (f_dir / "ffprobe.exe").exists():
+        return str(f_dir / "ffprobe.exe")
     which_ffprobe = shutil.which("ffprobe")
     if which_ffprobe:
         return which_ffprobe
     return None
 
+
+# Prepend bundled ffmpeg/bin directory to PATH if available
+_ffmpeg_dir = get_ffmpeg_dir()
+if _ffmpeg_dir:
+    _str_dir = str(_ffmpeg_dir)
+    _current_path = os.environ.get("PATH", "")
+    if _str_dir not in _current_path:
+        os.environ["PATH"] = f"{_str_dir}{os.pathsep}{_current_path}"
 
 FFMPEG_PATH = get_ffmpeg_path()
 FFPROBE_PATH = get_ffprobe_path()
@@ -1052,6 +1078,43 @@ def parse_speed_limit(limit_str: Optional[str]) -> Optional[int]:
     return int(val)
 
 
+def ensure_audio_format(path: Path, target_ext: str = ".mp3") -> Path:
+    """Ensure audio file is converted to target audio format if left as .mp4, .m4a or .webm container."""
+    if path.suffix.lower() == target_ext.lower():
+        return path
+    if path.suffix.lower() in (".mp4", ".webm", ".mkv"):
+        ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
+        target_path = path.with_suffix(target_ext)
+        try:
+            import subprocess
+            cmd = [ffmpeg_bin, "-y", "-i", str(path), "-vn"]
+            if target_ext.lower() == ".mp3":
+                cmd.extend(["-c:a", "libmp3lame", "-q:a", "0"])
+            elif target_ext.lower() == ".flac":
+                cmd.extend(["-c:a", "flac"])
+            elif target_ext.lower() == ".opus":
+                cmd.extend(["-c:a", "libopus", "-b:a", "160k"])
+            elif target_ext.lower() == ".wav":
+                cmd.extend(["-c:a", "pcm_s16le"])
+            else:
+                cmd.extend(["-c:a", "copy"])
+            cmd.append(str(target_path))
+
+            flags = 0
+            if sys.platform == "win32":
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+            if res.returncode == 0 and target_path.exists() and target_path.stat().st_size > 1000:
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return target_path
+        except Exception:
+            pass
+    return path
+
+
 def postprocess_audio_file(
     file_path: Path | str,
     playlist_index: Optional[int] = None,
@@ -1067,6 +1130,9 @@ def postprocess_audio_file(
     path = Path(file_path)
     if not path.exists():
         return path
+
+    if path.suffix.lower() in (".mp4", ".webm", ".mkv"):
+        path = ensure_audio_format(path, ".mp3")
 
     tag_opts = {}
     embed_all = True
@@ -1121,11 +1187,11 @@ def postprocess_audio_file(
         # Apply custom naming pattern if specified
         if naming_pattern and naming_pattern.strip():
             pat = naming_pattern.strip()
-            safe_artist = artist or ""
-            safe_title = title or path.stem
+            safe_artist = (artist or "")[:60]
+            safe_title = (title or path.stem)[:120]
             safe_idx = f"{playlist_index:02d}" if playlist_index is not None else ""
-            safe_album = album or ""
-            safe_year = str(year or "")
+            safe_album = (album or "")[:60]
+            safe_year = str(year or "")[:4]
             
             new_stem = pat
             new_stem = new_stem.replace("{artist}", safe_artist)
@@ -1137,6 +1203,8 @@ def postprocess_audio_file(
             for ch in r'\/:*?"<>|':
                 new_stem = new_stem.replace(ch, "_")
             new_stem = new_stem.strip(" -._")
+            if len(new_stem) > 160:
+                new_stem = new_stem[:160].strip(" -._")
 
             if new_stem:
                 new_path = path.parent / f"{new_stem}{path.suffix}"
@@ -1255,6 +1323,8 @@ def postprocess_video_file(
         for ch in r'\/:*?"<>|':
             new_stem = new_stem.replace(ch, "_")
         new_stem = new_stem.strip(" -._")
+        if len(new_stem) > 160:
+            new_stem = new_stem[:160].strip(" -._")
         if new_stem:
             new_path = path.parent / f"{new_stem}{path.suffix}"
             try:
@@ -1333,7 +1403,7 @@ class MediaDownloader:
 
         clean_url = clean_media_url(url)
         is_audio = media_type.startswith("Audio") or quality in ("Audio only (MP3)", "Best Audio")
-        outtmpl = os.path.join(self.output_dir, "%(title)s - %(artist,uploader,creator,channel)s.%(ext)s")
+        outtmpl = os.path.join(self.output_dir, "%(title).120B - %(artist,uploader,creator,channel).60B.%(ext)s")
 
         codec = "mp3"
         quality_val: Optional[str] = "320"
@@ -1709,6 +1779,20 @@ class MediaDownloader:
                         search_query = safe_title
                     else:
                         search_query = f"{safe_author} {safe_title}".strip()
+
+                    if not search_query or search_query == "Unknown":
+                        try:
+                            import requests
+                            r_oe = requests.get(f"https://www.youtube.com/oembed?url={clean_url}&format=json", timeout=4)
+                            if r_oe.status_code == 200:
+                                d_oe = r_oe.json()
+                                oe_title = d_oe.get("title", "")
+                                oe_author = d_oe.get("author_name", "")
+                                if oe_author.endswith(" - Topic"):
+                                    oe_author = oe_author[:-8]
+                                search_query = f"{oe_author} {oe_title}".strip()
+                        except Exception:
+                            pass
 
                     if not search_query or search_query == "Unknown":
                         # Try flat extract to get track name
