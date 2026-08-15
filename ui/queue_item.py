@@ -28,6 +28,7 @@ class QueueItemWidget(QWidget):
         super().__init__(parent)
         self.item_data = item_data
         self.status_state = "Pending"
+        self.is_retry = False
         self.fetcher = None
         
         self.setObjectName("QueueItemCard")
@@ -113,11 +114,16 @@ class QueueItemWidget(QWidget):
         details_layout.addWidget(self.progress_bar)
         details_layout.addStretch()
         
-        main_layout.addLayout(details_layout)
+        main_layout.addLayout(details_layout, 1)
         
         controls_layout = QVBoxLayout()
+        controls_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        controls_layout.setSpacing(6)
+        
+        btn_top_row = QHBoxLayout()
+        btn_top_row.addStretch()
         self.btn_remove = QPushButton("✕")
-        self.btn_remove.setFixedSize(24, 24)
+        self.btn_remove.setFixedSize(22, 22)
         self.btn_remove.setStyleSheet("""
             QPushButton {
                 background: transparent;
@@ -131,30 +137,53 @@ class QueueItemWidget(QWidget):
             }
         """)
         self.btn_remove.clicked.connect(self._on_remove)
-        controls_layout.addWidget(self.btn_remove)
+        btn_top_row.addWidget(self.btn_remove)
+        controls_layout.addLayout(btn_top_row)
         
-        formats = item_data.get('formats_available', [])
-        if formats:
-            self.format_combo = QComboBox()
-            self.format_combo.addItems(formats)
-            
-            # Add visual separator between Audio and Video
-            for i, f in enumerate(formats):
-                if f.startswith("Video") and i > 0 and formats[i-1].startswith("Audio"):
-                    self.format_combo.insertSeparator(i)
-                    break
-            
-            global_format = item_data.get('media_type', '')
-            if global_format in formats:
-                self.format_combo.setCurrentText(global_format)
-            elif "audio" in global_format.lower() and "Audio (Best)" in formats:
-                self.format_combo.setCurrentText("Audio (Best)")
-            elif "video" in global_format.lower() and "Video (Best)" in formats:
-                self.format_combo.setCurrentText("Video (Best)")
+        # Category: Audio or Video
+        media_category = item_data.get('media_type_category')
+        if not media_category:
+            if "video" in str(item_data.get('media_type', '')).lower():
+                media_category = "Video"
+            else:
+                media_category = "Audio"
                 
-            self.format_combo.currentTextChanged.connect(self._on_format_changed)
-            controls_layout.addWidget(self.format_combo)
-        controls_layout.addStretch()
+        formats_from_preview = item_data.get('formats_available', [])
+        
+        self.format_combo = QComboBox()
+        self.format_combo.setFixedWidth(135)
+        self.format_combo.setFixedHeight(28)
+        self.format_combo.setMaxVisibleItems(6)
+        
+        if media_category == "Audio":
+            default_audio = ["Audio (Best)", "Audio (MP3)", "Audio (FLAC)", "Audio (M4A)", "Audio (Opus)", "Audio (WAV)"]
+            available = [f for f in formats_from_preview if f.startswith("Audio")] if formats_from_preview else []
+            for f in default_audio:
+                if f not in available:
+                    available.append(f)
+            self.format_combo.addItems(available)
+            current_fmt = item_data.get('media_type', 'Audio (Best)')
+            if current_fmt in available:
+                self.format_combo.setCurrentText(current_fmt)
+            else:
+                self.format_combo.setCurrentText("Audio (Best)")
+                self.item_data['media_type'] = "Audio (Best)"
+        else:
+            default_video = ["Video (Best)", "Video (H.264)", "Video (H.265)"]
+            available = [f for f in formats_from_preview if f.startswith("Video")] if formats_from_preview else []
+            for f in default_video:
+                if f not in available:
+                    available.append(f)
+            self.format_combo.addItems(available)
+            current_fmt = item_data.get('media_type', 'Video (Best)')
+            if current_fmt in available:
+                self.format_combo.setCurrentText(current_fmt)
+            else:
+                self.format_combo.setCurrentText("Video (Best)")
+                self.item_data['media_type'] = "Video (Best)"
+                
+        self.format_combo.currentTextChanged.connect(self._on_format_changed)
+        controls_layout.addWidget(self.format_combo)
         
         main_layout.addLayout(controls_layout)
 
@@ -194,27 +223,41 @@ class QueueItemWidget(QWidget):
             self.thumbnail_label.setPixmap(scaled)
 
     def _on_remove(self):
-        if self.status_state != "Downloading":
+        if self.status_state not in ["Downloading", "Retrying"]:
             self.remove_requested.emit(self)
 
     def set_status(self, text, state="Pending"):
         self.status_state = state
         self.status_label.setText(text)
         
-        if state == "Downloading":
+        if state in ["Downloading", "Retrying"]:
             self.progress_bar.show()
             self.btn_remove.setEnabled(False)
+            if state == "Retrying" or getattr(self, "is_retry", False):
+                self.status_label.setStyleSheet("color: #fbbf24; font-size: 12px; font-weight: 500;") # Yellow/Amber
+            else:
+                self.status_label.setStyleSheet("color: #38bdf8; font-size: 12px;") # Cyan
         elif state in ["Success", "Error"]:
             self.progress_bar.hide()
             self.btn_remove.setEnabled(True)
             if state == "Success":
-                self.status_label.setStyleSheet("color: #10b981; font-size: 12px;") # Green
+                self.status_label.setStyleSheet("color: #10b981; font-size: 12px; font-weight: 500;") # Green
             else:
-                self.status_label.setStyleSheet("color: #ef4444; font-size: 12px;") # Red
+                self.status_label.setStyleSheet("color: #ef4444; font-size: 12px; font-weight: 500;") # Red
+        elif state == "Pending":
+            self.progress_bar.hide()
+            self.btn_remove.setEnabled(True)
+            if getattr(self, "is_retry", False):
+                self.status_label.setStyleSheet("color: #fbbf24; font-size: 12px; font-weight: 500;")
+            else:
+                self.status_label.setStyleSheet("color: #cbd5e1; font-size: 12px;")
 
     def update_progress(self, percent, speed_clean, eta_clean):
         try:
             self.progress_bar.setValue(int(float(percent)))
         except ValueError:
             pass
-        self.status_label.setText(f"Downloading... {percent}% | {speed_clean} | ETA: {eta_clean}")
+        prefix = "Retrying... " if getattr(self, 'is_retry', False) else "Downloading... "
+        self.status_label.setText(f"{prefix}{percent}% | {speed_clean} | ETA: {eta_clean}")
+        if getattr(self, 'is_retry', False):
+            self.status_label.setStyleSheet("color: #fbbf24; font-size: 12px; font-weight: 500;")

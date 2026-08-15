@@ -1,4 +1,6 @@
 import sys
+import time
+import datetime
 import requests
 import re
 import os
@@ -10,22 +12,65 @@ from PyQt6.QtWidgets import (
     QApplication, QRadioButton, QButtonGroup, QGroupBox, QScrollArea, QDialog,
     QSystemTrayIcon, QMenu
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon, QColor
 from PyQt6.QtCore import QUrl
 
 from core.preview import get_video_preview
-from core.downloader import MediaDownloader
+from core.downloader import (
+    MediaDownloader,
+    friendly_error,
+    set_folder_icon,
+    save_playlist_cover_image,
+    apply_playlist_cover_settings,
+    clear_failed_log_if_clean,
+    read_stem_vid_map,
+    read_archive_ids,
+    restore_dates_from_order,
+    update_stem_vid_map,
+    write_playlist_order,
+)
 from core.settings import SettingsManager
 from core.history import HistoryManager
 from ui.styles import get_stylesheet
 from ui.queue_item import QueueItemWidget
 
+def estimate_track_size_mb(item_data: dict) -> float:
+    media_type = str(item_data.get('media_type', 'Audio (Best)')).lower()
+    duration = item_data.get('duration')
+    if "flac" in media_type or "alac" in media_type:
+        return 45.0
+    elif "wav" in media_type:
+        return 140.0
+    elif "mp3" in media_type or "best audio" in media_type:
+        return 8.0
+    elif "m4a" in media_type or "aac" in media_type:
+        return 6.0
+    elif "opus" in media_type or "ogg" in media_type:
+        return 4.0
+    elif "video" in media_type or "h.264" in media_type or "h.265" in media_type:
+        if duration:
+            try:
+                dur_s = float(duration)
+                return max(15.0, (dur_s / 60.0) * 20.0)
+            except Exception:
+                pass
+        return 85.0
+    return 8.0
+
+def format_time(seconds: float) -> str:
+    s = int(seconds)
+    if s >= 3600:
+        return f"{s // 3600}h {(s % 3600) // 60:02d}m"
+    if s >= 60:
+        return f"{s // 60}m {s % 60:02d}s"
+    return f"{s}s"
+
 class WorkerThread(QThread):
     progress_signal = pyqtSignal(dict)
     finished_signal = pyqtSignal(bool, str, bool)
 
-    def __init__(self, url, media_type, output_dir, quality, cookies, subtitles, playlist_index=None, playlist_count=None):
+    def __init__(self, url, media_type, output_dir, quality, cookies, subtitles, playlist_index=None, playlist_count=None, title=None, author=None):
         super().__init__()
         self.url = url
         self.media_type = media_type
@@ -35,6 +80,8 @@ class WorkerThread(QThread):
         self.subtitles = subtitles
         self.playlist_index = playlist_index
         self.playlist_count = playlist_count
+        self.title = title
+        self.author = author
         
     def run(self):
         downloader = MediaDownloader(output_dir=self.output_dir)
@@ -50,7 +97,9 @@ class WorkerThread(QThread):
             subtitles=self.subtitles,
             progress_callback=progress_callback,
             playlist_index=self.playlist_index,
-            playlist_count=self.playlist_count
+            playlist_count=self.playlist_count,
+            title=self.title,
+            author=self.author,
         )
         self.finished_signal.emit(success, error_msg, was_skipped)
 
@@ -83,6 +132,8 @@ class MainWindow(QMainWindow):
         
         self.success_count = 0
         self.error_count = 0
+        self.track_durations = []
+        self.current_track_start_time = None
         
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -130,16 +181,19 @@ class MainWindow(QMainWindow):
         toolbar = QHBoxLayout()
         self.btn_paste = QPushButton("Paste from clipboard")
         self.btn_load = QPushButton("Load from file")
-        self.btn_quick_settings = QPushButton("Quick Settings")
         
         self.btn_paste.clicked.connect(self.paste_from_clipboard)
         self.btn_load.clicked.connect(self.load_from_file)
-        self.btn_quick_settings.clicked.connect(lambda: self.tabs.setCurrentIndex(2))
         
         toolbar.addWidget(self.btn_paste)
         toolbar.addWidget(self.btn_load)
         toolbar.addStretch()
-        toolbar.addWidget(self.btn_quick_settings)
+        
+        # Sleek telemetry text directly in toolbar (no boxes/borders)
+        self.top_telemetry_label = QLabel("")
+        self.top_telemetry_label.setStyleSheet("font-size: 13px; font-weight: 600;")
+        toolbar.addWidget(self.top_telemetry_label)
+        
         layout.addLayout(toolbar)
         
         # URL Input
@@ -167,18 +221,15 @@ class MainWindow(QMainWindow):
         
         # Format Selection & Add to Queue
         queue_layout = QHBoxLayout()
-        queue_layout.addWidget(QLabel("Format:"))
+        queue_layout.addWidget(QLabel("Type:"))
         self.format_combo = QComboBox()
         self.format_combo.addItems([
-            "Audio (Best)",
-            "Audio (MP3)",
-            "Audio (FLAC)",
-            "Audio (Opus)",
-            "Video (Best)",
-            "Video (H.264)",
-            "Video (H.265)"
+            "Audio",
+            "Video"
         ])
-        self.format_combo.insertSeparator(4)
+        self.format_combo.setPlaceholderText("Select Type...")
+        self.format_combo.setCurrentIndex(-1)
+        self.format_combo.currentIndexChanged.connect(self.clear_format_combo_highlight)
         queue_layout.addWidget(self.format_combo)
         
         queue_layout.addWidget(QLabel(" Subs:"))
@@ -346,6 +397,35 @@ class MainWindow(QMainWindow):
         layout.addWidget(cookie_group)
         self.toggle_cookies(self.chk_cookies.isChecked())
         
+        # Playlist Cover Settings
+        cover_group = QGroupBox("Playlist Cover / Artwork")
+        cover_layout = QVBoxLayout()
+        
+        cover_desc = QLabel("How to handle playlist artwork when downloading a new playlist:")
+        cover_desc.setStyleSheet("color: #94a3b8; font-size: 12px; margin-bottom: 2px;")
+        cover_layout.addWidget(cover_desc)
+        
+        self.cover_mode_combo = QComboBox()
+        self.cover_mode_combo.addItem("Set as Windows folder icon (.ico) & save image file (Recommended)", "both")
+        self.cover_mode_combo.addItem("Set as Windows folder icon (.ico) only", "icon")
+        self.cover_mode_combo.addItem("Save cover as PNG / JPG image file only", "file")
+        self.cover_mode_combo.addItem("Do not save playlist cover", "none")
+        
+        current_cover_mode = self.settings.get('playlist_cover_mode') or 'both'
+        idx = self.cover_mode_combo.findData(current_cover_mode)
+        if idx >= 0:
+            self.cover_mode_combo.setCurrentIndex(idx)
+        else:
+            self.cover_mode_combo.setCurrentIndex(0)
+            
+        self.cover_mode_combo.currentIndexChanged.connect(
+            lambda: self.settings.set('playlist_cover_mode', self.cover_mode_combo.currentData())
+        )
+        
+        cover_layout.addWidget(self.cover_mode_combo)
+        cover_group.setLayout(cover_layout)
+        layout.addWidget(cover_group)
+        
         layout.addWidget(QLabel("\nQuality Settings"))
         quality_grid = QGridLayout()
         
@@ -381,7 +461,7 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #ffffff;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
-        version = QLabel("Version: 1.0.0-beta")
+        version = QLabel("Version: 1.1.0-beta")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)
         btn_layout = QHBoxLayout()
@@ -488,14 +568,15 @@ class MainWindow(QMainWindow):
             status = entry.get('status', '')
             status_item = QTableWidgetItem(status)
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if status == "Success":
-                status_item.setText("Completed")
-                status_item.setForeground(Qt.GlobalColor.green)
+            status_lower = status.lower()
+            if "success" in status_lower or "completed" in status_lower or "finished" in status_lower:
+                status_item.setForeground(QColor("#10b981"))
                 completed += 1
-            elif status == "Failed":
-                status_item.setText("Error")
-                status_item.setForeground(Qt.GlobalColor.red)
+            elif "error" in status_lower or "fail" in status_lower:
+                status_item.setForeground(QColor("#ef4444"))
                 errors += 1
+            elif "skip" in status_lower:
+                status_item.setForeground(QColor("#94a3b8"))
             self.history_table.setItem(row, 4, status_item)
             
         self.history_stats_label.setText(f"Total: {len(entries)} | Completed: {completed} | Errors: {errors}")
@@ -531,9 +612,77 @@ class MainWindow(QMainWindow):
         self.history.clear()
         self.refresh_history()
 
+    def highlight_format_combo(self):
+        self.pulse_step = 0.0
+        self.pulse_direction = 1
+        self.pulse_cycles = 0
+        if not hasattr(self, 'pulse_timer'):
+            self.pulse_timer = QTimer(self)
+            self.pulse_timer.setInterval(30)
+            self.pulse_timer.timeout.connect(self._do_pulse)
+        self.format_combo.setFocus()
+        self.pulse_timer.start()
+
+    def _do_pulse(self):
+        self.pulse_step += self.pulse_direction * 0.08
+        if self.pulse_step >= 1.0:
+            self.pulse_step = 1.0
+            self.pulse_direction = -1
+        elif self.pulse_step <= 0.0:
+            self.pulse_step = 0.0
+            self.pulse_direction = 1
+            self.pulse_cycles += 1
+            if self.pulse_cycles >= 3:
+                self.pulse_timer.stop()
+                self.format_combo.setStyleSheet("""
+                    QComboBox {
+                        border: 2px solid #38bdf8;
+                        border-radius: 6px;
+                        background-color: #0f172a;
+                        color: #ffffff;
+                        padding: 7px;
+                    }
+                """)
+                return
+
+        # Interpolate between base (#1e293b -> 30, 41, 59) and glow (#38bdf8 -> 56, 189, 248)
+        r = int(30 + (56 - 30) * self.pulse_step)
+        g = int(41 + (189 - 41) * self.pulse_step)
+        b = int(59 + (248 - 59) * self.pulse_step)
+        
+        bg_r = int(11 + (15 - 11) * self.pulse_step)
+        bg_g = int(14 + (23 - 14) * self.pulse_step)
+        bg_b = int(20 + (42 - 20) * self.pulse_step)
+
+        self.format_combo.setStyleSheet(f"""
+            QComboBox {{
+                border: 2px solid rgb({r}, {g}, {b});
+                border-radius: 6px;
+                background-color: rgb({bg_r}, {bg_g}, {bg_b});
+                color: #ffffff;
+                padding: 7px;
+            }}
+        """)
+
+    def clear_format_combo_highlight(self):
+        if hasattr(self, 'pulse_timer') and self.pulse_timer.isActive():
+            self.pulse_timer.stop()
+        self.format_combo.setStyleSheet("")
+
     def add_to_queue_action(self):
         url = self.url_input.text().strip()
         if not url: return
+
+        selected_type = self.format_combo.currentText()
+        if not selected_type or selected_type not in ("Audio", "Video"):
+            self.highlight_format_combo()
+            QMessageBox.warning(
+                self, 
+                "Select Type", 
+                "Please select 'Audio' or 'Video' in the Type selector (highlighted in blue) before adding to queue."
+            )
+            return
+
         self.status_label.setText("Fetching info...")
         self.btn_add_queue.setEnabled(False)
         QApplication.processEvents() # Update UI to show fetching status
@@ -542,99 +691,123 @@ class MainWindow(QMainWindow):
         if preview:
             if preview.get('is_playlist'):
                 count = preview.get('count', 0)
-                reply = QMessageBox.question(self, "This is a playlist", f"The link contains {count} videos. Add them all to the queue?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-                if reply == QMessageBox.StandardButton.Yes:
-                    global_path = self.settings.get('download_path')
-                    default_path = os.path.join(global_path, preview.get('title', 'Playlist'))
-                    
-                    msgBox = QMessageBox(self)
-                    msgBox.setWindowTitle("Playlist Destination")
-                    msgBox.setText(f"Save this playlist to a new folder?\n\n{default_path}")
-                    btn_yes = msgBox.addButton("Yes (Auto)", QMessageBox.ButtonRole.YesRole)
-                    btn_custom = msgBox.addButton("Choose Custom...", QMessageBox.ButtonRole.AcceptRole)
-                    btn_cancel = msgBox.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-                    msgBox.exec()
-                    
-                    if msgBox.clickedButton() == btn_cancel:
+                playlist_title = preview.get('title', 'Playlist')
+                for ch in r'\/:*?"<>|':
+                    playlist_title = playlist_title.replace(ch, '_').strip()
+                global_path = self.settings.get('download_path')
+                default_path = os.path.join(global_path, playlist_title)
+                
+                msgBox = QMessageBox(self)
+                msgBox.setWindowTitle("Playlist Destination")
+                msgBox.setText(
+                    f"<h3>Playlist: {preview.get('title', 'Playlist')}</h3>"
+                    f"Total tracks found: <b>{count}</b><br><br>"
+                    "Where would you like to save this playlist?"
+                )
+                btn_auto_new = msgBox.addButton(f"Save to Downloads ({playlist_title})", QMessageBox.ButtonRole.YesRole)
+                btn_custom_new = msgBox.addButton("Choose Custom Parent Folder...", QMessageBox.ButtonRole.ActionRole)
+                btn_sync = msgBox.addButton("Continue Existing Playlist Folder...", QMessageBox.ButtonRole.AcceptRole)
+                btn_cancel = msgBox.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+                msgBox.setDefaultButton(btn_auto_new)
+                msgBox.exec()
+                
+                clicked_btn = msgBox.clickedButton()
+                if clicked_btn == btn_cancel:
+                    self.status_label.setText("Playlist addition cancelled.")
+                    self.btn_add_queue.setEnabled(True)
+                    return
+                
+                cover_mode = self.settings.get('playlist_cover_mode') or 'both'
+                playlist_thumb = preview.get('thumbnail')
+                
+                if clicked_btn == btn_auto_new:
+                    out_dir = default_path
+                    if not os.path.exists(out_dir):
+                        os.makedirs(out_dir, exist_ok=True)
+                    if playlist_thumb:
+                        apply_playlist_cover_settings(out_dir, playlist_thumb, mode=cover_mode)
+                        
+                elif clicked_btn == btn_custom_new:
+                    chosen_parent = QFileDialog.getExistingDirectory(self, "Select Parent Folder for Playlist", global_path)
+                    if not chosen_parent:
                         self.status_label.setText("Playlist addition cancelled.")
                         self.btn_add_queue.setEnabled(True)
                         return
-                    elif msgBox.clickedButton() == btn_yes:
-                        out_dir = default_path
-                    else:
-                        out_dir = QFileDialog.getExistingDirectory(self, "Select Playlist Folder", global_path)
-                        if not out_dir:
-                            self.status_label.setText("Playlist addition cancelled.")
-                            self.btn_add_queue.setEnabled(True)
-                            return
-                            
+                    out_dir = os.path.join(chosen_parent, playlist_title)
                     if not os.path.exists(out_dir):
                         os.makedirs(out_dir, exist_ok=True)
-                    else:
-                        # Orphan detection
-                        local_files = [f for f in os.listdir(out_dir) if os.path.isfile(os.path.join(out_dir, f)) and not f.startswith('.')]
-                        playlist_ids = {e.get('url').split('v=')[-1].split('&')[0] for e in preview.get('entries', []) if e.get('url')}
-                        archive_path = os.path.join(out_dir, ".downloaded_archive.txt")
-                        if not os.path.exists(archive_path):
-                            archive_path = os.path.join(out_dir, "downloaded_archive.txt")
+                    if playlist_thumb:
+                        apply_playlist_cover_settings(out_dir, playlist_thumb, mode=cover_mode)
                         
-                        archived_ids = set()
-                        if os.path.exists(archive_path):
-                            try:
-                                with open(archive_path, 'r', encoding='utf-8') as f:
-                                    for line in f:
-                                        parts = line.strip().split()
-                                        if len(parts) >= 2:
-                                            archived_ids.add(parts[1])
-                            except Exception:
-                                pass
-                                
-                        orphan_ids = archived_ids - playlist_ids
-                        if orphan_ids and local_files:
-                            current_titles = [e.get('title', '').lower() for e in preview.get('entries', []) if e.get('title')]
-                            valid_exts = ('.mp3', '.mp4', '.webm', '.m4a', '.wav', '.flac', '.opus', '.ogg', '.mkv', '.avi')
-                            files_to_delete = []
-                            for f in local_files:
-                                f_lower = f.lower()
-                                if not f_lower.endswith(valid_exts):
-                                    continue
-                                if not any(t in f_lower for t in current_titles if len(t) >= 2):
-                                    files_to_delete.append(f)
+                else:
+                    # Sync existing folder mode
+                    out_dir = QFileDialog.getExistingDirectory(self, "Select Existing Playlist Folder", global_path)
+                    if not out_dir:
+                        self.status_label.setText("Playlist addition cancelled.")
+                        self.btn_add_queue.setEnabled(True)
+                        return
+                    # In sync mode, DO NOT touch or set folder icon!
+                    
+                    # Restore timestamps if present
+                    restored = restore_dates_from_order(out_dir)
+                    if restored > 0:
+                        self.status_label.setText(f"Restored order for {restored} existing tracks.")
+                    
+                    # Check for orphan files
+                    local_files = [f for f in os.listdir(out_dir) if os.path.isfile(os.path.join(out_dir, f)) and not f.startswith('.')]
+                    playlist_ids = {e.get('url', '').split('v=')[-1].split('&')[0] for e in preview.get('entries', []) if e.get('url')}
+                    archived_ids = read_archive_ids(out_dir)
+                    stem_map = read_stem_vid_map(out_dir)
+                    
+                    orphan_ids = archived_ids - playlist_ids
+                    if orphan_ids and local_files:
+                        current_titles = [e.get('title', '').lower() for e in preview.get('entries', []) if e.get('title')]
+                        valid_exts = ('.mp3', '.mp4', '.webm', '.m4a', '.wav', '.flac', '.opus', '.ogg', '.mkv', '.avi')
+                        files_to_delete = []
+                        for f in local_files:
+                            f_lower = f.lower()
+                            if not f_lower.endswith(valid_exts):
+                                continue
+                            stem = os.path.splitext(f)[0]
+                            if stem in stem_map and stem_map[stem] in orphan_ids:
+                                files_to_delete.append(f)
+                            elif not any(t in f_lower for t in current_titles if len(t) >= 2):
+                                files_to_delete.append(f)
+                        
+                        if files_to_delete:
+                            links_text = "\n".join([f"https://youtube.com/watch?v={oid}" for oid in orphan_ids])
+                            files_text = "\n".join(files_to_delete)
                             
-                            if files_to_delete:
-                                links_text = "\n".join([f"https://youtube.com/watch?v={oid}" for oid in orphan_ids])
-                                files_text = "\n".join(files_to_delete)
-                                
-                                msg = f"Found {len(orphan_ids)} tracks in this folder's archive that were removed from the YouTube playlist.\n\n"
-                                msg += f"Removed Links:\n{links_text}\n\n"
-                                msg += f"Suspected Local Files:\n{files_text}\n\n"
-                                msg += "Do you want to delete these local files?"
-                                
-                                class OrphanDialog(QDialog):
-                                    def __init__(self, msg_text, parent=None):
-                                        super().__init__(parent)
-                                        self.setWindowTitle("Orphan Detection")
-                                        self.resize(600, 500)
-                                        layout = QVBoxLayout(self)
-                                        scroll = QScrollArea()
-                                        scroll.setWidgetResizable(True)
-                                        content = QWidget()
-                                        content_layout = QVBoxLayout(content)
-                                        label = QLabel(msg_text)
-                                        label.setWordWrap(True)
-                                        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                                        content_layout.addWidget(label)
-                                        scroll.setWidget(content)
-                                        layout.addWidget(scroll)
-                                        btn_layout = QHBoxLayout()
-                                        btn_yes = QPushButton("Yes, delete them")
-                                        btn_no = QPushButton("No, keep them")
-                                        btn_yes.clicked.connect(self.accept)
-                                        btn_no.clicked.connect(self.reject)
-                                        btn_layout.addWidget(btn_yes)
-                                        btn_layout.addWidget(btn_no)
-                                        layout.addLayout(btn_layout)
-                                
+                            msg = f"Found {len(orphan_ids)} tracks in this folder's archive that were removed from the YouTube playlist.\n\n"
+                            msg += f"Removed Links:\n{links_text}\n\n"
+                            msg += f"Local Files No Longer in Playlist:\n{files_text}\n\n"
+                            msg += "Do you want to delete these local files?"
+                            
+                            class OrphanDialog(QDialog):
+                                def __init__(self, msg_text, parent=None):
+                                    super().__init__(parent)
+                                    self.setWindowTitle("Orphan Detection")
+                                    self.resize(600, 500)
+                                    layout = QVBoxLayout(self)
+                                    scroll = QScrollArea()
+                                    scroll.setWidgetResizable(True)
+                                    content = QWidget()
+                                    content_layout = QVBoxLayout(content)
+                                    label = QLabel(msg_text)
+                                    label.setWordWrap(True)
+                                    label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                                    content_layout.addWidget(label)
+                                    scroll.setWidget(content)
+                                    layout.addWidget(scroll)
+                                    btn_layout = QHBoxLayout()
+                                    btn_yes = QPushButton("Yes, delete them")
+                                    btn_no = QPushButton("No, keep them")
+                                    btn_yes.clicked.connect(self.accept)
+                                    btn_no.clicked.connect(self.reject)
+                                    btn_layout.addWidget(btn_yes)
+                                    btn_layout.addWidget(btn_no)
+                                    layout.addLayout(btn_layout)
+                            
                                 dialog = OrphanDialog(msg, self)
                                 if dialog.exec() == QDialog.DialogCode.Accepted:
                                     deleted_count = 0
@@ -644,19 +817,32 @@ class MainWindow(QMainWindow):
                                             deleted_count += 1
                                         except Exception:
                                             pass
-                                    QMessageBox.information(self, "Orphans Deleted", f"Deleted {deleted_count} orphaned files.")
+                # Add all tracks in playlist to queue targeting out_dir
+                added_count = 0
+                for i, entry in enumerate(preview.get('entries', [])):
+                    entry['playlist_output_dir'] = out_dir
+                    # Reverse index: first item gets 'count', last item gets '1'
+                    entry['playlist_index'] = count - i
+                    entry['playlist_count'] = count
+                    entry['media_type_category'] = selected_type
+                    entry['media_type'] = "Audio (Best)" if selected_type == "Audio" else "Video (Best)"
+                    
+                    # Pre-record stem to vid mapping from playlist metadata
+                    vid = entry.get('url', '').split('v=')[-1].split('&')[0]
+                    author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
+                    title = entry.get('title') or ""
+                    if vid and title:
+                        stem = f"{title} - {author}".strip(" -")
+                        update_stem_vid_map(out_dir, stem, vid)
                         
-                    for i, entry in enumerate(preview.get('entries', [])):
-                        entry['playlist_output_dir'] = out_dir
-                        # Reverse index: first item gets 'count', last item gets '1'
-                        entry['playlist_index'] = count - i
-                        entry['playlist_count'] = count
-                        self._add_single_item_to_queue(entry)
-                    self.status_label.setText(f"Added {count} videos from playlist.")
-                else:
-                    self.status_label.setText("Playlist addition cancelled.")
+                    self._add_single_item_to_queue(entry)
+                    added_count += 1
+                    
+                self.status_label.setText(f"Added {added_count} tracks from playlist.")
             else:
                 preview['url'] = url
+                preview['media_type_category'] = selected_type
+                preview['media_type'] = "Audio (Best)" if selected_type == "Audio" else "Video (Best)"
                 self._add_single_item_to_queue(preview)
                 self.status_label.setText("Added to queue.")
         else:
@@ -666,15 +852,21 @@ class MainWindow(QMainWindow):
 
     def _add_single_item_to_queue(self, info_dict):
         url = info_dict.get('url')
-        media_type = self.format_combo.currentText()
+        selected_category = info_dict.get('media_type_category') or self.format_combo.currentText()
+        if selected_category not in ("Audio", "Video"):
+            selected_category = "Audio"
+
+        info_dict['media_type_category'] = selected_category
+        if not info_dict.get('media_type'):
+            info_dict['media_type'] = "Audio (Best)" if selected_category == "Audio" else "Video (Best)"
+        media_type = info_dict['media_type']
         
         # Deduplication
         for widget in self.download_queue:
             if widget.item_data.get('url') == url and widget.item_data.get('media_type') == media_type:
                 return # Skip duplicate
         
-        # Inject our chosen format and subs into the dict
-        info_dict['media_type'] = media_type
+        # Inject chosen subs into the dict
         info_dict['specific_subs'] = self.subs_combo.currentText()
         
         widget = QueueItemWidget(info_dict)
@@ -692,9 +884,41 @@ class MainWindow(QMainWindow):
             self.update_queue_ui()
 
     def update_queue_ui(self):
-        count = len(self.download_queue)
-        pending_count = sum(1 for w in self.download_queue if w.status_state == "Pending")
-        self.stats_label.setText(f"Success: {self.success_count} | In queue: {pending_count} | Errors: {self.error_count}")
+        total = len(self.download_queue)
+        success_items = [w for w in self.download_queue if w.status_state == "Success"]
+        error_items = [w for w in self.download_queue if w.status_state == "Error"]
+        pending_items = [w for w in self.download_queue if w.status_state in ("Pending", "Downloading", "Retrying")]
+        
+        completed_count = len(success_items)
+        pending_count = len(pending_items)
+        error_count = len(error_items)
+        
+        # 1. Sleek top telemetry: size (downloaded/total) + ETA
+        if total == 0:
+            self.top_telemetry_label.setText("")
+        else:
+            downloaded_mb = sum(estimate_track_size_mb(w.item_data) for w in success_items)
+            total_mb = sum(estimate_track_size_mb(w.item_data) for w in self.download_queue)
+            
+            def fmt_mb(mb):
+                return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb:.0f} MB"
+                
+            size_str = f"{fmt_mb(downloaded_mb)} / {fmt_mb(total_mb)}"
+            
+            if pending_count == 0:
+                time_str = "Finished"
+            else:
+                avg_dur = (sum(self.track_durations[-5:]) / len(self.track_durations[-5:])) if self.track_durations else 4.5
+                eta_s = int(avg_dur * pending_count)
+                time_str = f"~{format_time(eta_s)}"
+                
+            self.top_telemetry_label.setText(
+                f"<span style='color: #38bdf8;'>💾 {size_str}</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
+                f"<span style='color: #fbbf24;'>⏳ {time_str}</span>"
+            )
+        
+        # Bottom mini stats
+        self.stats_label.setText(f"Success: {completed_count} | In queue: {pending_count} | Errors: {error_count}")
         
         if pending_count == 0:
             self.btn_download_all.setEnabled(False)
@@ -756,19 +980,49 @@ class MainWindow(QMainWindow):
         if not self.current_widget:
             self.is_downloading = False
             self.btn_stop.setEnabled(False)
-            self.status_label.setText("All downloads finished!")
+            
+            has_errors = bool(self.failed_queue) or any(w.status_state == "Error" for w in self.download_queue)
+            if has_errors:
+                self.status_label.setText("Finished with errors. Check actions.")
+                if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
+                    self.tray_icon.showMessage(
+                        "Logovo Downloads",
+                        "An error occurred. Please review actions.",
+                        QSystemTrayIcon.MessageIcon.Warning,
+                        3000
+                    )
+            else:
+                self.status_label.setText("All downloads finished!")
+                if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
+                    self.tray_icon.showMessage(
+                        "Logovo Downloads",
+                        "All downloads finished successfully!",
+                        QSystemTrayIcon.MessageIcon.Information,
+                        3000
+                    )
+                # Clean up failed_downloads.txt across output dirs if no errors remain
+                dirs_to_clean = set()
+                for w in self.download_queue:
+                    p_dir = w.item_data.get('playlist_output_dir') or self.settings.get('download_path')
+                    if p_dir:
+                        dirs_to_clean.add(p_dir)
+                for d in dirs_to_clean:
+                    clear_failed_log_if_clean(d)
+                
             self.update_queue_ui()
             
-            if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
-                self.tray_icon.showMessage("Logovo Downloads", "All downloads finished!", QSystemTrayIcon.MessageIcon.Information, 3000)
-                
             if getattr(self, 'failed_queue', None):
                 self.show_failed_summary()
             return
             
         self.update_queue_ui()
         
-        self.current_widget.set_status("Starting...", "Downloading")
+        self.current_track_start_time = time.time()
+        is_retry = getattr(self.current_widget, 'is_retry', False)
+        if is_retry:
+            self.current_widget.set_status("Retrying download...", "Retrying")
+        else:
+            self.current_widget.set_status("Starting...", "Downloading")
         
         item_data = self.current_widget.item_data
         url = item_data['url']
@@ -813,10 +1067,13 @@ class MainWindow(QMainWindow):
         playlist_index = item_data.get('playlist_index')
         playlist_count = item_data.get('playlist_count')
         out_dir = item_data.get('playlist_output_dir', output_dir)
+        title = item_data.get('title')
+        author = item_data.get('uploader') or item_data.get('channel') or item_data.get('artist')
         
         self.worker = WorkerThread(
             url, media_type, out_dir, quality, cookies, subtitles,
-            playlist_index=playlist_index, playlist_count=playlist_count
+            playlist_index=playlist_index, playlist_count=playlist_count,
+            title=title, author=author
         )
         self.worker.progress_signal.connect(self.update_progress)
         self.worker.finished_signal.connect(self.task_finished)
@@ -849,28 +1106,40 @@ class MainWindow(QMainWindow):
             status_text = "Skipped"
         
         if success:
+            self.current_widget.is_retry = False
             self.success_count += 1
+            if self.current_track_start_time is not None:
+                dur = time.time() - self.current_track_start_time
+                if dur > 0.4:
+                    self.track_durations.append(dur)
+                self.current_track_start_time = None
             if was_skipped:
                 self.current_widget.set_status("Skipped / Already downloaded", "Success")
+                status_text = "Skipped"
             else:
                 self.current_widget.set_status("Finished", "Success")
+                status_text = "Completed"
         else:
+            self.current_track_start_time = None
             self.error_count += 1
+            friendly = friendly_error(error_msg)
             self.current_widget.set_status("Error", "Error")
             self.failed_queue.append((item_data, error_msg))
+            status_text = f"Error: {friendly}"
             
         self.history.add_entry(title, author, url, media_type, status_text)
         self.refresh_history()
         
         self.current_widget = None
-        self.process_next_in_queue()
+        QTimer.singleShot(250, self.process_next_in_queue)
         
     def show_failed_summary(self):
         if not self.failed_queue: return
         
         msg = f"Failed to download {len(self.failed_queue)} track(s):\n\n"
         for i, (item_data, error) in enumerate(self.failed_queue[:5]):
-            msg += f"• {item_data.get('title', 'Unknown')} - {error}\n"
+            friendly = friendly_error(error)
+            msg += f"• {item_data.get('title', 'Unknown')} — {friendly}\n"
         if len(self.failed_queue) > 5:
             msg += f"... and {len(self.failed_queue) - 5} more.\n"
             
@@ -879,12 +1148,15 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(self, "Download Errors", msg, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         
         if reply == QMessageBox.StandardButton.Yes:
-            items_to_retry = [item for item, err in self.failed_queue]
             self.failed_queue.clear()
             
-            for item in items_to_retry:
-                self._add_single_item_to_queue(item)
-                
+            # Reset all failed widgets in the queue back to Pending with retry flag and yellow text
+            for widget in self.download_queue:
+                if widget.status_state == "Error":
+                    widget.is_retry = True
+                    widget.set_status("Retrying...", "Pending")
+                    
+            self.update_queue_ui()
             self.start_queue()
         else:
             self.failed_queue.clear()

@@ -1,27 +1,45 @@
 import yt_dlp
+from core.downloader import clean_media_url
 
 def get_video_preview(url: str) -> dict:
+    clean_url = clean_media_url(url)
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
         'extract_flat': 'in_playlist',
         'color': 'no_color',
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(clean_url, download=False)
             
             if info.get('_type') == 'playlist' or 'entries' in info:
                 entries = []
+                playlist_thumb = None
+                if info.get('thumbnails'):
+                    playlist_thumb = info.get('thumbnails')[-1].get('url')
+                elif info.get('thumbnail'):
+                    playlist_thumb = info.get('thumbnail')
+
                 for entry in info.get('entries', []):
                     if entry:
                         thumbnail_url = None
                         if entry.get('thumbnails'):
                             thumbnail_url = entry.get('thumbnails')[-1].get('url')
+                        elif entry.get('thumbnail'):
+                            thumbnail_url = entry.get('thumbnail')
+                        
+                        if not playlist_thumb and thumbnail_url:
+                            playlist_thumb = thumbnail_url
+                            
                         entries.append({
                             'title': entry.get('title', 'Unknown'),
-                            'url': entry.get('url', url),
+                            'url': entry.get('url', clean_url),
                             'duration': entry.get('duration'),
                             'thumbnail': thumbnail_url,
                             'uploader': entry.get('uploader'),
@@ -30,6 +48,7 @@ def get_video_preview(url: str) -> dict:
                 return {
                     'is_playlist': True,
                     'title': info.get('title', 'Playlist'),
+                    'thumbnail': playlist_thumb,
                     'count': len(entries),
                     'entries': entries
                 }
@@ -57,7 +76,7 @@ def get_video_preview(url: str) -> dict:
                     elif 'opus' in acodec: formats_available.add('Audio (Opus)')
                     elif 'mp3' in acodec: formats_available.add('Audio (MP3)')
             
-            formats_available.update(['Audio (Best)', 'Video (Best)', 'Audio (FLAC)'])
+            formats_available.update(['Audio (Best)', 'Video (Best)', 'Audio (FLAC)', 'Audio (WAV)'])
             
             return {
                 'is_playlist': False,

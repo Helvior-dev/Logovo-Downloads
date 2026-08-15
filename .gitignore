@@ -17,9 +17,26 @@ ENV/
 env.bak/
 venv.bak/
 
-# App Logs / Settings
+# Cookies & sensitive files
+*cookie*
+*cookies*.txt
+cookies.txt
+*.cookie
+
+# App Logs / Settings / Dynamic files
 app_logs.txt
+failed_downloads.txt
+downloaded_archive.txt
+stem_vid_map.json
+playlist_order.txt
 downloads/
+
+# OS / Temporary
+desktop.ini
+*.ico
+*.tmp
+.DS_Store
+Thumbs.db
 
 # IDEs
 .idea/

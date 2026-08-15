@@ -17,6 +17,7 @@ class SettingsManager:
             'download_path': str(Path.home() / 'Downloads'),
             'download_subtitles': False,
             'subtitles_langs': 'all', # e.g. 'en, ru' or 'all'
+            'playlist_cover_mode': 'both', # 'both', 'icon', 'file', 'none'
             'use_cookies': False,
             'cookie_source_type': 'browser', # 'browser' or 'file'
             'cookie_browser': 'chrome',

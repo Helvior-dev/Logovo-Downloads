@@ -80,6 +80,20 @@ def get_stylesheet():
     QLineEdit:focus, QComboBox:focus {
         border: 1px solid #1b7a78;
     }
+    QComboBox QAbstractItemView {
+        background-color: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 6px;
+        color: #e2e8f0;
+        selection-background-color: #1e293b;
+        selection-color: #38bdf8;
+        padding: 4px;
+        outline: none;
+    }
+    QComboBox QAbstractItemView::item {
+        min-height: 26px;
+        padding: 4px 8px;
+    }
     QProgressBar {
         background-color: #0f172a;
         border: 1px solid #1e293b;
