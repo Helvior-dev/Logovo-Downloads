@@ -1107,7 +1107,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(lbl_core)
         core_layout = QHBoxLayout()
         btn_check_update = QPushButton("Check for yt-dlp Updates")
-        btn_check_update.clicked.connect(self.check_ytdlp_updates)
+        btn_check_update.clicked.connect(self.manual_check_ytdlp_update)
         core_layout.addWidget(btn_check_update)
         core_layout.addSpacing(20)
         self.chk_auto_update = QCheckBox("Check updates on startup")
@@ -1194,12 +1194,12 @@ class MainWindow(QMainWindow):
         self.v_naming_input.setText(default_pattern)
         self.settings.set('video_naming_pattern', default_pattern)
 
-    def _on_embed_all_video_meta_toggled(self, checked: bool):
+    def _on_embed_all_v_meta_toggled(self, checked: bool):
         self.settings.set('embed_all_video_metadata', checked)
-        self._update_video_meta_checkboxes_state(checked)
+        self._update_v_meta_checkboxes_state(checked)
 
-    def _update_video_meta_checkboxes_state(self, embed_all: bool):
-        for k, chk in getattr(self, 'video_tag_checkboxes', {}).items():
+    def _update_v_meta_checkboxes_state(self, embed_all: bool):
+        for k, chk in getattr(self, 'v_tag_checkboxes', {}).items():
             if embed_all:
                 chk.blockSignals(True)
                 chk.setChecked(True)
@@ -1212,9 +1212,9 @@ class MainWindow(QMainWindow):
                 chk.blockSignals(False)
                 chk.setEnabled(True)
 
-    def _on_video_metadata_tag_toggled(self):
-        if not self.chk_embed_all_video_meta.isChecked():
-            current_tags = {k: chk.isChecked() for k, chk in self.video_tag_checkboxes.items()}
+    def _on_v_metadata_tag_toggled(self):
+        if not self.chk_embed_all_v_meta.isChecked():
+            current_tags = {k: chk.isChecked() for k, chk in self.v_tag_checkboxes.items()}
             self.settings.set('video_metadata_tags', current_tags)
 
     # ─── TAB 5: ABOUT ──────────────────────────────────────────────────────────
