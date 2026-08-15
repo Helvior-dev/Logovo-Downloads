@@ -1,31 +1,33 @@
 # Logovo Downloads
 
 <p align="center">
-  <b>Modern, aesthetic, and resilient media downloader with PyQt6 and yt-dlp</b>
+  <b>Modern, aesthetic, and resilient multi-threaded media downloader with PyQt6 and yt-dlp</b>
 </p>
 
 ---
 
 ## 🌟 Overview
 
-**Logovo Downloads** is a state-of-the-art graphical interface (GUI) designed for seamless, high-quality audio and video downloads from YouTube, YouTube Music, SoundCloud, Twitch, Spotify, and hundreds of other media platforms.
+**Logovo Downloads** is a state-of-the-art graphical application (GUI) designed for high-speed, parallel audio and video downloads from YouTube, YouTube Music, SoundCloud, Twitch, Spotify, and hundreds of other media platforms.
 
-Built on top of `yt-dlp` and `PyQt6`, it delivers an ultra-smooth experience with automated post-processing, resilient multi-client retry strategies, Windows folder custom icons, and real-time queue telemetry.
+Built with `PyQt6` and `yt-dlp`, it delivers an ultra-smooth experience with multi-threaded parallel downloads, 1-click playlist synchronization, automated post-processing, Windows folder custom icons, real-time queue telemetry, and background core updater.
 
 ---
 
 ## ✨ Features
 
-- 🎨 **Sleek Modern UI:** Clean dark-slate design with fluid queue management and micro-animations.
-- 📁 **Smart Playlist Modes:**
-  - **New Playlist:** Auto-creates folder in any custom directory or default Downloads, downloads the real playlist cover, and automatically applies it as a multi-resolution Windows folder icon (`folder_icon.ico` + `desktop.ini`).
-  - **Continue Existing Folder:** Synchronizes missing tracks with orphan detection (prompts to remove local files deleted from online playlists) without overriding folder icons.
-- 🖼️ **1:1 Square Cover Cropping & Tagging:** Center-crops album art to a perfect square ($1000\times1000$) with Lanczos filtering and writes clean ID3/FLAC/Opus/MP4 metadata tags (Track Number, Artist, Album, Title).
+- ⚡ **Multi-Threaded Parallel Downloads:** Download 1 to 6 tracks simultaneously with individual progress bars, live speeds, and anti-ban jitter protection.
+- 📁 **Tracked Playlists Library & 1-Click Sync:** Keep a permanent list of your favorite playlists in the **PLAYLISTS** tab. Sync all or individual playlists with one click — detects missing tracks and removes deleted orphans.
+- 🎨 **Smart Folder Icons & Artwork:** Automatically extracts high-resolution playlist covers, converts them to multi-resolution Windows folder icons (`folder_icon.ico` + `desktop.ini`), and saves original `cover.png` files.
+- 🏷️ **Custom File Naming Templates:** Format filenames freely using interactive tokens (`{artist}`, `{title}`, `{index}`, `{album}`, `{year}`) with 1-click presets.
+- 🔄 **`yt-dlp` Core Auto-Updater:** Automatically checks for newer `yt-dlp` releases on startup (or via Settings) and upgrades the core in the background without reinstalling the app.
+- 🖼️ **1:1 Square Cover Cropping & Tagging:** Center-crops album art to a crisp square ($1000\times1000$) and writes clean ID3/FLAC/Opus/MP4 metadata tags (Track Number/Total, Artist, Album, Title).
 - 🛡️ **Zero-403 Multi-Client Resilience:** Built-in automatic client rotation (`android`, `ios`, `mweb`, `web`) and spacing protection against YouTube HTTP 403 Forbidden errors.
-- ⚡ **Real-Time Queue Telemetry:** Live indicators for Downloaded size vs Total size (e.g. `💾 32 MB / 360 MB`) and dynamic Time Remaining (ETA) based on rolling download speeds.
-- ⚙️ **Customizable Artwork Settings:** Choose between setting Windows folder icons, saving `cover.png` in original quality, doing both, or disabling cover saving.
-- 🔄 **History & Error Highlighting:** Interactive history table with color-coded statuses (Completed, Error, Skipped) and human-friendly error descriptions.
-- 🍪 **Cookie Extraction Support:** Easily bypass age restrictions and login walls via browser cookies or `cookies.txt`.
+- 🚥 **Speed Limiter:** Bandwidth throttling options (`Unlimited`, `1 MB/s`, `3 MB/s`, `5 MB/s`, `10 MB/s`, `20 MB/s`) to prevent network congestion.
+- 🌙 **Post-Download Actions:** Auto-shutdown PC or Sleep/Suspend with a 30-second cancellation countdown when long queues finish.
+- 📊 **Real-Time Queue Telemetry:** Live indicators for Downloaded size vs Total size (e.g. `💾 32 MB / 360 MB`) and dynamic Time Remaining (ETA).
+- 🔔 **Windows Tray & Toast Notifications:** Native Windows notifications with system sound when downloads finish.
+- 🍪 **Cookie Extraction Support:** Bypass age restrictions and login walls via browser cookies or `cookies.txt`.
 
 ---
 

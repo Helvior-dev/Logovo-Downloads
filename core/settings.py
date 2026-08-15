@@ -18,6 +18,11 @@ class SettingsManager:
             'download_subtitles': False,
             'subtitles_langs': 'all', # e.g. 'en, ru' or 'all'
             'playlist_cover_mode': 'both', # 'both', 'icon', 'file', 'none'
+            'max_concurrent_downloads': 3, # 1 to 6
+            'naming_pattern': '{artist} - {title}', # e.g. '{artist} - {title}', '{index}. {artist} - {title}'
+            'speed_limit': 'Unlimited', # 'Unlimited', '1 MB/s', '3 MB/s', '5 MB/s', '10 MB/s', '20 MB/s'
+            'post_download_action': 'Disabled', # 'Disabled', 'Shutdown PC', 'Sleep / Suspend'
+            'check_ytdlp_updates_on_startup': True,
             'use_cookies': False,
             'cookie_source_type': 'browser', # 'browser' or 'file'
             'cookie_browser': 'chrome',
@@ -57,16 +62,18 @@ class SettingsManager:
         with open(self.settings_file, 'w', encoding='utf-8') as f:
             json.dump(self.settings, f, indent=4)
 
-    def get(self, key):
-        return self.settings.get(key)
+    def get(self, key, default=None):
+        return self.settings.get(key, default if default is not None else self.default_settings.get(key))
 
     def set(self, key, value):
         self.settings[key] = value
         self.save()
         
     def get_quality(self, platform):
-        return self.settings['quality_settings'].get(platform, 'Best video' if platform == 'YouTube' else 'Best')
+        return self.settings.get('quality_settings', {}).get(platform, 'Best video' if platform == 'YouTube' else 'Best')
         
     def set_quality(self, platform, quality):
+        if 'quality_settings' not in self.settings:
+            self.settings['quality_settings'] = self.default_settings['quality_settings'].copy()
         self.settings['quality_settings'][platform] = quality
         self.save()

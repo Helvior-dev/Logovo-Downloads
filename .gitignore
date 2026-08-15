@@ -41,3 +41,6 @@ Thumbs.db
 # IDEs
 .idea/
 .vscode/
+
+# Scratch & temp test folders
+scratch/

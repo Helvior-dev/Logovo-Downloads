@@ -34,6 +34,10 @@ def get_video_preview(url: str) -> dict:
                         elif entry.get('thumbnail'):
                             thumbnail_url = entry.get('thumbnail')
                         
+                        entry_id = entry.get('id') or (entry.get('url', '').split('v=')[-1].split('&')[0])
+                        if not thumbnail_url and entry_id and len(entry_id) == 11:
+                            thumbnail_url = f"https://i.ytimg.com/vi/{entry_id}/hqdefault.jpg"
+
                         if not playlist_thumb and thumbnail_url:
                             playlist_thumb = thumbnail_url
                             
@@ -45,6 +49,10 @@ def get_video_preview(url: str) -> dict:
                             'uploader': entry.get('uploader'),
                             'channel': entry.get('channel')
                         })
+
+                if not playlist_thumb and entries and entries[0].get('thumbnail'):
+                    playlist_thumb = entries[0]['thumbnail']
+
                 return {
                     'is_playlist': True,
                     'title': info.get('title', 'Playlist'),

@@ -24,6 +24,10 @@ class ThumbnailFetcher(QThread):
 class QueueItemWidget(QWidget):
     remove_requested = pyqtSignal(object)  # Emits self when X is clicked
 
+    @property
+    def format_type(self) -> str:
+        return self.item_data.get('format', 'Audio')
+
     def __init__(self, item_data, parent=None):
         super().__init__(parent)
         self.item_data = item_data
