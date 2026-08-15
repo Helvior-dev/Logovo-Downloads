@@ -426,67 +426,8 @@ def check_and_clean_archive_if_file_missing(output_dir: Path | str, vid: str, ti
             pass
 
 
-def write_m3u8_playlist(output_dir: Path | str, file_names: Optional[list[str]] = None) -> None:
-    """Generate standard UTF-8 playlist.m3u8 file in output directory with verified existing files."""
-    out = Path(output_dir)
-    if not out.exists():
-        return
-
-    valid_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv", ".webm", ".aac", ".alac"}
-    
-    # 1. Gather all actual media files on disk
-    try:
-        actual_files = {f.name: f for f in out.iterdir() if f.is_file() and f.suffix.lower() in valid_exts}
-    except Exception:
-        return
-    if not actual_files:
-        return
-
-    # 2. Build ordered list of real existing filenames
-    ordered_existing: list[str] = []
-    seen = set()
-
-    # If file_names provided, use them first if they exist on disk
-    if file_names:
-        for fn in file_names:
-            if fn in actual_files and fn not in seen:
-                ordered_existing.append(fn)
-                seen.add(fn)
-
-    # If playlist_order.txt exists, use any remaining files from it
-    order_file = out / "playlist_order.txt"
-    if order_file.exists():
-        try:
-            for ln in order_file.read_text(encoding="utf-8").splitlines():
-                fn = ln.strip()
-                if fn in actual_files and fn not in seen:
-                    ordered_existing.append(fn)
-                    seen.add(fn)
-        except Exception:
-            pass
-
-    # Append any other actual files sorted by modification time
-    remaining = [fn for fn in actual_files if fn not in seen]
-    remaining.sort(key=lambda fn: actual_files[fn].stat().st_mtime)
-    ordered_existing.extend(remaining)
-
-    if not ordered_existing:
-        return
-
-    # Write UTF-8-sig (with BOM) for 100% compatibility across VLC, Windows Media Player, Groove, AIMP, foobar2000
-    m3u8_path = out / "playlist.m3u8"
-    try:
-        lines = ["#EXTM3U\n"]
-        for fn in ordered_existing:
-            clean_title = Path(fn).stem
-            lines.append(f"#EXTINF:-1,{clean_title}\n{fn}\n")
-        m3u8_path.write_text("".join(lines), encoding="utf-8-sig")
-    except Exception as e:
-        print(f"Error writing playlist.m3u8: {e}")
-
-
 def write_playlist_order(output_dir: Path | str, file_names: list[str]) -> None:
-    """Write exact list of filenames to playlist_order.txt and playlist.m3u8 in order."""
+    """Write exact list of filenames to playlist_order.txt in order."""
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     order_file = out / "playlist_order.txt"
@@ -496,11 +437,10 @@ def write_playlist_order(output_dir: Path | str, file_names: list[str]) -> None:
         hide_file(order_file)
     except Exception:
         pass
-    write_m3u8_playlist(out, file_names)
 
 
 def append_playlist_order(output_dir: Path | str, file_name: str) -> None:
-    """Append a filename to playlist_order.txt and playlist.m3u8 if not already listed."""
+    """Append a filename to playlist_order.txt if not already listed."""
     if not file_name:
         return
     out = Path(output_dir)
@@ -520,7 +460,6 @@ def append_playlist_order(output_dir: Path | str, file_name: str) -> None:
             hide_file(order_file)
         except Exception:
             pass
-        write_m3u8_playlist(out, existing)
 
 
 def restore_dates_from_order(output_dir: Path | str) -> int:
@@ -1175,8 +1114,14 @@ def postprocess_audio_file(
             new_stem = new_stem.strip(" -._")
             if new_stem:
                 new_path = path.parent / f"{new_stem}{path.suffix}"
-                if new_path != path and not new_path.exists():
-                    path = path.rename(new_path)
+                if new_path != path:
+                    if new_path.exists():
+                        path = new_path
+                    else:
+                        try:
+                            path = path.rename(new_path)
+                        except Exception:
+                            pass
 
         # File timestamp for Windows / player ordering
         if playlist_index is not None:
@@ -1230,8 +1175,14 @@ def postprocess_video_file(
         new_stem = new_stem.strip(" -._")
         if new_stem:
             new_path = path.parent / f"{new_stem}{path.suffix}"
-            if new_path != path and not new_path.exists():
-                path = path.rename(new_path)
+            if new_path != path:
+                if new_path.exists():
+                    path = new_path
+                else:
+                    try:
+                        path = path.rename(new_path)
+                    except Exception:
+                        pass
 
     # Apply Windows / player timestamp ordering if in a playlist
     if playlist_index is not None:
