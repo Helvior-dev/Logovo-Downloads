@@ -1,5 +1,8 @@
+from pathlib import Path
+
 def get_stylesheet():
-    return """
+    arrow_svg = (Path(__file__).parent.parent / "media" / "down_arrow.svg").resolve().as_posix()
+    css = """
     QMainWindow {
         background-color: #0b0e14;
     }
@@ -64,19 +67,15 @@ def get_stylesheet():
     QComboBox::drop-down {
         subcontrol-origin: padding;
         subcontrol-position: top right;
-        width: 30px;
+        width: 28px;
         border: none;
         background: transparent;
     }
     QComboBox::down-arrow {
-        image: none;
-        border-left: 5px solid transparent;
-        border-right: 5px solid transparent;
-        border-top: 5px solid #94a3b8;
-        border-bottom: 0px solid transparent;
-        width: 0px;
-        height: 0px;
-        margin-right: 12px;
+        image: url("__ARROW_SVG__");
+        width: 10px;
+        height: 10px;
+        margin-right: 10px;
     }
     QLineEdit:focus, QComboBox:focus {
         border: 1px solid #38bdf8;
@@ -257,3 +256,4 @@ def get_stylesheet():
         color: #ffffff;
     }
     """
+    return css.replace("__ARROW_SVG__", arrow_svg)

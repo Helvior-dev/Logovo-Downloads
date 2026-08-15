@@ -391,10 +391,27 @@ def check_and_clean_archive_if_file_missing(output_dir: Path | str, vid: str, ti
             pass
 
 
-def write_playlist_order(output_dir: Path | str, file_names: list[str]) -> None:
-    """Write the ordered list of filenames in playlist_order.txt."""
+def write_m3u8_playlist(output_dir: Path | str, file_names: list[str]) -> None:
+    """Generate standard UTF-8 playlist.m3u8 file in output directory."""
     if not file_names:
         return
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    m3u8_path = out / "playlist.m3u8"
+    try:
+        lines = ["#EXTM3U\n"]
+        for fn in file_names:
+            if not fn:
+                continue
+            clean_title = Path(fn).stem
+            lines.append(f"#EXTINF:-1,{clean_title}\n{fn}\n")
+        m3u8_path.write_text("".join(lines), encoding="utf-8")
+    except Exception as e:
+        print(f"Error writing playlist.m3u8: {e}")
+
+
+def write_playlist_order(output_dir: Path | str, file_names: list[str]) -> None:
+    """Write exact list of filenames to playlist_order.txt and playlist.m3u8 in order."""
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     order_file = out / "playlist_order.txt"
@@ -404,10 +421,11 @@ def write_playlist_order(output_dir: Path | str, file_names: list[str]) -> None:
         hide_file(order_file)
     except Exception:
         pass
+    write_m3u8_playlist(out, file_names)
 
 
 def append_playlist_order(output_dir: Path | str, file_name: str) -> None:
-    """Append a filename to playlist_order.txt if not already listed."""
+    """Append a filename to playlist_order.txt and playlist.m3u8 if not already listed."""
     if not file_name:
         return
     out = Path(output_dir)
@@ -427,6 +445,7 @@ def append_playlist_order(output_dir: Path | str, file_name: str) -> None:
             hide_file(order_file)
         except Exception:
             pass
+        write_m3u8_playlist(out, existing)
 
 
 def restore_dates_from_order(output_dir: Path | str) -> int:
