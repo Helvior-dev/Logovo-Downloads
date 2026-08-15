@@ -126,12 +126,22 @@ def get_stylesheet():
         border-radius: 4px;
     }
     
-    QScrollArea#QueueScrollArea, QScrollArea#SettingsScrollArea {
-        background: transparent;
+    QScrollArea, QScrollArea#QueueScrollArea, QScrollArea#SettingsScrollArea {
+        background-color: #0b0e14;
+        background: #0b0e14;
         border: none;
     }
-    QWidget#QueueContainer, QWidget#SettingsContainer {
-        background: transparent;
+    QScrollArea > QWidget > QWidget, QScrollArea QWidget#qt_scrollarea_viewport {
+        background-color: #0b0e14;
+        background: #0b0e14;
+    }
+    QWidget#SettingsTab, QWidget#DownloadsTab, QWidget#PlaylistsTab, QWidget#HistoryTab, QWidget#AboutTab {
+        background-color: #0b0e14;
+        background: #0b0e14;
+    }
+    QWidget#QueueContainer, QWidget#SettingsContainer, QWidget#SettingsScrollWrapper {
+        background-color: #0b0e14;
+        background: #0b0e14;
     }
     QWidget#QueueItemCard {
         background-color: #1e293b;
