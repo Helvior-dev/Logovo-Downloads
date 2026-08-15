@@ -1,7 +1,13 @@
+import sys
 from pathlib import Path
 
+def get_resource_path(rel: str) -> Path:
+    if hasattr(sys, '_MEIPASS'):
+        return Path(sys._MEIPASS) / rel
+    return Path(__file__).resolve().parent.parent / rel
+
 def get_stylesheet():
-    arrow_svg = (Path(__file__).parent.parent / "media" / "down_arrow.svg").resolve().as_posix()
+    arrow_svg = get_resource_path("media/down_arrow.svg").resolve().as_posix()
     css = """
     QMainWindow {
         background-color: #0b0e14;

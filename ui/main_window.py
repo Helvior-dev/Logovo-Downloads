@@ -41,7 +41,7 @@ from core.updater import (
     CheckUpdateThread,
     UpgradeWorker,
 )
-from ui.styles import get_stylesheet
+from ui.styles import get_stylesheet, get_resource_path
 from ui.queue_item import QueueItemWidget
 from ui.log_viewer_dialog import LogViewerDialog
 
@@ -142,7 +142,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(880, 720)
         self.setStyleSheet(get_stylesheet())
 
-        icon_path = Path(__file__).resolve().parent.parent / "media" / "icon.ico"
+        icon_path = get_resource_path("media/icon.ico")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -193,7 +193,9 @@ class MainWindow(QMainWindow):
 
     def setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(QIcon("media/icon.ico"))
+        icon_path = get_resource_path("media/icon.ico")
+        if icon_path.exists():
+            self.tray_icon.setIcon(QIcon(str(icon_path)))
 
         tray_menu = QMenu()
         show_action = QAction("Restore", self)

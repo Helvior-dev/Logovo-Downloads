@@ -5,6 +5,11 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 from ui.main_window import MainWindow
 
+def get_resource_path(relative_path: str) -> Path:
+    if hasattr(sys, '_MEIPASS'):
+        return Path(sys._MEIPASS) / relative_path
+    return Path(__file__).resolve().parent / relative_path
+
 def main():
     try:
         import ctypes
@@ -15,7 +20,7 @@ def main():
 
     app = QApplication(sys.argv)
     
-    icon_path = Path(__file__).parent / "media" / "icon.ico"
+    icon_path = get_resource_path("media/icon.ico")
     if icon_path.exists():
         app_icon = QIcon(str(icon_path))
         app.setWindowIcon(app_icon)
