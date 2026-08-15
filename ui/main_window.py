@@ -97,6 +97,7 @@ class WorkerThread(QThread):
         author=None,
         speed_limit=None,
         naming_pattern=None,
+        settings=None,
     ):
         super().__init__()
         self.url = url
@@ -111,9 +112,10 @@ class WorkerThread(QThread):
         self.author = author
         self.speed_limit = speed_limit
         self.naming_pattern = naming_pattern
+        self.settings = settings
 
     def run(self):
-        downloader = MediaDownloader(output_dir=self.output_dir)
+        downloader = MediaDownloader(output_dir=self.output_dir, settings=self.settings)
 
         def progress_callback(d):
             self.progress_signal.emit(d)
@@ -454,7 +456,20 @@ class MainWindow(QMainWindow):
             path_lbl = QLabel(f"📁 {p.get('folder_path', '')}")
             path_lbl.setStyleSheet("font-size: 11px; color: #94a3b8;")
 
-            meta_lbl = QLabel(f"Tracks: <b>{p.get('track_count', 0)}</b>  |  Last Synced: {p.get('last_synced', 'Never')}")
+            media_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac", ".mp4", ".mkv", ".webm", ".avi", ".mov"}
+            downloaded_count = 0
+            if folder_str and os.path.exists(folder_str):
+                try:
+                    for entry in os.scandir(folder_str):
+                        if entry.is_file():
+                            ext = os.path.splitext(entry.name)[1].lower()
+                            if ext in media_exts:
+                                downloaded_count += 1
+                except Exception:
+                    pass
+
+            pl_track_count = p.get('track_count', 0)
+            meta_lbl = QLabel(f"In Folder: <b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks  |  Last Synced: {p.get('last_synced', 'Never')}")
             meta_lbl.setStyleSheet("font-size: 11px; color: #38bdf8;")
 
             info_layout.addWidget(title_lbl)
@@ -729,11 +744,21 @@ class MainWindow(QMainWindow):
         scroll.setObjectName("SettingsScrollArea")
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
+        scroll_wrapper = QWidget()
+        scroll_wrapper.setObjectName("SettingsScrollWrapper")
+        outer_h_layout = QHBoxLayout(scroll_wrapper)
+        outer_h_layout.setContentsMargins(0, 10, 0, 20)
+
         content = QWidget()
         content.setObjectName("SettingsContainer")
+        content.setMaximumWidth(820)
         layout = QVBoxLayout(content)
         layout.setSpacing(14)
         layout.setContentsMargins(15, 10, 15, 15)
+
+        outer_h_layout.addStretch(1)
+        outer_h_layout.addWidget(content)
+        outer_h_layout.addStretch(1)
 
         def make_combo(items=None, min_width=None):
             cb = QComboBox()
@@ -959,142 +984,130 @@ class MainWindow(QMainWindow):
         v_badges_row.addWidget(QLabel("Insert token:"))
         v_tokens = [("{title}", "Title"), ("{author}", "Author"), ("{resolution}", "Resolution"), ("{fps}", "FPS"), ("{year}", "Year"), ("{index}", "Index")]
         for token, label in v_tokens:
-            btn_tag = QPushButton(token)
-            btn_tag.setObjectName("TagPill")
-            btn_tag.clicked.connect(lambda _, t=token: self.insert_video_naming_token(t))
-            v_badges_row.addWidget(btn_tag)
+            btn_v_tag = QPushButton(token)
+            btn_v_tag.setObjectName("TagPill")
+            btn_v_tag.clicked.connect(lambda _, t=token: self.insert_video_naming_token(t))
+            v_badges_row.addWidget(btn_v_tag)
         v_badges_row.addStretch()
         video_layout.addLayout(v_badges_row)
 
-        # Container & Codec Grid (2 Columns)
-        format_grid = QGridLayout()
-        format_grid.setHorizontalSpacing(20)
-        format_grid.setVerticalSpacing(8)
+        # Preferred Container & Codec
+        v_fmt_layout = QGridLayout()
+        v_fmt_layout.setHorizontalSpacing(20)
+        v_fmt_layout.setVerticalSpacing(8)
 
-        format_grid.addWidget(QLabel("Preferred Container:"), 0, 0)
-        self.video_container_combo = make_combo()
-        self.video_container_combo.addItem("MP4 (Universal Compatibility)", "mp4")
-        self.video_container_combo.addItem("MKV (Full Audio/Subtitle Support)", "mkv")
-        self.video_container_combo.addItem("Auto (Best Available)", "auto")
-        cur_vc = self.settings.get('video_container', 'mp4')
-        idx = self.video_container_combo.findData(cur_vc)
-        if idx >= 0:
-            self.video_container_combo.setCurrentIndex(idx)
-        self.video_container_combo.currentIndexChanged.connect(
-            lambda: self.settings.set('video_container', self.video_container_combo.currentData())
+        v_fmt_layout.addWidget(QLabel("Preferred Container:"), 0, 0)
+        self.v_container_combo = make_combo(["MP4 (Universal Compatibility)", "MKV (Matroska)"])
+        curr_vc = self.settings.get('video_container', 'mp4')
+        self.v_container_combo.setCurrentIndex(1 if curr_vc == 'mkv' else 0)
+        self.v_container_combo.currentIndexChanged.connect(
+            lambda: self.settings.set('video_container', 'mkv' if self.v_container_combo.currentIndex() == 1 else 'mp4')
         )
-        format_grid.addWidget(self.video_container_combo, 0, 1)
+        v_fmt_layout.addWidget(self.v_container_combo, 0, 1)
 
-        format_grid.addWidget(QLabel("Preferred Video Codec:"), 1, 0)
-        self.video_codec_combo = make_combo()
-        self.video_codec_combo.addItem("Auto (Best Quality)", "auto")
-        self.video_codec_combo.addItem("H.264 (AVC - Maximum Compatibility)", "h264")
-        self.video_codec_combo.addItem("H.265 (HEVC - High Efficiency)", "h265")
-        self.video_codec_combo.addItem("VP9 / AV1 (High-Res 4K/8K 60fps)", "vp9_av1")
-        cur_vcodec = self.settings.get('video_codec', 'auto')
-        idx2 = self.video_codec_combo.findData(cur_vcodec)
-        if idx2 >= 0:
-            self.video_codec_combo.setCurrentIndex(idx2)
-        self.video_codec_combo.currentIndexChanged.connect(
-            lambda: self.settings.set('video_codec', self.video_codec_combo.currentData())
+        v_fmt_layout.addWidget(QLabel("Preferred Video Codec:"), 1, 0)
+        self.v_codec_combo = make_combo(["Auto (Best Quality)", "H.264 / AVC (Maximum Compatibility)", "H.265 / HEVC (High Efficiency)", "VP9 / AV1 (Highest Resolution 4K+)"])
+        curr_vcodec = self.settings.get('video_codec', 'auto')
+        codec_map = {'auto': 0, 'h264': 1, 'h265': 2, 'vp9_av1': 3}
+        self.v_codec_combo.setCurrentIndex(codec_map.get(curr_vcodec, 0))
+        self.v_codec_combo.currentIndexChanged.connect(
+            lambda: self.settings.set('video_codec', ['auto', 'h264', 'h265', 'vp9_av1'][self.v_codec_combo.currentIndex()])
         )
-        format_grid.addWidget(self.video_codec_combo, 1, 1)
-        format_grid.setColumnStretch(1, 1)
-        video_layout.addLayout(format_grid)
+        v_fmt_layout.addWidget(self.v_codec_combo, 1, 1)
+        v_fmt_layout.setColumnStretch(1, 1)
+        video_layout.addLayout(v_fmt_layout)
 
-        # Subtitles Section (Clean 2 Rows)
-        subs_section = QVBoxLayout()
-        subs_section.setSpacing(6)
+        # Subtitles (Video)
+        v_subs_section = QVBoxLayout()
+        v_subs_section.setSpacing(6)
         self.chk_subtitles = QCheckBox("Download subtitles (if available)")
         self.chk_subtitles.setChecked(self.settings.get('download_subtitles', False))
         self.chk_subtitles.toggled.connect(self.toggle_subs_setting)
-        subs_section.addWidget(self.chk_subtitles)
+        v_subs_section.addWidget(self.chk_subtitles)
 
-        subs_lang_row = QHBoxLayout()
-        subs_lang_row.setContentsMargins(22, 0, 0, 0)
+        v_subs_lang_row = QHBoxLayout()
+        v_subs_lang_row.setContentsMargins(22, 0, 0, 0)
         self.lbl_video_subs_lang = QLabel("Subtitles Language:")
-        subs_lang_row.addWidget(self.lbl_video_subs_lang)
+        v_subs_lang_row.addWidget(self.lbl_video_subs_lang)
         self.video_subs_lang_combo = make_combo()
         self.video_subs_lang_combo.addItem("Original / Uploaded Only", "orig")
         self.video_subs_lang_combo.addItem("All Available Languages", "all")
         self.video_subs_lang_combo.addItem("English (en)", "en")
         self.video_subs_lang_combo.addItem("Russian (ru)", "ru")
         self.video_subs_lang_combo.addItem("Ukrainian (uk)", "uk")
-        cur_v_subs_lang = self.settings.get('subtitles_langs', 'orig')
-        v_idx = self.video_subs_lang_combo.findData(cur_v_subs_lang)
+        cur_v_lang = self.settings.get('subtitles_langs', 'orig')
+        v_idx = self.video_subs_lang_combo.findData(cur_v_lang)
         if v_idx >= 0:
             self.video_subs_lang_combo.setCurrentIndex(v_idx)
         self.video_subs_lang_combo.currentIndexChanged.connect(
             lambda: self.settings.set('subtitles_langs', self.video_subs_lang_combo.currentData())
         )
-        subs_lang_row.addWidget(self.video_subs_lang_combo, 1)
-        subs_section.addLayout(subs_lang_row)
+        v_subs_lang_row.addWidget(self.video_subs_lang_combo, 1)
+        v_subs_section.addLayout(v_subs_lang_row)
 
-        is_v_sub = self.settings.get('download_subtitles', False)
-        self.lbl_video_subs_lang.setEnabled(is_v_sub)
-        self.video_subs_lang_combo.setEnabled(is_v_sub)
+        is_v_subs = self.settings.get('download_subtitles', False)
+        self.lbl_video_subs_lang.setEnabled(is_v_subs)
+        self.video_subs_lang_combo.setEnabled(is_v_subs)
+        video_layout.addLayout(v_subs_section)
 
-        video_layout.addLayout(subs_section)
-
-        # Video Metadata Tags Section
+        # Embedded Video Metadata Tags Section
         v_meta_section_lbl = QLabel("Embedded Video Metadata Tags:")
         v_meta_section_lbl.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 6px;")
         video_layout.addWidget(v_meta_section_lbl)
 
-        self.chk_embed_all_video_meta = QCheckBox("Embed all video metadata (Recommended)")
+        self.chk_embed_all_v_meta = QCheckBox("Embed all video metadata (Recommended)")
         is_embed_all_v = self.settings.get('embed_all_video_metadata', True)
-        self.chk_embed_all_video_meta.setChecked(is_embed_all_v)
-        video_layout.addWidget(self.chk_embed_all_video_meta)
+        self.chk_embed_all_v_meta.setChecked(is_embed_all_v)
+        video_layout.addWidget(self.chk_embed_all_v_meta)
 
-        self.video_meta_tags_widget = QWidget()
-        v_meta_grid = QGridLayout(self.video_meta_tags_widget)
+        self.v_meta_tags_widget = QWidget()
+        v_meta_grid = QGridLayout(self.v_meta_tags_widget)
         v_meta_grid.setContentsMargins(20, 2, 0, 2)
         v_meta_grid.setHorizontalSpacing(30)
         v_meta_grid.setVerticalSpacing(6)
 
-        v_stored_tags = self.settings.get('video_metadata_tags') or {}
-        self.chk_vmeta_title_desc = QCheckBox("Video Title & Description")
-        self.chk_vmeta_author = QCheckBox("Channel / Creator Name")
-        self.chk_vmeta_year = QCheckBox("Release Date / Year")
-        self.chk_vmeta_thumbnail = QCheckBox("Embed Video Thumbnail (Cover Poster)")
-        self.chk_vmeta_chapters = QCheckBox("Embed Chapter Markers (Timestamps)")
-        self.chk_vmeta_subtitles = QCheckBox("Embed Soft Subtitles (if available)")
+        stored_v_tags = self.settings.get('video_metadata_tags') or {}
+        self.chk_v_meta_title = QCheckBox("Video Title / Description")
+        self.chk_v_meta_channel = QCheckBox("Channel / Creator Name")
+        self.chk_v_meta_year = QCheckBox("Release Date / Year")
+        self.chk_v_meta_thumbnail = QCheckBox("Embed Video Thumbnail (Cover Poster)")
+        self.chk_v_meta_subtitles = QCheckBox("Embed Soft Subtitles Stream")
+        self.chk_v_meta_chapters = QCheckBox("Embed Video Chapters Markers")
 
-        self.video_tag_checkboxes = {
-            'title_desc': self.chk_vmeta_title_desc,
-            'author': self.chk_vmeta_author,
-            'year': self.chk_vmeta_year,
-            'thumbnail': self.chk_vmeta_thumbnail,
-            'chapters': self.chk_vmeta_chapters,
-            'subtitles': self.chk_vmeta_subtitles,
+        self.v_tag_checkboxes = {
+            'title': self.chk_v_meta_title,
+            'channel': self.chk_v_meta_channel,
+            'year': self.chk_v_meta_year,
+            'thumbnail': self.chk_v_meta_thumbnail,
+            'subtitles': self.chk_v_meta_subtitles,
+            'chapters': self.chk_v_meta_chapters,
         }
 
-        for k, chk in self.video_tag_checkboxes.items():
-            val = v_stored_tags.get(k, True)
+        for k, chk in self.v_tag_checkboxes.items():
+            val = stored_v_tags.get(k, True)
             chk.setChecked(val)
-            chk.toggled.connect(self._on_video_metadata_tag_toggled)
+            chk.toggled.connect(self._on_v_metadata_tag_toggled)
 
-        v_meta_grid.addWidget(self.chk_vmeta_title_desc, 0, 0)
-        v_meta_grid.addWidget(self.chk_vmeta_author, 0, 1)
-        v_meta_grid.addWidget(self.chk_vmeta_year, 1, 0)
-        v_meta_grid.addWidget(self.chk_vmeta_thumbnail, 1, 1)
-        v_meta_grid.addWidget(self.chk_vmeta_chapters, 2, 0)
-        v_meta_grid.addWidget(self.chk_vmeta_subtitles, 2, 1)
+        v_meta_grid.addWidget(self.chk_v_meta_title, 0, 0)
+        v_meta_grid.addWidget(self.chk_v_meta_channel, 0, 1)
+        v_meta_grid.addWidget(self.chk_v_meta_year, 1, 0)
+        v_meta_grid.addWidget(self.chk_v_meta_thumbnail, 1, 1)
+        v_meta_grid.addWidget(self.chk_v_meta_subtitles, 2, 0)
+        v_meta_grid.addWidget(self.chk_v_meta_chapters, 2, 1)
 
-        video_layout.addWidget(self.video_meta_tags_widget)
-        self.chk_embed_all_video_meta.toggled.connect(self._on_embed_all_video_meta_toggled)
-        self._update_video_meta_checkboxes_state(is_embed_all_v)
+        video_layout.addWidget(self.v_meta_tags_widget)
+        self.chk_embed_all_v_meta.toggled.connect(self._on_embed_all_v_meta_toggled)
+        self._update_v_meta_checkboxes_state(is_embed_all_v)
 
         layout.addWidget(video_group)
 
-        # 5. Downloader Core (yt-dlp)
+        # 5. Core Engine & Updates
+        lbl_core = QLabel("Core Engine")
+        lbl_core.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 8px; margin-bottom: 2px;")
+        layout.addWidget(lbl_core)
         core_layout = QHBoxLayout()
-        core_layout.addWidget(QLabel("Downloader Core (yt-dlp):"))
-        self.lbl_ytdlp_ver = QLabel(f"<b>{get_installed_ytdlp_version()}</b>")
-        self.lbl_ytdlp_ver.setStyleSheet("color: #38bdf8; font-size: 13px;")
-        core_layout.addWidget(self.lbl_ytdlp_ver)
-        btn_check_update = QPushButton("Check for Updates Now")
-        btn_check_update.clicked.connect(self.manual_check_ytdlp_update)
+        btn_check_update = QPushButton("Check for yt-dlp Updates")
+        btn_check_update.clicked.connect(self.check_ytdlp_updates)
         core_layout.addWidget(btn_check_update)
         core_layout.addSpacing(20)
         self.chk_auto_update = QCheckBox("Check updates on startup")
@@ -1104,61 +1117,7 @@ class MainWindow(QMainWindow):
         core_layout.addStretch()
         layout.addLayout(core_layout)
 
-        # 6. Cookies
-        cookie_group = QGroupBox("Cookies")
-        cookie_layout = QVBoxLayout()
-        self.chk_cookies = QCheckBox("Use Cookies")
-        self.chk_cookies.setChecked(self.settings.get('use_cookies'))
-        self.chk_cookies.toggled.connect(self.toggle_cookies)
-        cookie_layout.addWidget(self.chk_cookies)
-
-        self.cookie_options_widget = QWidget()
-        cookie_opt_layout = QVBoxLayout(self.cookie_options_widget)
-        cookie_opt_layout.setContentsMargins(20, 0, 0, 0)
-        cookie_opt_layout.setSpacing(6)
-
-        self.radio_browser = QRadioButton("From browser")
-        self.browser_combo = make_combo(["chrome", "edge", "firefox", "opera", "brave", "vivaldi", "safari"])
-        self.browser_combo.setCurrentText(self.settings.get('cookie_browser'))
-        self.browser_combo.currentTextChanged.connect(lambda t: self.settings.set('cookie_browser', t))
-
-        self.radio_file = QRadioButton("Cookie file")
-        file_layout = QHBoxLayout()
-        self.cookie_file_input = QLineEdit(self.settings.get('cookie_file'))
-        self.cookie_file_input.setReadOnly(True)
-        self.btn_cookie_browse = QPushButton("Select file")
-        self.btn_cookie_browse.setFixedWidth(90)
-        self.btn_cookie_browse.clicked.connect(self.browse_cookie_file)
-        file_layout.addWidget(self.cookie_file_input)
-        file_layout.addWidget(self.btn_cookie_browse)
-
-        cookie_opt_layout.addWidget(self.radio_browser)
-        cookie_opt_layout.addWidget(self.browser_combo)
-        cookie_opt_layout.addWidget(self.radio_file)
-        cookie_opt_layout.addLayout(file_layout)
-
-        self.lbl_cookie_help = QLabel(
-            "Instructions:\n"
-            "• From browser: The selected browser MUST be closed before downloading starts.\n"
-            "• Cookie file: Use the 'Get cookies.txt LOCALLY' extension to export your cookies."
-        )
-        self.lbl_cookie_help.setStyleSheet("color: #94a3b8; font-size: 11px; padding-top: 4px;")
-        cookie_opt_layout.addWidget(self.lbl_cookie_help)
-
-        if self.settings.get('cookie_source_type') == 'browser':
-            self.radio_browser.setChecked(True)
-        else:
-            self.radio_file.setChecked(True)
-
-        self.radio_browser.toggled.connect(lambda c: self.settings.set('cookie_source_type', 'browser') if c else None)
-        self.radio_file.toggled.connect(lambda c: self.settings.set('cookie_source_type', 'file') if c else None)
-
-        cookie_group.setLayout(cookie_layout)
-        cookie_layout.addWidget(self.cookie_options_widget)
-        layout.addWidget(cookie_group)
-        self.toggle_cookies(self.chk_cookies.isChecked())
-
-        # 7. Quality Settings
+        # 6. Quality Settings
         lbl_quality = QLabel("Quality Settings")
         lbl_quality.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 8px; margin-bottom: 2px;")
         layout.addWidget(lbl_quality)
@@ -1188,8 +1147,9 @@ class MainWindow(QMainWindow):
         layout.addLayout(quality_grid)
         layout.addStretch()
 
-        scroll.setWidget(content)
+        scroll.setWidget(scroll_wrapper)
         main_tab_layout = QVBoxLayout(self.settings_tab)
+        main_tab_layout.setContentsMargins(0, 0, 0, 0)
         main_tab_layout.addWidget(scroll)
         self.tabs.addTab(self.settings_tab, "SETTINGS")
 
@@ -1267,7 +1227,7 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #ffffff;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
-        version = QLabel("Version: 1.4.0")
+        version = QLabel("Version: 1.5.0")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)
         btn_layout = QHBoxLayout()
@@ -1381,16 +1341,6 @@ class MainWindow(QMainWindow):
         if folder:
             self.folder_input.setText(folder)
             self.settings.set('download_path', folder)
-
-    def browse_cookie_file(self):
-        file, _ = QFileDialog.getOpenFileName(self, "Select Cookie File", "", "Text Files (*.txt);;All Files (*)")
-        if file:
-            self.cookie_file_input.setText(file)
-            self.settings.set('cookie_file', file)
-
-    def toggle_cookies(self, checked):
-        self.settings.set('use_cookies', checked)
-        self.cookie_options_widget.setEnabled(checked)
 
     def toggle_subs_setting(self, checked):
         self.settings.set('download_subtitles', checked)
@@ -1764,23 +1714,6 @@ class MainWindow(QMainWindow):
         if not self.download_queue or self.is_downloading:
             return
 
-        if self.settings.get('use_cookies') and self.settings.get('cookie_source_type') == 'browser':
-            browser = self.settings.get('cookie_browser')
-            try:
-                tasklist = os.popen(f'tasklist | findstr /I "{browser}.exe"').read()
-                if tasklist.strip():
-                    reply = QMessageBox.question(
-                        self, 
-                        "Browser Running", 
-                        f"To extract cookies from {browser.title()}, it MUST be closed.\n\nDo you want to forcefully close {browser.title()} now?", 
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                    )
-                    if reply == QMessageBox.StandardButton.Yes:
-                        os.system(f'taskkill /IM {browser}.exe /F')
-                        time.sleep(1)
-            except Exception:
-                pass
-
         self.is_downloading = True
         self.success_count = 0
         self.error_count = 0
@@ -1891,12 +1824,7 @@ class MainWindow(QMainWindow):
         elif "tiktok.com" in url: platform = "TikTok"
 
         quality = self.settings.get_quality(platform)
-        cookies = {
-            'use': self.settings.get('use_cookies'),
-            'source': self.settings.get('cookie_source_type'),
-            'browser': self.settings.get('cookie_browser'),
-            'file': self.settings.get('cookie_file')
-        }
+        cookies = None
 
         is_audio = media_type.startswith("Audio")
         global_subs_enabled = self.settings.get('download_audio_lyrics', False) if is_audio else self.settings.get('download_subtitles', False)
@@ -1928,7 +1856,9 @@ class MainWindow(QMainWindow):
         playlist_index = item_data.get('playlist_index')
         playlist_count = item_data.get('playlist_count')
         title = item_data.get('title')
-        author = item_data.get('uploader') or item_data.get('channel') or item_data.get('artist')
+        if not title and hasattr(widget, 'title_label') and widget.title_label:
+            title = widget.title_label.text()
+        author = item_data.get('uploader') or item_data.get('channel') or item_data.get('artist') or item_data.get('author')
 
         speed_limit = self.settings.get('speed_limit')
         naming_pattern = self.settings.get('naming_pattern')
@@ -1943,7 +1873,8 @@ class MainWindow(QMainWindow):
             url, media_type, output_dir, quality, cookies, subtitles,
             playlist_index=playlist_index, playlist_count=playlist_count,
             title=title, author=author,
-            speed_limit=speed_limit, naming_pattern=naming_pattern
+            speed_limit=speed_limit, naming_pattern=naming_pattern,
+            settings=self.settings
         )
 
         worker.progress_signal.connect(lambda d, w=widget: self.update_widget_progress(w, d))

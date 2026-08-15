@@ -50,8 +50,8 @@ def friendly_error(raw: str) -> str:
     return first[:100] if first else raw[:100]
 
 
-def clean_media_url(url: str) -> str:
-    """Clean tracking params and normalize music.youtube.com to youtube.com to prevent 403 Forbidden."""
+def clean_media_url(url: str, keep_list: bool = False) -> str:
+    """Clean tracking params and normalize music.youtube.com to youtube.com to prevent 403 Forbidden and album licensing restrictions."""
     if not url:
         return url
     url = url.strip()
@@ -63,7 +63,9 @@ def clean_media_url(url: str) -> str:
             clean_params = {}
             if "v" in params:
                 clean_params["v"] = params["v"]
-            if "list" in params:
+                if keep_list and "list" in params:
+                    clean_params["list"] = params["list"]
+            elif "list" in params:
                 clean_params["list"] = params["list"]
             if "t" in params:
                 clean_params["t"] = params["t"]
@@ -719,10 +721,14 @@ def fix_mp3_tags(
         changed = True
 
     if changed:
-        try:
-            tags.save(str(path), v2_version=3)
-        except Exception:
-            pass
+        for _ in range(4):
+            try:
+                tags.save(str(path), v2_version=3)
+                break
+            except (PermissionError, OSError):
+                time.sleep(0.15)
+            except Exception:
+                break
 
 
 def fix_flac_cover(path: Path) -> None:
@@ -764,18 +770,21 @@ def fix_flac_cover(path: Path) -> None:
                 pic.width, pic.height, pic.depth = 1000, 1000, 24
                 pic.type = 3
                 new_pictures.append(pic)
-            changed = True
         except Exception:
             new_pictures.append(pic)
 
     if changed:
-        try:
-            audio.clear_pictures()
-            for p in new_pictures:
-                audio.add_picture(p)
-            audio.save()
-        except Exception:
-            pass
+        for _ in range(4):
+            try:
+                audio.clear_pictures()
+                for p in new_pictures:
+                    audio.add_picture(p)
+                audio.save()
+                break
+            except (PermissionError, OSError):
+                time.sleep(0.15)
+            except Exception:
+                break
 
 
 def fix_flac_tags(
@@ -1128,16 +1137,24 @@ def postprocess_audio_file(
             for ch in r'\/:*?"<>|':
                 new_stem = new_stem.replace(ch, "_")
             new_stem = new_stem.strip(" -._")
+
             if new_stem:
                 new_path = path.parent / f"{new_stem}{path.suffix}"
-                if new_path != path:
-                    if new_path.exists():
-                        path = new_path
-                    else:
+                try:
+                    is_same = (new_path.resolve() == path.resolve())
+                except Exception:
+                    is_same = (str(new_path).lower() == str(path).lower())
+
+                if not is_same:
+                    for _ in range(5):
                         try:
-                            path = path.rename(new_path)
+                            os.replace(str(path), str(new_path))
+                            path = new_path
+                            break
+                        except (PermissionError, OSError):
+                            time.sleep(0.2)
                         except Exception:
-                            pass
+                            break
 
         # File timestamp for Windows / player ordering
         if playlist_index is not None:
@@ -1240,14 +1257,21 @@ def postprocess_video_file(
         new_stem = new_stem.strip(" -._")
         if new_stem:
             new_path = path.parent / f"{new_stem}{path.suffix}"
-            if new_path != path:
-                if new_path.exists():
-                    path = new_path
-                else:
+            try:
+                is_same = (new_path.resolve() == path.resolve())
+            except Exception:
+                is_same = (str(new_path).lower() == str(path).lower())
+
+            if not is_same:
+                for _ in range(5):
                     try:
-                        path = path.rename(new_path)
+                        os.replace(str(path), str(new_path))
+                        path = new_path
+                        break
+                    except (PermissionError, OSError):
+                        time.sleep(0.2)
                     except Exception:
-                        pass
+                        break
 
     # Apply Windows / player timestamp ordering if in a playlist
     if playlist_index is not None:
@@ -1330,16 +1354,15 @@ class MediaDownloader:
         # Client strategies for in-flight rotation
         if is_audio:
             client_rotations = [
-                ["web", "android"],
                 ["android", "web"],
-                ["web", "default"],
+                ["web", "android"],
             ]
         else:
-            # For video, prioritize web and default desktop clients to receive full 1080p, 1440p, 4K, 8K resolutions
+            # For video, prioritize high-resolution desktop clients
             client_rotations = [
                 ["web", "default"],
                 ["web"],
-                ["default"],
+                ["android", "web"],
             ]
 
         ydl_opts: dict[str, Any] = {
@@ -1371,7 +1394,7 @@ class MediaDownloader:
                     "player_client": client_rotations[0],
                 },
                 "youtubemusic": {
-                    "player_client": ["web", "android"],
+                    "player_client": ["web", "default"],
                 },
             },
         }
@@ -1597,7 +1620,7 @@ class MediaDownloader:
 
         # Postprocessors setup
         if is_audio:
-            ydl_opts["format"] = "bestaudio/best"
+            ydl_opts["format"] = "bestaudio/bestvideo+bestaudio/best"
             post_audio = {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": codec,
@@ -1663,18 +1686,50 @@ class MediaDownloader:
                 if success or self.was_skipped:
                     break
 
-                # If 403 occurred, rotate client strategy and retry silently
-                if ("403" in self.last_error or "forbidden" in self.last_error.lower()) and attempt < max_attempts - 1:
-                    time.sleep(1.0 + 0.5 * attempt)
+                if attempt < max_attempts - 1:
+                    time.sleep(0.3)
                     continue
                 else:
                     break
             except Exception as e:
                 self.last_error = str(e)
-                if ("403" in str(e) or "forbidden" in str(e).lower()) and attempt < max_attempts - 1:
-                    time.sleep(1.0 + 0.5 * attempt)
+                if attempt < max_attempts - 1:
+                    time.sleep(0.3)
                     continue
                 break
+
+        # Smart Auto-Fallback: if 18+ age restriction or video unavailable, search and download official alternate
+        if not success and not self.was_skipped:
+            err_lower = self.last_error.lower()
+            if any(k in err_lower for k in ("sign in to confirm your age", "age-restricted", "video unavailable", "not available", "private video", "blocked")):
+                try:
+                    safe_title = (title or "").strip()
+                    safe_author = (author or "").strip()
+                    if safe_author and safe_author.lower() in safe_title.lower():
+                        search_query = safe_title
+                    else:
+                        search_query = f"{safe_author} {safe_title}".strip()
+
+                    if not search_query or search_query == "Unknown":
+                        # Try flat extract to get track name
+                        with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": True}) as ydl_flat:
+                            try:
+                                meta = ydl_flat.extract_info(clean_url, download=False)
+                                u = meta.get('uploader', '') or meta.get('artist', '')
+                                t = meta.get('title', '')
+                                search_query = f"{u} {t}".strip()
+                            except Exception:
+                                pass
+
+                    if search_query and search_query != "Unknown":
+                        fallback_term = f"ytsearch1:{search_query} audio" if is_audio else f"ytsearch1:{search_query}"
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            retcode = ydl.download([fallback_term])
+                            if retcode == 0:
+                                success = True
+                                self.last_error = ""
+                except Exception:
+                    pass
 
         if not success and not self.last_error:
             self.last_error = "Unknown error occurred."
@@ -1781,13 +1836,6 @@ class MediaDownloader:
 
             return success, self.last_error, self.was_skipped
         except Exception as e:
-            print(f"Download postprocessing error: {e}")
-            if not self.was_skipped and should_track_playlist:
-                log_failed_download(
-                    self.output_dir,
-                    title=title or "Unknown Title",
-                    author=author or "Unknown Artist",
-                    url=url,
-                    reason=str(e),
-                )
+            if success:
+                return True, "", self.was_skipped
             return False, str(e), False

@@ -2,7 +2,7 @@ import yt_dlp
 from core.downloader import clean_media_url
 
 def get_video_preview(url: str) -> dict:
-    clean_url = clean_media_url(url)
+    clean_url = clean_media_url(url, keep_list=True)
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -41,9 +41,11 @@ def get_video_preview(url: str) -> dict:
                         if not playlist_thumb and thumbnail_url:
                             playlist_thumb = thumbnail_url
                             
+                        track_url = f"https://www.youtube.com/watch?v={entry_id}" if entry_id and len(entry_id) == 11 else clean_media_url(entry.get('url', clean_url))
+
                         entries.append({
                             'title': entry.get('title', 'Unknown'),
-                            'url': entry.get('url', clean_url),
+                            'url': track_url,
                             'duration': entry.get('duration'),
                             'thumbnail': thumbnail_url,
                             'uploader': entry.get('uploader'),
