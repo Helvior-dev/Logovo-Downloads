@@ -75,6 +75,8 @@ def clean_media_url(url: str) -> str:
     return url
 
 
+import shutil
+
 def get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
@@ -85,10 +87,24 @@ def get_ffmpeg_path() -> Optional[str]:
     local_ffmpeg = get_base_dir() / "ffmpeg.exe"
     if local_ffmpeg.exists():
         return str(local_ffmpeg)
+    which_ffmpeg = shutil.which("ffmpeg")
+    if which_ffmpeg:
+        return which_ffmpeg
+    return None
+
+
+def get_ffprobe_path() -> Optional[str]:
+    local_ffprobe = get_base_dir() / "ffprobe.exe"
+    if local_ffprobe.exists():
+        return str(local_ffprobe)
+    which_ffprobe = shutil.which("ffprobe")
+    if which_ffprobe:
+        return which_ffprobe
     return None
 
 
 FFMPEG_PATH = get_ffmpeg_path()
+FFPROBE_PATH = get_ffprobe_path()
 
 
 # ─── Windows File Visibility & Folder Icon Helpers ────────────────────────────
@@ -1136,6 +1152,52 @@ def postprocess_audio_file(
     return path
 
 
+def fix_video_tags(
+    path: Path,
+    artist: Optional[str] = None,
+    title: Optional[str] = None,
+    year: Optional[str] = None,
+    settings: Optional[Any] = None,
+) -> None:
+    """Normalize video metadata tags (especially fixing 4-digit Year for Windows Explorer)."""
+    if MP4 is None or path.suffix.lower() != ".mp4":
+        return
+    try:
+        video = MP4(path)
+        changed = False
+
+        # Fix Year: Windows Explorer parses the MP4 \xa9day atom as a 16-bit int.
+        # If yt-dlp/ffmpeg writes an 8-digit date string like '20241125', it overflows 16-bit int to 56037.
+        # We ensure \xa9day is strictly a clean 4-digit year '2024'.
+        current_day = video.get("\xa9day")
+        if current_day and current_day[0]:
+            clean_year = str(current_day[0]).strip()[:4]
+            if clean_year.isdigit() and len(clean_year) == 4:
+                video["\xa9day"] = [clean_year]
+                changed = True
+        elif year:
+            clean_year = str(year).strip()[:4]
+            if clean_year.isdigit():
+                video["\xa9day"] = [clean_year]
+                changed = True
+
+        if artist and not video.get("\xa9ART"):
+            video["\xa9ART"] = [artist.strip()]
+            changed = True
+
+        if title and not video.get("\xa9nam"):
+            video["\xa9nam"] = [title.strip()]
+            changed = True
+
+        if changed:
+            try:
+                video.save()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def postprocess_video_file(
     file_path: Path | str,
     playlist_index: Optional[int] = None,
@@ -1146,11 +1208,14 @@ def postprocess_video_file(
     fps: Optional[str] = None,
     year: Optional[str] = None,
     naming_pattern: Optional[str] = None,
+    settings: Optional[Any] = None,
 ) -> Path:
-    """Apply custom naming pattern and timestamps to a downloaded video file."""
+    """Apply custom naming pattern, video metadata tag normalization, and timestamps to a downloaded video file."""
     path = Path(file_path)
     if not path.exists():
         return path
+
+    fix_video_tags(path, artist=artist, title=title, year=year, settings=settings)
 
     if naming_pattern and naming_pattern.strip():
         pat = naming_pattern.strip()
@@ -1158,7 +1223,7 @@ def postprocess_video_file(
         safe_artist = artist or ""
         safe_res = resolution or ""
         safe_fps = f"{fps}fps" if fps and not str(fps).endswith("fps") else str(fps or "")
-        safe_year = str(year or "")
+        safe_year = str(year or "")[:4]
         safe_idx = f"{playlist_index:02d}" if playlist_index is not None else ""
 
         new_stem = pat
@@ -1262,13 +1327,20 @@ class MediaDownloader:
                 codec = "m4a"
                 quality_val = "256"
 
-        # Client strategies for in-flight rotation if YouTube throws transient 403
-        client_rotations = [
-            ["android", "web"],
-            ["ios", "web"],
-            ["mweb", "android"],
-            ["web", "default"],
-        ]
+        # Client strategies for in-flight rotation
+        if is_audio:
+            client_rotations = [
+                ["web", "android"],
+                ["android", "web"],
+                ["web", "default"],
+            ]
+        else:
+            # For video, prioritize web and default desktop clients to receive full 1080p, 1440p, 4K, 8K resolutions
+            client_rotations = [
+                ["web", "default"],
+                ["web"],
+                ["default"],
+            ]
 
         ydl_opts: dict[str, Any] = {
             "outtmpl": outtmpl,
@@ -1299,7 +1371,7 @@ class MediaDownloader:
                     "player_client": client_rotations[0],
                 },
                 "youtubemusic": {
-                    "player_client": ["android", "web"],
+                    "player_client": ["web", "android"],
                 },
             },
         }
@@ -1470,6 +1542,59 @@ class MediaDownloader:
         ydl_opts["progress_hooks"] = [internal_progress_hook]
         ydl_opts["postprocessor_hooks"] = [internal_postprocessor_hook]
 
+        # Determine subtitle / lyrics configuration
+        subs_cfg = subtitles or {}
+        should_download_subs = False
+        subs_lang_spec = "orig"
+
+        if is_audio:
+            # Audio Lyrics / Karaoke
+            is_globally_enabled = self.settings.get('download_audio_lyrics', False) if self.settings else False
+            if 'download' in subs_cfg:
+                should_download_subs = subs_cfg['download']
+                subs_lang_spec = str(subs_cfg.get('langs', 'orig'))
+            else:
+                should_download_subs = is_globally_enabled
+                subs_lang_spec = self.settings.get('lyrics_langs', 'orig') if self.settings else 'orig'
+        else:
+            # Video Subtitles
+            is_globally_enabled = self.settings.get('download_subtitles', False) if self.settings else False
+            if 'download' in subs_cfg:
+                should_download_subs = subs_cfg['download']
+                subs_lang_spec = str(subs_cfg.get('langs', 'orig'))
+            else:
+                should_download_subs = is_globally_enabled
+                subs_lang_spec = self.settings.get('subtitles_langs', 'orig') if self.settings else 'orig'
+
+        if should_download_subs and subs_lang_spec not in ("None", "none", "No Subs", "No Lyrics", "Disabled"):
+            ydl_opts["writesubtitles"] = True
+            
+            clean_spec = subs_lang_spec.strip()
+            if clean_spec in ("orig", "Original / Uploaded Only", "Original (Default)", "Original (Uploaded)", "Original / Uploaded Only (Recommended)"):
+                ydl_opts["writeautomaticsub"] = False
+                ydl_opts["subtitleslangs"] = ["all", "-live_chat"]
+            elif clean_spec in ("all", "All", "All Languages"):
+                ydl_opts["writeautomaticsub"] = True
+                ydl_opts["subtitleslangs"] = ["all", "-live_chat"]
+            else:
+                # Specific code, e.g. "en", "ru", "uk", "en (auto)", "English (en)"
+                clean_code = clean_spec.split()[0].split('(')[0].strip().lower()
+                m = re.search(r'\(([a-zA-Z\-_]+)\)', clean_spec)
+                if m and m.group(1).lower() != "auto":
+                    clean_code = m.group(1).lower()
+                
+                is_auto = "auto" in clean_spec.lower()
+                ydl_opts["writeautomaticsub"] = is_auto
+                ydl_opts["subtitleslangs"] = [clean_code, f"{clean_code}.*", f"{clean_code}-*"]
+
+            if is_audio:
+                ydl_opts["subtitlesformat"] = "lrc/srt/best"
+            else:
+                ydl_opts["subtitlesformat"] = "srt/vtt/best"
+        else:
+            ydl_opts["writesubtitles"] = False
+            ydl_opts["writeautomaticsub"] = False
+
         # Postprocessors setup
         if is_audio:
             ydl_opts["format"] = "bestaudio/best"
@@ -1488,12 +1613,6 @@ class MediaDownloader:
                 pps.append({"key": "EmbedThumbnail"})
 
             ydl_opts["postprocessors"] = pps
-
-            if self.settings and self.settings.get('download_audio_lyrics', True):
-                ydl_opts["writesubtitles"] = True
-                ydl_opts["writeautomaticsub"] = True
-                ydl_opts["subtitleslangs"] = ["all", "-live_chat"]
-                ydl_opts["subtitlesformat"] = "lrc/srt/best"
         else:
             v_container = self.settings.get('video_container', 'mp4') if self.settings else 'mp4'
             v_codec = self.settings.get('video_codec', 'auto') if self.settings else 'auto'
@@ -1503,10 +1622,10 @@ class MediaDownloader:
             target_container = "mkv" if v_container == "mkv" else "mp4"
 
             if v_codec == "h264" or "H.264" in media_type:
-                ydl_opts["format"] = "bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc]+bestaudio/best[vcodec^=avc]/best"
+                ydl_opts["format"] = "bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc]+bestaudio/bestvideo+bestaudio/best"
                 ydl_opts["merge_output_format"] = target_container
             elif v_codec == "h265" or "H.265" in media_type:
-                ydl_opts["format"] = "bestvideo[vcodec^=hev]+bestaudio/bestvideo[vcodec^=h265]+bestaudio/best"
+                ydl_opts["format"] = "bestvideo[vcodec^=hev]+bestaudio/bestvideo[vcodec^=h265]+bestaudio/bestvideo+bestaudio/best"
                 ydl_opts["merge_output_format"] = "mkv" if v_container == "mkv" else "mp4"
             elif v_codec == "vp9_av1":
                 ydl_opts["format"] = "bestvideo[vcodec^=vp9]+bestaudio/bestvideo[vcodec^=av01]+bestaudio/bestvideo+bestaudio/best"
@@ -1521,8 +1640,8 @@ class MediaDownloader:
                 video_pps.append({"key": "FFmpegMetadata", "add_metadata": True, "add_chapters": add_chap})
             if embed_all_v_meta or v_meta_tags.get('thumbnail', True):
                 video_pps.append({"key": "EmbedThumbnail"})
-            if (embed_all_v_meta or v_meta_tags.get('subtitles', True)) and subtitles and subtitles.get("download"):
-                video_pps.append({"key": "FFmpegEmbedSubtitle"})
+            if (embed_all_v_meta or v_meta_tags.get('subtitles', True)) and should_download_subs:
+                video_pps.append({"key": "FFmpegEmbedSubtitle", "already_have_subtitle": False})
 
             ydl_opts["postprocessors"] = video_pps
 
@@ -1595,6 +1714,7 @@ class MediaDownloader:
                                 fps=extracted_fps,
                                 year=extracted_year,
                                 naming_pattern=v_pat,
+                                settings=self.settings,
                             )
                         processed_files.append(candidate)
                         if should_track_playlist:
@@ -1634,6 +1754,7 @@ class MediaDownloader:
                                 fps=extracted_fps,
                                 year=extracted_year,
                                 naming_pattern=v_pat,
+                                settings=self.settings,
                             )
                         processed_files.append(f)
                         if should_track_playlist:

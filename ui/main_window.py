@@ -272,15 +272,16 @@ class MainWindow(QMainWindow):
         self.format_combo.addItems(["Audio", "Video"])
         self.format_combo.setPlaceholderText("Select Type...")
         self.format_combo.setCurrentIndex(-1)
-        self.format_combo.currentIndexChanged.connect(self.clear_format_combo_highlight)
+        self.format_combo.currentIndexChanged.connect(self.on_main_format_combo_changed)
         queue_layout.addWidget(self.format_combo)
 
-        queue_layout.addWidget(QLabel(" Subs:"))
+        self.lbl_main_subs = QLabel(" Subs/Lyrics:")
+        queue_layout.addWidget(self.lbl_main_subs)
         self.subs_combo = QComboBox()
         self.subs_combo.wheelEvent = lambda event: event.ignore()
-        self.subs_combo.addItems(["None", "All", "en", "ru", "es", "auto"])
-        self.subs_combo.setEnabled(self.settings.get('download_subtitles'))
+        self.subs_combo.addItems(["Default (Settings)", "None", "Original (Uploaded)", "All", "en", "ru", "uk"])
         queue_layout.addWidget(self.subs_combo)
+        self.update_main_subs_combo_state()
 
         self.btn_add_queue = QPushButton("Add to queue")
         self.btn_add_queue.clicked.connect(self.add_to_queue_action)
@@ -734,11 +735,12 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
         layout.setContentsMargins(15, 10, 15, 15)
 
-        def make_combo(items=None):
+        def make_combo(items=None, min_width=None):
             cb = QComboBox()
             cb.wheelEvent = lambda event: event.ignore()
-            cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-            cb.setMinimumContentsLength(6)
+            cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+            if min_width:
+                cb.setMinimumWidth(min_width)
             if items:
                 cb.addItems(items)
             return cb
@@ -755,12 +757,12 @@ class MainWindow(QMainWindow):
         folder_layout.addWidget(btn_browse)
         layout.addLayout(folder_layout)
 
-        # 2. General Settings (Aligned 2-Column Grid spanning 100% width)
+        # 2. General Settings
         gen_grid = QGridLayout()
-        gen_grid.setHorizontalSpacing(25)
+        gen_grid.setHorizontalSpacing(20)
         gen_grid.setVerticalSpacing(10)
 
-        # Row 0: Concurrent Downloads & Speed Limit
+        # Row 0: Concurrent Downloads
         gen_grid.addWidget(QLabel("Concurrent Downloads:"), 0, 0)
         self.threads_combo = make_combo(["1", "2", "3 (Recommended)", "4", "5", "6"])
         curr_threads = str(self.settings.get('max_concurrent_downloads', 3))
@@ -773,14 +775,15 @@ class MainWindow(QMainWindow):
         )
         gen_grid.addWidget(self.threads_combo, 0, 1)
 
-        gen_grid.addWidget(QLabel("Speed Limit:"), 0, 2)
+        # Row 1: Speed Limit
+        gen_grid.addWidget(QLabel("Speed Limit:"), 1, 0)
         self.speed_combo = make_combo(["Unlimited", "1 MB/s", "3 MB/s", "5 MB/s", "10 MB/s", "20 MB/s"])
         self.speed_combo.setCurrentText(self.settings.get('speed_limit', 'Unlimited'))
         self.speed_combo.currentTextChanged.connect(lambda t: self.settings.set('speed_limit', t))
-        gen_grid.addWidget(self.speed_combo, 0, 3)
+        gen_grid.addWidget(self.speed_combo, 1, 1)
 
-        # Row 1: Post-Download Action
-        gen_grid.addWidget(QLabel("Post-Download Action:"), 1, 0)
+        # Row 2: Post-Download Action
+        gen_grid.addWidget(QLabel("Post-Download Action:"), 2, 0)
         self.post_combo = make_combo(["Disabled (Do nothing)", "Shutdown PC", "Sleep / Suspend"])
         curr_post = self.settings.get('post_download_action', 'Disabled')
         for i in range(self.post_combo.count()):
@@ -790,10 +793,9 @@ class MainWindow(QMainWindow):
         self.post_combo.currentIndexChanged.connect(
             lambda: self.settings.set('post_download_action', self.post_combo.currentText().split()[0])
         )
-        gen_grid.addWidget(self.post_combo, 1, 1)
+        gen_grid.addWidget(self.post_combo, 2, 1)
 
         gen_grid.setColumnStretch(1, 1)
-        gen_grid.setColumnStretch(3, 1)
         layout.addLayout(gen_grid)
 
         # 3. Audio & Music Settings GroupBox
@@ -846,11 +848,39 @@ class MainWindow(QMainWindow):
         art_layout.addWidget(self.cover_mode_combo, 1)
         audio_layout.addLayout(art_layout)
 
-        # Karaoke Mode Toggle
+        # Karaoke Mode Toggle + Language Selection
+        lyrics_section = QVBoxLayout()
+        lyrics_section.setSpacing(6)
         self.chk_audio_lyrics = QCheckBox("Karaoke Mode (Download & embed synchronized lyrics / LRC if available)")
         self.chk_audio_lyrics.setChecked(self.settings.get('download_audio_lyrics', False))
-        self.chk_audio_lyrics.toggled.connect(lambda c: self.settings.set('download_audio_lyrics', c))
-        audio_layout.addWidget(self.chk_audio_lyrics)
+        self.chk_audio_lyrics.toggled.connect(self.toggle_audio_lyrics_setting)
+        lyrics_section.addWidget(self.chk_audio_lyrics)
+
+        lyrics_lang_row = QHBoxLayout()
+        lyrics_lang_row.setContentsMargins(22, 0, 0, 0)
+        self.lbl_lyrics_lang = QLabel("Lyrics Language:")
+        lyrics_lang_row.addWidget(self.lbl_lyrics_lang)
+        self.audio_lyrics_lang_combo = make_combo()
+        self.audio_lyrics_lang_combo.addItem("Original / Uploaded Only", "orig")
+        self.audio_lyrics_lang_combo.addItem("All Available Languages", "all")
+        self.audio_lyrics_lang_combo.addItem("English (en)", "en")
+        self.audio_lyrics_lang_combo.addItem("Russian (ru)", "ru")
+        self.audio_lyrics_lang_combo.addItem("Ukrainian (uk)", "uk")
+        cur_lyr_lang = self.settings.get('lyrics_langs', 'orig')
+        l_idx = self.audio_lyrics_lang_combo.findData(cur_lyr_lang)
+        if l_idx >= 0:
+            self.audio_lyrics_lang_combo.setCurrentIndex(l_idx)
+        self.audio_lyrics_lang_combo.currentIndexChanged.connect(
+            lambda: self.settings.set('lyrics_langs', self.audio_lyrics_lang_combo.currentData())
+        )
+        lyrics_lang_row.addWidget(self.audio_lyrics_lang_combo, 1)
+        lyrics_section.addLayout(lyrics_lang_row)
+
+        is_audio_lyr = self.settings.get('download_audio_lyrics', False)
+        self.lbl_lyrics_lang.setEnabled(is_audio_lyr)
+        self.audio_lyrics_lang_combo.setEnabled(is_audio_lyr)
+
+        audio_layout.addLayout(lyrics_section)
 
         # Metadata Tags Section
         meta_section_lbl = QLabel("Embedded Audio Metadata Tags:")
@@ -938,7 +968,7 @@ class MainWindow(QMainWindow):
 
         # Container & Codec Grid (2 Columns)
         format_grid = QGridLayout()
-        format_grid.setHorizontalSpacing(25)
+        format_grid.setHorizontalSpacing(20)
         format_grid.setVerticalSpacing(8)
 
         format_grid.addWidget(QLabel("Preferred Container:"), 0, 0)
@@ -955,7 +985,7 @@ class MainWindow(QMainWindow):
         )
         format_grid.addWidget(self.video_container_combo, 0, 1)
 
-        format_grid.addWidget(QLabel("Preferred Video Codec:"), 0, 2)
+        format_grid.addWidget(QLabel("Preferred Video Codec:"), 1, 0)
         self.video_codec_combo = make_combo()
         self.video_codec_combo.addItem("Auto (Best Quality)", "auto")
         self.video_codec_combo.addItem("H.264 (AVC - Maximum Compatibility)", "h264")
@@ -968,16 +998,43 @@ class MainWindow(QMainWindow):
         self.video_codec_combo.currentIndexChanged.connect(
             lambda: self.settings.set('video_codec', self.video_codec_combo.currentData())
         )
-        format_grid.addWidget(self.video_codec_combo, 0, 3)
+        format_grid.addWidget(self.video_codec_combo, 1, 1)
         format_grid.setColumnStretch(1, 1)
-        format_grid.setColumnStretch(3, 1)
         video_layout.addLayout(format_grid)
 
-        # Subtitles setting placed inside Video Settings
+        # Subtitles Section (Clean 2 Rows)
+        subs_section = QVBoxLayout()
+        subs_section.setSpacing(6)
         self.chk_subtitles = QCheckBox("Download subtitles (if available)")
-        self.chk_subtitles.setChecked(self.settings.get('download_subtitles'))
+        self.chk_subtitles.setChecked(self.settings.get('download_subtitles', False))
         self.chk_subtitles.toggled.connect(self.toggle_subs_setting)
-        video_layout.addWidget(self.chk_subtitles)
+        subs_section.addWidget(self.chk_subtitles)
+
+        subs_lang_row = QHBoxLayout()
+        subs_lang_row.setContentsMargins(22, 0, 0, 0)
+        self.lbl_video_subs_lang = QLabel("Subtitles Language:")
+        subs_lang_row.addWidget(self.lbl_video_subs_lang)
+        self.video_subs_lang_combo = make_combo()
+        self.video_subs_lang_combo.addItem("Original / Uploaded Only", "orig")
+        self.video_subs_lang_combo.addItem("All Available Languages", "all")
+        self.video_subs_lang_combo.addItem("English (en)", "en")
+        self.video_subs_lang_combo.addItem("Russian (ru)", "ru")
+        self.video_subs_lang_combo.addItem("Ukrainian (uk)", "uk")
+        cur_v_subs_lang = self.settings.get('subtitles_langs', 'orig')
+        v_idx = self.video_subs_lang_combo.findData(cur_v_subs_lang)
+        if v_idx >= 0:
+            self.video_subs_lang_combo.setCurrentIndex(v_idx)
+        self.video_subs_lang_combo.currentIndexChanged.connect(
+            lambda: self.settings.set('subtitles_langs', self.video_subs_lang_combo.currentData())
+        )
+        subs_lang_row.addWidget(self.video_subs_lang_combo, 1)
+        subs_section.addLayout(subs_lang_row)
+
+        is_v_sub = self.settings.get('download_subtitles', False)
+        self.lbl_video_subs_lang.setEnabled(is_v_sub)
+        self.video_subs_lang_combo.setEnabled(is_v_sub)
+
+        video_layout.addLayout(subs_section)
 
         # Video Metadata Tags Section
         v_meta_section_lbl = QLabel("Embedded Video Metadata Tags:")
@@ -1210,7 +1267,7 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #ffffff;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
-        version = QLabel("Version: 1.3.0")
+        version = QLabel("Version: 1.4.0")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)
         btn_layout = QHBoxLayout()
@@ -1337,9 +1394,45 @@ class MainWindow(QMainWindow):
 
     def toggle_subs_setting(self, checked):
         self.settings.set('download_subtitles', checked)
-        self.subs_combo.setEnabled(checked)
-        if not checked:
+        if hasattr(self, 'video_subs_lang_combo'):
+            self.video_subs_lang_combo.setEnabled(checked)
+        if hasattr(self, 'lbl_video_subs_lang'):
+            self.lbl_video_subs_lang.setEnabled(checked)
+        self.update_main_subs_combo_state()
+        self.refresh_queue_items_subs()
+
+    def toggle_audio_lyrics_setting(self, checked):
+        self.settings.set('download_audio_lyrics', checked)
+        if hasattr(self, 'audio_lyrics_lang_combo'):
+            self.audio_lyrics_lang_combo.setEnabled(checked)
+        if hasattr(self, 'lbl_lyrics_lang'):
+            self.lbl_lyrics_lang.setEnabled(checked)
+        self.update_main_subs_combo_state()
+        self.refresh_queue_items_subs()
+
+    def on_main_format_combo_changed(self, idx):
+        self.clear_format_combo_highlight()
+        self.update_main_subs_combo_state()
+
+    def update_main_subs_combo_state(self):
+        current_type = self.format_combo.currentText()
+        if current_type == "Audio":
+            is_enabled = self.settings.get('download_audio_lyrics', False)
+        elif current_type == "Video":
+            is_enabled = self.settings.get('download_subtitles', False)
+        else:
+            is_enabled = self.settings.get('download_subtitles', False) or self.settings.get('download_audio_lyrics', False)
+
+        self.subs_combo.setEnabled(is_enabled)
+        if hasattr(self, 'lbl_main_subs'):
+            self.lbl_main_subs.setEnabled(is_enabled)
+        if not is_enabled:
             self.subs_combo.setCurrentText("None")
+
+    def refresh_queue_items_subs(self):
+        for widget in self.download_queue:
+            if hasattr(widget, '_populate_subs_combo'):
+                widget._populate_subs_combo()
 
     def refresh_history(self):
         entries = self.history.get_all()
@@ -1599,9 +1692,11 @@ class MainWindow(QMainWindow):
             if widget.item_data.get('url') == url and widget.item_data.get('media_type') == media_type:
                 return
 
-        info_dict['specific_subs'] = self.subs_combo.currentText()
+        chosen_subs = self.subs_combo.currentText()
+        if chosen_subs and chosen_subs not in ("Default (Settings)", ""):
+            info_dict['specific_subs'] = chosen_subs
 
-        widget = QueueItemWidget(info_dict)
+        widget = QueueItemWidget(info_dict, settings=self.settings)
         widget.remove_requested.connect(self.remove_queue_item)
 
         self.queue_container_layout.addWidget(widget)
@@ -1643,7 +1738,10 @@ class MainWindow(QMainWindow):
                 avg_dur = (sum(self.track_durations[-5:]) / len(self.track_durations[-5:])) if self.track_durations else 4.5
                 concurrency = max(1, int(self.settings.get('max_concurrent_downloads', 3)))
                 eta_s = int((avg_dur * pending_count) / concurrency)
-                time_str = f"~{format_time(eta_s)}"
+                if eta_s >= 60:
+                    time_str = f"~{eta_s // 60}m {eta_s % 60:02d}s"
+                else:
+                    time_str = f"~{eta_s}s"
 
             self.top_telemetry_label.setText(
                 f"<span style='color: #38bdf8;'>💾 {size_str}</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
@@ -1800,16 +1898,30 @@ class MainWindow(QMainWindow):
             'file': self.settings.get('cookie_file')
         }
 
-        specific_subs = item_data.get('specific_subs', 'None')
-        if specific_subs == 'None':
+        is_audio = media_type.startswith("Audio")
+        global_subs_enabled = self.settings.get('download_audio_lyrics', False) if is_audio else self.settings.get('download_subtitles', False)
+        global_subs_lang = self.settings.get('lyrics_langs', 'orig') if is_audio else self.settings.get('subtitles_langs', 'orig')
+
+        specific_subs = item_data.get('specific_subs')
+        if not specific_subs or specific_subs in ('Default', 'Global', 'Default (Settings)'):
+            if not global_subs_enabled:
+                subs_download = False
+                subs_langs = 'orig'
+            else:
+                subs_download = True
+                subs_langs = global_subs_lang
+        elif specific_subs in ('No Subs', 'No Lyrics', 'None'):
             subs_download = False
-            subs_langs = 'all'
-        elif specific_subs == 'All':
+            subs_langs = 'orig'
+        elif specific_subs in ('All', 'all', 'All Languages'):
             subs_download = True
             subs_langs = 'all'
+        elif specific_subs in ('Original', 'orig', 'Original / Uploaded Only', 'Original (Default)', 'Original (Uploaded)', 'Original / Uploaded Only (Recommended)'):
+            subs_download = True
+            subs_langs = 'orig'
         else:
             subs_download = True
-            subs_langs = specific_subs.split(' (auto)')[0]
+            subs_langs = specific_subs
 
         subtitles = {'download': subs_download, 'langs': subs_langs}
 

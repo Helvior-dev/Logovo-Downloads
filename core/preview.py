@@ -64,11 +64,23 @@ def get_video_preview(url: str) -> dict:
             # Extract available subtitles for single video
             subs_available = []
             if 'subtitles' in info:
-                subs_available.extend(info['subtitles'].keys())
-            if 'automatic_captions' in info:
-                for k in info['automatic_captions'].keys():
+                for k in info['subtitles'].keys():
                     if k not in subs_available:
-                        subs_available.append(f"{k} (auto)")
+                        subs_available.append(k)
+            if 'automatic_captions' in info:
+                # Prioritize common / primary languages
+                priority_langs = ['en', 'ru', 'uk', 'orig', 'en-orig']
+                for pl in priority_langs:
+                    for k in info['automatic_captions'].keys():
+                        if k == pl or k.startswith(f"{pl}-"):
+                            entry = f"{k} (auto)"
+                            if entry not in subs_available and k not in subs_available:
+                                subs_available.append(entry)
+                # Cap any other auto captions to prevent 150 items spam
+                for k in info['automatic_captions'].keys():
+                    entry = f"{k} (auto)"
+                    if entry not in subs_available and k not in subs_available and len(subs_available) < 12:
+                        subs_available.append(entry)
             # Extract available formats
             formats_available = set()
             for f in info.get('formats', []):

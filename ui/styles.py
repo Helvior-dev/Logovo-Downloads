@@ -63,17 +63,30 @@ def get_stylesheet():
         color: #475569;
         border: 1px solid #1e293b;
     }
-    QLineEdit, QComboBox {
+    QLineEdit {
         background-color: #0b0e14;
         border: 1px solid #334155;
         border-radius: 6px;
-        padding: 8px;
+        padding: 6px 10px;
         color: #ffffff;
+    }
+    QComboBox {
+        background-color: #0b0e14;
+        border: 1px solid #334155;
+        border-radius: 6px;
+        padding: 3px 26px 3px 10px;
+        color: #ffffff;
+        font-size: 12px;
+    }
+    QComboBox:disabled {
+        background-color: #0f172a;
+        color: #64748b;
+        border: 1px solid #1e293b;
     }
     QComboBox::drop-down {
         subcontrol-origin: padding;
-        subcontrol-position: top right;
-        width: 28px;
+        subcontrol-position: center right;
+        width: 24px;
         border: none;
         background: transparent;
     }
@@ -81,7 +94,7 @@ def get_stylesheet():
         image: url("__ARROW_SVG__");
         width: 10px;
         height: 10px;
-        margin-right: 10px;
+        margin-right: 8px;
     }
     QLineEdit:focus, QComboBox:focus {
         border: 1px solid #38bdf8;
@@ -95,10 +108,11 @@ def get_stylesheet():
         selection-color: #38bdf8;
         padding: 4px;
         outline: none;
+        min-width: 220px;
     }
     QComboBox QAbstractItemView::item {
         min-height: 28px;
-        padding: 4px 8px;
+        padding: 4px 10px;
     }
     QProgressBar {
         background-color: #0f172a;

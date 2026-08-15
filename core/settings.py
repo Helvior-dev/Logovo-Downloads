@@ -16,7 +16,7 @@ class SettingsManager:
         self.default_settings = {
             'download_path': str(Path.home() / 'Downloads'),
             'download_subtitles': False,
-            'subtitles_langs': 'all', # e.g. 'en, ru' or 'all'
+            'subtitles_langs': 'orig', # 'orig', 'all', 'en', 'ru', 'uk'
             'playlist_cover_mode': 'both', # 'both', 'icon', 'file', 'none'
             'max_concurrent_downloads': 3, # 1 to 6
             'naming_pattern': '{artist} - {title}', # e.g. '{artist} - {title}', '{index}. {artist} - {title}'
@@ -25,6 +25,7 @@ class SettingsManager:
             'check_ytdlp_updates_on_startup': True,
             'embed_all_metadata': True,
             'download_audio_lyrics': False,
+            'lyrics_langs': 'orig', # 'orig', 'all', 'en', 'ru', 'uk'
             'audio_metadata_tags': {
                 'artist': True,
                 'title': True,

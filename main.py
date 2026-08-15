@@ -13,7 +13,7 @@ def get_resource_path(relative_path: str) -> Path:
 def main():
     try:
         import ctypes
-        myappid = 'logovo.downloads.app.1.3.0'
+        myappid = 'logovo.downloads.app.1.4.0'
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass

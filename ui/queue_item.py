@@ -28,19 +28,20 @@ class QueueItemWidget(QWidget):
     def format_type(self) -> str:
         return self.item_data.get('format', 'Audio')
 
-    def __init__(self, item_data, parent=None):
+    def __init__(self, item_data, settings=None, parent=None):
         super().__init__(parent)
         self.item_data = item_data
+        self.settings = settings
         self.status_state = "Pending"
         self.is_retry = False
         self.fetcher = None
         
         self.setObjectName("QueueItemCard")
-        self.setMinimumHeight(80)
-        self.setMaximumHeight(100)
+        self.setMinimumHeight(92)
+        self.setMaximumHeight(120)
         
         main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(10, 8, 10, 8)
         main_layout.setSpacing(15)
         
         self.thumbnail_label = QLabel()
@@ -122,7 +123,7 @@ class QueueItemWidget(QWidget):
         
         controls_layout = QVBoxLayout()
         controls_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        controls_layout.setSpacing(6)
+        controls_layout.setSpacing(5)
         
         btn_top_row = QHBoxLayout()
         btn_top_row.addStretch()
@@ -155,7 +156,7 @@ class QueueItemWidget(QWidget):
         formats_from_preview = item_data.get('formats_available', [])
         
         self.format_combo = QComboBox()
-        self.format_combo.setFixedWidth(135)
+        self.format_combo.setFixedWidth(145)
         self.format_combo.setFixedHeight(28)
         self.format_combo.setMaxVisibleItems(6)
         
@@ -188,11 +189,90 @@ class QueueItemWidget(QWidget):
                 
         self.format_combo.currentTextChanged.connect(self._on_format_changed)
         controls_layout.addWidget(self.format_combo)
+
+        # Per-item Subtitle / Lyrics Language Dropdown
+        self.subs_combo = QComboBox()
+        self.subs_combo.setFixedWidth(145)
+        self.subs_combo.setFixedHeight(28)
+        self.subs_combo.setMaxVisibleItems(6)
+        self._populate_subs_combo()
+        self.subs_combo.currentIndexChanged.connect(self._on_subs_changed)
+        controls_layout.addWidget(self.subs_combo)
         
         main_layout.addLayout(controls_layout)
 
+    def _populate_subs_combo(self):
+        cur_fmt = self.format_combo.currentText() if hasattr(self, 'format_combo') else str(self.item_data.get('media_type', ''))
+        media_category = self.item_data.get('media_type_category')
+        if "video" in cur_fmt.lower():
+            is_audio = False
+        elif "audio" in cur_fmt.lower():
+            is_audio = True
+        else:
+            is_audio = (media_category != "Video")
+        
+        if self.settings:
+            is_enabled = self.settings.get('download_audio_lyrics', False) if is_audio else self.settings.get('download_subtitles', False)
+            global_lang = self.settings.get('lyrics_langs', 'orig') if is_audio else self.settings.get('subtitles_langs', 'orig')
+        else:
+            is_enabled = False
+            global_lang = 'orig'
+
+        self.subs_combo.blockSignals(True)
+        self.subs_combo.clear()
+
+        if not is_enabled:
+            label = "Lyrics: Off" if is_audio else "Subs: Off"
+            self.subs_combo.addItem(label, "None")
+            self.subs_combo.setEnabled(False)
+            self.subs_combo.setToolTip("Subtitles/Lyrics disabled in Settings")
+            self.item_data['specific_subs'] = 'None'
+            self.subs_combo.blockSignals(False)
+            return
+
+        self.subs_combo.setEnabled(True)
+        self.subs_combo.setToolTip("Select Subtitle / Lyrics language for this item")
+        prefix = "Lyrics" if is_audio else "Subs"
+
+        self.subs_combo.addItem(f"{prefix}: None", "None")
+        self.subs_combo.addItem(f"{prefix}: Original", "orig")
+        self.subs_combo.addItem(f"{prefix}: All", "all")
+
+        available_subs = self.item_data.get('subtitles_available', [])
+        for sub in available_subs:
+            self.subs_combo.addItem(f"{prefix}: {sub}", sub)
+
+        for code in ["en", "ru", "uk"]:
+            if not any(code in s for s in available_subs):
+                self.subs_combo.addItem(f"{prefix}: {code}", code)
+
+        cur_specific = self.item_data.get('specific_subs')
+        if cur_specific:
+            idx = self.subs_combo.findData(cur_specific)
+            if idx >= 0:
+                self.subs_combo.setCurrentIndex(idx)
+            else:
+                self.subs_combo.setCurrentIndex(1)
+        else:
+            idx = self.subs_combo.findData(global_lang)
+            if idx >= 0:
+                self.subs_combo.setCurrentIndex(idx)
+            else:
+                self.subs_combo.setCurrentIndex(1)
+            self.item_data['specific_subs'] = self.subs_combo.currentData()
+
+        self.subs_combo.blockSignals(False)
+
+    def _on_subs_changed(self, idx):
+        self.item_data['specific_subs'] = self.subs_combo.currentData()
+
     def _on_format_changed(self, text):
         self.item_data['media_type'] = text
+        if "video" in text.lower():
+            self.item_data['media_type_category'] = "Video"
+        else:
+            self.item_data['media_type_category'] = "Audio"
+        self._populate_subs_combo()
         
     def _on_load_preview(self):
         self.btn_load_preview.hide()
