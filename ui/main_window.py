@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QMessageBox, QTabWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QCheckBox, QFileDialog, QFormLayout,
     QApplication, QRadioButton, QButtonGroup, QGroupBox, QScrollArea, QDialog,
-    QSystemTrayIcon, QMenu, QSpinBox, QSlider, QFrame
+    QSystemTrayIcon, QMenu, QSpinBox, QSlider, QFrame, QGraphicsDropShadowEffect
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QObject, QEvent
 from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon, QColor
@@ -141,6 +141,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Logovo Downloads")
         self.setMinimumSize(880, 720)
         self.setStyleSheet(get_stylesheet())
+
+        icon_path = Path(__file__).resolve().parent.parent / "media" / "icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
         self.setup_tray()
 
@@ -761,8 +765,56 @@ class MainWindow(QMainWindow):
         self.speed_combo.currentTextChanged.connect(lambda t: self.settings.set('speed_limit', t))
         gen_grid.addWidget(self.speed_combo, 0, 3)
 
-        # Row 1: Playlist Artwork & Post-Download Action
-        gen_grid.addWidget(QLabel("Playlist Artwork:"), 1, 0)
+        # Row 1: Post-Download Action
+        gen_grid.addWidget(QLabel("Post-Download Action:"), 1, 0)
+        self.post_combo = make_combo(["Disabled (Do nothing)", "Shutdown PC", "Sleep / Suspend"])
+        curr_post = self.settings.get('post_download_action', 'Disabled')
+        for i in range(self.post_combo.count()):
+            if self.post_combo.itemText(i).startswith(curr_post):
+                self.post_combo.setCurrentIndex(i)
+                break
+        self.post_combo.currentIndexChanged.connect(
+            lambda: self.settings.set('post_download_action', self.post_combo.currentText().split()[0])
+        )
+        gen_grid.addWidget(self.post_combo, 1, 1)
+
+        gen_grid.setColumnStretch(1, 1)
+        gen_grid.setColumnStretch(3, 1)
+        layout.addLayout(gen_grid)
+
+        # 3. Audio & Music Settings GroupBox
+        audio_group = QGroupBox("Audio & Music Settings")
+        audio_layout = QVBoxLayout(audio_group)
+        audio_layout.setSpacing(10)
+        audio_layout.setContentsMargins(14, 16, 14, 14)
+
+        # File Naming Pattern (with Reset button)
+        naming_layout = QHBoxLayout()
+        naming_layout.addWidget(QLabel("File Naming Pattern:"))
+        self.naming_input = QLineEdit(self.settings.get('naming_pattern', '{artist} - {title}'))
+        self.naming_input.textChanged.connect(lambda t: self.settings.set('naming_pattern', t))
+        btn_reset_pattern = QPushButton("Reset to Default")
+        btn_reset_pattern.setFixedWidth(130)
+        btn_reset_pattern.setToolTip("Reset file naming pattern to default: {artist} - {title}")
+        btn_reset_pattern.clicked.connect(self.reset_naming_pattern)
+        naming_layout.addWidget(self.naming_input)
+        naming_layout.addWidget(btn_reset_pattern)
+        audio_layout.addLayout(naming_layout)
+
+        badges_row = QHBoxLayout()
+        badges_row.addWidget(QLabel("Insert token:"))
+        tokens = [("{artist}", "Artist"), ("{title}", "Title"), ("{index}", "Index"), ("{album}", "Album"), ("{year}", "Year")]
+        for token, label in tokens:
+            btn_tag = QPushButton(token)
+            btn_tag.setObjectName("TagPill")
+            btn_tag.clicked.connect(lambda _, t=token: self.insert_naming_token(t))
+            badges_row.addWidget(btn_tag)
+        badges_row.addStretch()
+        audio_layout.addLayout(badges_row)
+
+        # Playlist Artwork Row
+        art_layout = QHBoxLayout()
+        art_layout.addWidget(QLabel("Playlist Artwork:"))
         self.cover_mode_combo = make_combo()
         self.cover_mode_combo.addItem("Set as Windows folder icon (.ico) & save image file (Recommended)", "both")
         self.cover_mode_combo.addItem("Set as Windows folder icon (.ico) only", "icon")
@@ -777,49 +829,194 @@ class MainWindow(QMainWindow):
         self.cover_mode_combo.currentIndexChanged.connect(
             lambda: self.settings.set('playlist_cover_mode', self.cover_mode_combo.currentData())
         )
-        gen_grid.addWidget(self.cover_mode_combo, 1, 1)
+        art_layout.addWidget(self.cover_mode_combo, 1)
+        audio_layout.addLayout(art_layout)
 
-        gen_grid.addWidget(QLabel("Post-Download Action:"), 1, 2)
-        self.post_combo = make_combo(["Disabled (Do nothing)", "Shutdown PC", "Sleep / Suspend"])
-        curr_post = self.settings.get('post_download_action', 'Disabled')
-        for i in range(self.post_combo.count()):
-            if self.post_combo.itemText(i).startswith(curr_post):
-                self.post_combo.setCurrentIndex(i)
-                break
-        self.post_combo.currentIndexChanged.connect(
-            lambda: self.settings.set('post_download_action', self.post_combo.currentText().split()[0])
-        )
-        gen_grid.addWidget(self.post_combo, 1, 3)
+        # Karaoke Mode Toggle
+        self.chk_audio_lyrics = QCheckBox("Karaoke Mode (Download & embed synchronized lyrics / LRC if available)")
+        self.chk_audio_lyrics.setChecked(self.settings.get('download_audio_lyrics', False))
+        self.chk_audio_lyrics.toggled.connect(lambda c: self.settings.set('download_audio_lyrics', c))
+        audio_layout.addWidget(self.chk_audio_lyrics)
 
-        gen_grid.setColumnStretch(1, 1)
-        gen_grid.setColumnStretch(3, 1)
-        layout.addLayout(gen_grid)
+        # Metadata Tags Section
+        meta_section_lbl = QLabel("Embedded Audio Metadata Tags:")
+        meta_section_lbl.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 6px;")
+        audio_layout.addWidget(meta_section_lbl)
 
-        # 3. File Naming Pattern (with Reset button)
-        naming_layout = QHBoxLayout()
-        naming_layout.addWidget(QLabel("File Naming Pattern:"))
-        self.naming_input = QLineEdit(self.settings.get('naming_pattern', '{artist} - {title}'))
-        self.naming_input.textChanged.connect(lambda t: self.settings.set('naming_pattern', t))
-        btn_reset_pattern = QPushButton("Reset to Default")
-        btn_reset_pattern.setFixedWidth(130)
-        btn_reset_pattern.setToolTip("Reset file naming pattern to default: {artist} - {title}")
-        btn_reset_pattern.clicked.connect(self.reset_naming_pattern)
-        naming_layout.addWidget(self.naming_input)
-        naming_layout.addWidget(btn_reset_pattern)
-        layout.addLayout(naming_layout)
+        self.chk_embed_all_meta = QCheckBox("Embed all audio metadata (Recommended)")
+        is_embed_all = self.settings.get('embed_all_metadata', True)
+        self.chk_embed_all_meta.setChecked(is_embed_all)
+        audio_layout.addWidget(self.chk_embed_all_meta)
 
-        badges_row = QHBoxLayout()
-        badges_row.addWidget(QLabel("Insert token:"))
-        tokens = [("{artist}", "Artist"), ("{title}", "Title"), ("{index}", "Index"), ("{album}", "Album"), ("{year}", "Year")]
-        for token, label in tokens:
+        self.meta_tags_widget = QWidget()
+        meta_grid = QGridLayout(self.meta_tags_widget)
+        meta_grid.setContentsMargins(20, 2, 0, 2)
+        meta_grid.setHorizontalSpacing(30)
+        meta_grid.setVerticalSpacing(6)
+
+        stored_tags = self.settings.get('audio_metadata_tags') or {}
+        self.chk_meta_artist = QCheckBox("Artist / Channel (TPE1 / artist)")
+        self.chk_meta_title = QCheckBox("Track Title (TIT2 / title)")
+        self.chk_meta_album = QCheckBox("Album Name (TALB / album)")
+        self.chk_meta_cover = QCheckBox("Album Cover Artwork (APIC / covr)")
+        self.chk_meta_track_num = QCheckBox("Track Number / Position (TRCK / tracknumber)")
+        self.chk_meta_year = QCheckBox("Release Date / Year (TYER / date)")
+        self.chk_meta_lyrics = QCheckBox("Karaoke / Synced Lyrics (USLT / embed lyrics)")
+
+        self.tag_checkboxes = {
+            'artist': self.chk_meta_artist,
+            'title': self.chk_meta_title,
+            'album': self.chk_meta_album,
+            'cover': self.chk_meta_cover,
+            'track_number': self.chk_meta_track_num,
+            'year': self.chk_meta_year,
+            'lyrics': self.chk_meta_lyrics,
+        }
+
+        for k, chk in self.tag_checkboxes.items():
+            val = stored_tags.get(k, True)
+            chk.setChecked(val)
+            chk.toggled.connect(self._on_metadata_tag_toggled)
+
+        meta_grid.addWidget(self.chk_meta_artist, 0, 0)
+        meta_grid.addWidget(self.chk_meta_title, 0, 1)
+        meta_grid.addWidget(self.chk_meta_album, 1, 0)
+        meta_grid.addWidget(self.chk_meta_cover, 1, 1)
+        meta_grid.addWidget(self.chk_meta_track_num, 2, 0)
+        meta_grid.addWidget(self.chk_meta_year, 2, 1)
+        meta_grid.addWidget(self.chk_meta_lyrics, 3, 0)
+
+        audio_layout.addWidget(self.meta_tags_widget)
+        self.chk_embed_all_meta.toggled.connect(self._on_embed_all_meta_toggled)
+        self._update_meta_checkboxes_state(is_embed_all)
+
+        layout.addWidget(audio_group)
+
+        # 4. Video Settings GroupBox
+        video_group = QGroupBox("Video Settings")
+        video_layout = QVBoxLayout(video_group)
+        video_layout.setSpacing(10)
+        video_layout.setContentsMargins(14, 16, 14, 14)
+
+        # Video Naming Pattern (with Reset button)
+        v_naming_layout = QHBoxLayout()
+        v_naming_layout.addWidget(QLabel("File Naming Pattern:"))
+        self.v_naming_input = QLineEdit(self.settings.get('video_naming_pattern', '{title}'))
+        self.v_naming_input.textChanged.connect(lambda t: self.settings.set('video_naming_pattern', t))
+        btn_reset_v_pattern = QPushButton("Reset to Default")
+        btn_reset_v_pattern.setFixedWidth(130)
+        btn_reset_v_pattern.setToolTip("Reset video naming pattern to default: {title}")
+        btn_reset_v_pattern.clicked.connect(self.reset_video_naming_pattern)
+        v_naming_layout.addWidget(self.v_naming_input)
+        v_naming_layout.addWidget(btn_reset_v_pattern)
+        video_layout.addLayout(v_naming_layout)
+
+        v_badges_row = QHBoxLayout()
+        v_badges_row.addWidget(QLabel("Insert token:"))
+        v_tokens = [("{title}", "Title"), ("{author}", "Author"), ("{resolution}", "Resolution"), ("{fps}", "FPS"), ("{year}", "Year"), ("{index}", "Index")]
+        for token, label in v_tokens:
             btn_tag = QPushButton(token)
             btn_tag.setObjectName("TagPill")
-            btn_tag.clicked.connect(lambda _, t=token: self.insert_naming_token(t))
-            badges_row.addWidget(btn_tag)
-        badges_row.addStretch()
-        layout.addLayout(badges_row)
+            btn_tag.clicked.connect(lambda _, t=token: self.insert_video_naming_token(t))
+            v_badges_row.addWidget(btn_tag)
+        v_badges_row.addStretch()
+        video_layout.addLayout(v_badges_row)
 
-        # 4. yt-dlp Core Updater
+        # Container & Codec Grid (2 Columns)
+        format_grid = QGridLayout()
+        format_grid.setHorizontalSpacing(25)
+        format_grid.setVerticalSpacing(8)
+
+        format_grid.addWidget(QLabel("Preferred Container:"), 0, 0)
+        self.video_container_combo = make_combo()
+        self.video_container_combo.addItem("MP4 (Universal Compatibility)", "mp4")
+        self.video_container_combo.addItem("MKV (Full Audio/Subtitle Support)", "mkv")
+        self.video_container_combo.addItem("Auto (Best Available)", "auto")
+        cur_vc = self.settings.get('video_container', 'mp4')
+        idx = self.video_container_combo.findData(cur_vc)
+        if idx >= 0:
+            self.video_container_combo.setCurrentIndex(idx)
+        self.video_container_combo.currentIndexChanged.connect(
+            lambda: self.settings.set('video_container', self.video_container_combo.currentData())
+        )
+        format_grid.addWidget(self.video_container_combo, 0, 1)
+
+        format_grid.addWidget(QLabel("Preferred Video Codec:"), 0, 2)
+        self.video_codec_combo = make_combo()
+        self.video_codec_combo.addItem("Auto (Best Quality)", "auto")
+        self.video_codec_combo.addItem("H.264 (AVC - Maximum Compatibility)", "h264")
+        self.video_codec_combo.addItem("H.265 (HEVC - High Efficiency)", "h265")
+        self.video_codec_combo.addItem("VP9 / AV1 (High-Res 4K/8K 60fps)", "vp9_av1")
+        cur_vcodec = self.settings.get('video_codec', 'auto')
+        idx2 = self.video_codec_combo.findData(cur_vcodec)
+        if idx2 >= 0:
+            self.video_codec_combo.setCurrentIndex(idx2)
+        self.video_codec_combo.currentIndexChanged.connect(
+            lambda: self.settings.set('video_codec', self.video_codec_combo.currentData())
+        )
+        format_grid.addWidget(self.video_codec_combo, 0, 3)
+        format_grid.setColumnStretch(1, 1)
+        format_grid.setColumnStretch(3, 1)
+        video_layout.addLayout(format_grid)
+
+        # Subtitles setting placed inside Video Settings
+        self.chk_subtitles = QCheckBox("Download subtitles (if available)")
+        self.chk_subtitles.setChecked(self.settings.get('download_subtitles'))
+        self.chk_subtitles.toggled.connect(self.toggle_subs_setting)
+        video_layout.addWidget(self.chk_subtitles)
+
+        # Video Metadata Tags Section
+        v_meta_section_lbl = QLabel("Embedded Video Metadata Tags:")
+        v_meta_section_lbl.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 6px;")
+        video_layout.addWidget(v_meta_section_lbl)
+
+        self.chk_embed_all_video_meta = QCheckBox("Embed all video metadata (Recommended)")
+        is_embed_all_v = self.settings.get('embed_all_video_metadata', True)
+        self.chk_embed_all_video_meta.setChecked(is_embed_all_v)
+        video_layout.addWidget(self.chk_embed_all_video_meta)
+
+        self.video_meta_tags_widget = QWidget()
+        v_meta_grid = QGridLayout(self.video_meta_tags_widget)
+        v_meta_grid.setContentsMargins(20, 2, 0, 2)
+        v_meta_grid.setHorizontalSpacing(30)
+        v_meta_grid.setVerticalSpacing(6)
+
+        v_stored_tags = self.settings.get('video_metadata_tags') or {}
+        self.chk_vmeta_title_desc = QCheckBox("Video Title & Description")
+        self.chk_vmeta_author = QCheckBox("Channel / Creator Name")
+        self.chk_vmeta_year = QCheckBox("Release Date / Year")
+        self.chk_vmeta_thumbnail = QCheckBox("Embed Video Thumbnail (Cover Poster)")
+        self.chk_vmeta_chapters = QCheckBox("Embed Chapter Markers (Timestamps)")
+        self.chk_vmeta_subtitles = QCheckBox("Embed Soft Subtitles (if available)")
+
+        self.video_tag_checkboxes = {
+            'title_desc': self.chk_vmeta_title_desc,
+            'author': self.chk_vmeta_author,
+            'year': self.chk_vmeta_year,
+            'thumbnail': self.chk_vmeta_thumbnail,
+            'chapters': self.chk_vmeta_chapters,
+            'subtitles': self.chk_vmeta_subtitles,
+        }
+
+        for k, chk in self.video_tag_checkboxes.items():
+            val = v_stored_tags.get(k, True)
+            chk.setChecked(val)
+            chk.toggled.connect(self._on_video_metadata_tag_toggled)
+
+        v_meta_grid.addWidget(self.chk_vmeta_title_desc, 0, 0)
+        v_meta_grid.addWidget(self.chk_vmeta_author, 0, 1)
+        v_meta_grid.addWidget(self.chk_vmeta_year, 1, 0)
+        v_meta_grid.addWidget(self.chk_vmeta_thumbnail, 1, 1)
+        v_meta_grid.addWidget(self.chk_vmeta_chapters, 2, 0)
+        v_meta_grid.addWidget(self.chk_vmeta_subtitles, 2, 1)
+
+        video_layout.addWidget(self.video_meta_tags_widget)
+        self.chk_embed_all_video_meta.toggled.connect(self._on_embed_all_video_meta_toggled)
+        self._update_video_meta_checkboxes_state(is_embed_all_v)
+
+        layout.addWidget(video_group)
+
+        # 5. Downloader Core (yt-dlp)
         core_layout = QHBoxLayout()
         core_layout.addWidget(QLabel("Downloader Core (yt-dlp):"))
         self.lbl_ytdlp_ver = QLabel(f"<b>{get_installed_ytdlp_version()}</b>")
@@ -835,12 +1032,6 @@ class MainWindow(QMainWindow):
         core_layout.addWidget(self.chk_auto_update)
         core_layout.addStretch()
         layout.addLayout(core_layout)
-
-        # 5. Subtitles
-        self.chk_subtitles = QCheckBox("Download subtitles (if available)")
-        self.chk_subtitles.setChecked(self.settings.get('download_subtitles'))
-        self.chk_subtitles.toggled.connect(self.toggle_subs_setting)
-        layout.addWidget(self.chk_subtitles)
 
         # 6. Cookies
         cookie_group = QGroupBox("Cookies")
@@ -940,6 +1131,61 @@ class MainWindow(QMainWindow):
         self.naming_input.setText(default_pattern)
         self.settings.set('naming_pattern', default_pattern)
 
+    def _on_embed_all_meta_toggled(self, checked: bool):
+        self.settings.set('embed_all_metadata', checked)
+        self._update_meta_checkboxes_state(checked)
+
+    def _update_meta_checkboxes_state(self, embed_all: bool):
+        for k, chk in getattr(self, 'tag_checkboxes', {}).items():
+            if embed_all:
+                chk.blockSignals(True)
+                chk.setChecked(True)
+                chk.blockSignals(False)
+                chk.setEnabled(False)
+            else:
+                stored = (self.settings.get('audio_metadata_tags') or {}).get(k, True)
+                chk.blockSignals(True)
+                chk.setChecked(stored)
+                chk.blockSignals(False)
+                chk.setEnabled(True)
+
+    def _on_metadata_tag_toggled(self):
+        if not self.chk_embed_all_meta.isChecked():
+            current_tags = {k: chk.isChecked() for k, chk in self.tag_checkboxes.items()}
+            self.settings.set('audio_metadata_tags', current_tags)
+
+    def insert_video_naming_token(self, token: str):
+        text = self.v_naming_input.text()
+        self.v_naming_input.setText(text + token)
+
+    def reset_video_naming_pattern(self):
+        default_pattern = "{title}"
+        self.v_naming_input.setText(default_pattern)
+        self.settings.set('video_naming_pattern', default_pattern)
+
+    def _on_embed_all_video_meta_toggled(self, checked: bool):
+        self.settings.set('embed_all_video_metadata', checked)
+        self._update_video_meta_checkboxes_state(checked)
+
+    def _update_video_meta_checkboxes_state(self, embed_all: bool):
+        for k, chk in getattr(self, 'video_tag_checkboxes', {}).items():
+            if embed_all:
+                chk.blockSignals(True)
+                chk.setChecked(True)
+                chk.blockSignals(False)
+                chk.setEnabled(False)
+            else:
+                stored = (self.settings.get('video_metadata_tags') or {}).get(k, True)
+                chk.blockSignals(True)
+                chk.setChecked(stored)
+                chk.blockSignals(False)
+                chk.setEnabled(True)
+
+    def _on_video_metadata_tag_toggled(self):
+        if not self.chk_embed_all_video_meta.isChecked():
+            current_tags = {k: chk.isChecked() for k, chk in self.video_tag_checkboxes.items()}
+            self.settings.set('video_metadata_tags', current_tags)
+
     # ─── TAB 5: ABOUT ──────────────────────────────────────────────────────────
 
     def setup_about_tab(self):
@@ -950,7 +1196,7 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #ffffff;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
-        version = QLabel("Version: 1.2.0-beta")
+        version = QLabel("Version: 1.3.0")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)
         btn_layout = QHBoxLayout()
@@ -1117,44 +1363,57 @@ class MainWindow(QMainWindow):
         self.refresh_history()
 
     def highlight_format_combo(self):
+        if hasattr(self, '_pulse_timer') and self._pulse_timer.isActive():
+            self._pulse_timer.stop()
+
+        shadow = QGraphicsDropShadowEffect(self.format_combo)
+        shadow.setColor(QColor(56, 189, 248, 220))
+        shadow.setBlurRadius(16)
+        shadow.setOffset(0, 0)
+        self.format_combo.setGraphicsEffect(shadow)
+
         self._pulse_step = 0
-        self._pulse_count = 0
         self._pulse_timer = QTimer(self)
 
         def do_pulse():
             import math
             self._pulse_step += 1
-            t = (math.sin(self._pulse_step * 0.2) + 1.0) / 2.0
-            r = int(30 + (56 - 30) * t)
-            g = int(41 + (189 - 41) * t)
-            b = int(59 + (248 - 59) * t)
-            hex_color = f"#{r:02x}{g:02x}{b:02x}"
-            self.format_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: {hex_color};
+            t = (math.sin(self._pulse_step * 0.3) + 1.0) / 2.0
+            alpha = int(120 + 135 * t)
+            radius = int(8 + 14 * t)
+            shadow.setColor(QColor(56, 189, 248, alpha))
+            shadow.setBlurRadius(radius)
+
+            self.format_combo.setStyleSheet("""
+                QComboBox {
+                    background-color: #1e293b;
                     border: 2px solid #38bdf8;
-                    color: #ffffff;
+                    color: #38bdf8;
                     font-weight: bold;
                     border-radius: 6px;
-                }}
+                }
             """)
-            if self._pulse_step >= 31:
+
+            if self._pulse_step >= 24:
                 self._pulse_timer.stop()
+                self.format_combo.setGraphicsEffect(None)
                 self.format_combo.setStyleSheet("""
                     QComboBox {
                         background-color: #1e293b;
                         border: 2px solid #38bdf8;
-                        color: #ffffff;
+                        color: #38bdf8;
+                        font-weight: bold;
                         border-radius: 6px;
                     }
                 """)
 
         self._pulse_timer.timeout.connect(do_pulse)
-        self._pulse_timer.start(35)
+        self._pulse_timer.start(50)
 
     def clear_format_combo_highlight(self):
         if hasattr(self, '_pulse_timer') and self._pulse_timer.isActive():
             self._pulse_timer.stop()
+        self.format_combo.setGraphicsEffect(None)
         self.format_combo.setStyleSheet("")
 
     def add_to_queue_action(self):

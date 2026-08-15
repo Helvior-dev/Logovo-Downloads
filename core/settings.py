@@ -23,6 +23,29 @@ class SettingsManager:
             'speed_limit': 'Unlimited', # 'Unlimited', '1 MB/s', '3 MB/s', '5 MB/s', '10 MB/s', '20 MB/s'
             'post_download_action': 'Disabled', # 'Disabled', 'Shutdown PC', 'Sleep / Suspend'
             'check_ytdlp_updates_on_startup': True,
+            'embed_all_metadata': True,
+            'download_audio_lyrics': False,
+            'audio_metadata_tags': {
+                'artist': True,
+                'title': True,
+                'album': True,
+                'cover': True,
+                'track_number': True,
+                'year': True,
+                'lyrics': True
+            },
+            'video_naming_pattern': '{title}',
+            'video_container': 'mp4',
+            'video_codec': 'auto',
+            'embed_all_video_metadata': True,
+            'video_metadata_tags': {
+                'title_desc': True,
+                'author': True,
+                'year': True,
+                'thumbnail': True,
+                'chapters': True,
+                'subtitles': True
+            },
             'use_cookies': False,
             'cookie_source_type': 'browser', # 'browser' or 'file'
             'cookie_browser': 'chrome',

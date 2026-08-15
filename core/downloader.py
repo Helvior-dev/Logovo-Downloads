@@ -15,12 +15,12 @@ from core.settings import SettingsManager
 
 try:
     from mutagen.flac import FLAC, Picture
-    from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1, TRCK
+    from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1, TRCK, TDRC, TYER, USLT
     from mutagen.mp4 import MP4, MP4Cover
     from mutagen.oggopus import OggOpus
 except ImportError:
     FLAC, Picture = None, None
-    ID3, APIC, TALB, TIT2, TPE1, TRCK = None, None, None, None, None, None
+    ID3, APIC, TALB, TIT2, TPE1, TRCK, TDRC, TYER, USLT = None, None, None, None, None, None, None, None, None
     MP4, MP4Cover = None, None
     OggOpus = None
 
@@ -454,7 +454,7 @@ def restore_dates_from_order(output_dir: Path | str) -> int:
     return restored
 
 
-def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict]) -> None:
+def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict], settings: Optional[Any] = None) -> None:
     """
     Re-index and update ID3/FLAC/M4A/Opus tags & timestamps for all existing files in a playlist folder
     so track numbers (1..N) and total tracks always match the current online playlist structure without gaps.
@@ -466,6 +466,15 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict])
     count = len(entries)
     stem_map = read_stem_vid_map(out)
     valid_exts = (".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv", ".webm", ".aac", ".alac")
+
+    embed_all = True if settings is None else settings.get('embed_all_metadata', True)
+    tag_opts = {} if settings is None else settings.get('audio_metadata_tags', {})
+
+    track_number_enabled = embed_all or tag_opts.get('track_number', True)
+    album_enabled = embed_all or tag_opts.get('album', True)
+    artist_enabled = embed_all or tag_opts.get('artist', True)
+    title_enabled = embed_all or tag_opts.get('title', True)
+    year_enabled = embed_all or tag_opts.get('year', True)
 
     # Map vid -> list of existing Path objects
     vid_to_paths: dict[str, list[Path]] = {}
@@ -485,6 +494,8 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict])
         track_num = count - i
         vid = entry.get("id") or (entry.get("url", "").split("v=")[-1].split("&")[0])
         title = entry.get("title", "")
+        author = entry.get("uploader") or entry.get("artist") or entry.get("channel") or ""
+        year = str(entry.get("release_year") or entry.get("upload_date") or "")[:4] or None
 
         target_file: Optional[Path] = None
 
@@ -503,15 +514,22 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict])
         if target_file and target_file.exists():
             ordered_file_names.append(target_file.name)
             ext = target_file.suffix.lower()
+
+            target_idx = track_num if track_number_enabled else None
+            target_album = out.name if album_enabled else None
+            target_art = author if artist_enabled else None
+            target_tit = title if title_enabled else None
+            target_yr = year if year_enabled else None
+
             try:
                 if ext == ".mp3":
-                    fix_mp3_tags(target_file, track_num=track_num, total_tracks=count, album=out.name)
+                    fix_mp3_tags(target_file, track_num=target_idx, total_tracks=count if track_number_enabled else None, album=target_album, artist=target_art, title=target_tit, year=target_yr)
                 elif ext == ".flac":
-                    fix_flac_tags(target_file, track_num=track_num, total_tracks=count, album=out.name)
+                    fix_flac_tags(target_file, track_num=target_idx, total_tracks=count if track_number_enabled else None, album=target_album, artist=target_art, title=target_tit, year=target_yr)
                 elif ext in (".opus", ".ogg"):
-                    fix_opus_tags(target_file, track_num=track_num, total_tracks=count, album=out.name)
+                    fix_opus_tags(target_file, track_num=target_idx, total_tracks=count if track_number_enabled else None, album=target_album, artist=target_art, title=target_tit, year=target_yr)
                 elif ext in (".m4a", ".aac", ".alac"):
-                    fix_m4a_tags(target_file, track_num=track_num, total_tracks=count, album=out.name)
+                    fix_m4a_tags(target_file, track_num=target_idx, total_tracks=count if track_number_enabled else None, album=target_album, artist=target_art, title=target_tit, year=target_yr)
 
                 # Update timestamp for proper sorting
                 new_time = base_time - 86400 + track_num
@@ -601,13 +619,19 @@ def fix_mp3_tags(
     album: Optional[str] = None,
     artist: Optional[str] = None,
     title: Optional[str] = None,
+    year: Optional[str] = None,
+    lyrics: Optional[str] = None,
 ) -> None:
     if ID3 is None:
         return
     try:
         tags = ID3(path)
     except Exception:
-        return
+        try:
+            tags = ID3()
+            tags.save(str(path), v2_version=3)
+        except Exception:
+            return
 
     changed = False
     if artist and TPE1:
@@ -632,9 +656,22 @@ def fix_mp3_tags(
         tags["TALB"] = TALB(encoding=3, text=[album])
         changed = True
 
+    if year:
+        y_str = str(year).strip()[:4]
+        if TYER:
+            tags["TYER"] = TYER(encoding=3, text=[y_str])
+            changed = True
+        if TDRC:
+            tags["TDRC"] = TDRC(encoding=3, text=[y_str])
+            changed = True
+
+    if lyrics and USLT:
+        tags["USLT"] = USLT(encoding=3, lang="eng", desc="Lyrics", text=lyrics)
+        changed = True
+
     if changed:
         try:
-            tags.save(v2_version=3)
+            tags.save(str(path), v2_version=3)
         except Exception:
             pass
 
@@ -699,6 +736,8 @@ def fix_flac_tags(
     album: Optional[str] = None,
     artist: Optional[str] = None,
     title: Optional[str] = None,
+    year: Optional[str] = None,
+    lyrics: Optional[str] = None,
 ) -> None:
     if FLAC is None:
         return
@@ -730,6 +769,14 @@ def fix_flac_tags(
 
     if album and not audio.get("album", [""])[0].strip():
         audio["album"] = [album]
+        changed = True
+
+    if year:
+        audio["date"] = [str(year).strip()[:4]]
+        changed = True
+
+    if lyrics:
+        audio["lyrics"] = [lyrics]
         changed = True
 
     if changed:
@@ -794,6 +841,8 @@ def fix_opus_tags(
     album: Optional[str] = None,
     artist: Optional[str] = None,
     title: Optional[str] = None,
+    year: Optional[str] = None,
+    lyrics: Optional[str] = None,
 ) -> None:
     if OggOpus is None:
         return
@@ -825,6 +874,14 @@ def fix_opus_tags(
 
     if album and not audio.get("album", [""])[0].strip():
         audio["album"] = [album]
+        changed = True
+
+    if year:
+        audio["date"] = [str(year).strip()[:4]]
+        changed = True
+
+    if lyrics:
+        audio["lyrics"] = [lyrics]
         changed = True
 
     if changed:
@@ -877,6 +934,8 @@ def fix_m4a_tags(
     album: Optional[str] = None,
     artist: Optional[str] = None,
     title: Optional[str] = None,
+    year: Optional[str] = None,
+    lyrics: Optional[str] = None,
 ) -> None:
     if MP4 is None:
         return
@@ -902,6 +961,14 @@ def fix_m4a_tags(
         audio["\xa9alb"] = [album]
         changed = True
 
+    if year:
+        audio["\xa9day"] = [str(year).strip()[:4]]
+        changed = True
+
+    if lyrics:
+        audio["\xa9lyr"] = [lyrics]
+        changed = True
+
     if changed:
         try:
             audio.save()
@@ -911,25 +978,20 @@ def fix_m4a_tags(
 
 def parse_speed_limit(limit_str: Optional[str]) -> Optional[int]:
     """Convert '5 MB/s', '10 MB/s', '500 KB/s', etc. to bytes per second."""
-    if not limit_str or str(limit_str).lower() in ("unlimited", "none", "0"):
+    if not limit_str or "unlimited" in limit_str.lower():
         return None
-    s = str(limit_str).upper().replace("/S", "").replace("S", "").strip()
-    if "MB" in s:
-        try:
-            return int(float(s.replace("MB", "").strip()) * 1024 * 1024)
-        except ValueError:
-            pass
-    elif "KB" in s:
-        try:
-            return int(float(s.replace("KB", "").strip()) * 1024)
-        except ValueError:
-            pass
-    elif "GB" in s:
-        try:
-            return int(float(s.replace("GB", "").strip()) * 1024 * 1024 * 1024)
-        except ValueError:
-            pass
-    return None
+    m = re.match(r"^([\d.]+)\s*([KkMmGg]?)(?:[Bb]/s|[Bb]ps)?$", limit_str.strip())
+    if not m:
+        return None
+    val = float(m.group(1))
+    unit = m.group(2).upper()
+    if unit == "K":
+        return int(val * 1024)
+    elif unit == "M":
+        return int(val * 1024 * 1024)
+    elif unit == "G":
+        return int(val * 1024 * 1024 * 1024)
+    return int(val)
 
 
 def postprocess_audio_file(
@@ -939,27 +1001,64 @@ def postprocess_audio_file(
     album: Optional[str] = None,
     artist: Optional[str] = None,
     title: Optional[str] = None,
+    year: Optional[str] = None,
     naming_pattern: Optional[str] = None,
+    settings: Optional[Any] = None,
 ) -> Path:
-    """Apply cover cropping, tag fixing, and optional custom renaming to a downloaded audio file."""
+    """Fix artwork to 1000x1000 and ID3 tags for Windows Explorer / Groove."""
     path = Path(file_path)
     if not path.exists():
         return path
 
+    tag_opts = {}
+    embed_all = True
+    if settings:
+        embed_all = settings.get('embed_all_metadata', True)
+        tag_opts = settings.get('audio_metadata_tags', {})
+
+    artist_enabled = embed_all or tag_opts.get('artist', True)
+    title_enabled = embed_all or tag_opts.get('title', True)
+    album_enabled = embed_all or tag_opts.get('album', True)
+    cover_enabled = embed_all or tag_opts.get('cover', True)
+    track_number_enabled = embed_all or tag_opts.get('track_number', True)
+    year_enabled = embed_all or tag_opts.get('year', True)
+    lyrics_enabled = embed_all or tag_opts.get('lyrics', True)
+
+    target_artist = artist if artist_enabled else None
+    target_title = title if title_enabled else None
+    target_album = album if album_enabled else None
+    target_idx = playlist_index if track_number_enabled else None
+    target_year = year if year_enabled else None
+
+    target_lyrics = None
+    if lyrics_enabled:
+        for l_ext in (".lrc", ".srt", ".vtt"):
+            l_file = path.with_suffix(l_ext)
+            if l_file.exists():
+                try:
+                    target_lyrics = l_file.read_text(encoding="utf-8", errors="ignore")
+                    break
+                except Exception:
+                    pass
+
     ext = path.suffix.lower()
     try:
         if ext == ".mp3":
-            fix_mp3_cover(path)
-            fix_mp3_tags(path, track_num=playlist_index, total_tracks=playlist_count, album=album, artist=artist)
+            if cover_enabled:
+                fix_mp3_cover(path)
+            fix_mp3_tags(path, track_num=target_idx, total_tracks=playlist_count if track_number_enabled else None, album=target_album, artist=target_artist, title=target_title, year=target_year, lyrics=target_lyrics)
         elif ext == ".flac":
-            fix_flac_cover(path)
-            fix_flac_tags(path, track_num=playlist_index, total_tracks=playlist_count, album=album, artist=artist)
+            if cover_enabled:
+                fix_flac_cover(path)
+            fix_flac_tags(path, track_num=target_idx, total_tracks=playlist_count if track_number_enabled else None, album=target_album, artist=target_artist, title=target_title, year=target_year, lyrics=target_lyrics)
         elif ext in (".opus", ".ogg"):
-            fix_opus_cover(path)
-            fix_opus_tags(path, track_num=playlist_index, total_tracks=playlist_count, album=album, artist=artist)
+            if cover_enabled:
+                fix_opus_cover(path)
+            fix_opus_tags(path, track_num=target_idx, total_tracks=playlist_count if track_number_enabled else None, album=target_album, artist=target_artist, title=target_title, year=target_year, lyrics=target_lyrics)
         elif ext in (".m4a", ".aac", ".alac"):
-            fix_m4a_cover(path)
-            fix_m4a_tags(path, track_num=playlist_index, total_tracks=playlist_count, album=album)
+            if cover_enabled:
+                fix_m4a_cover(path)
+            fix_m4a_tags(path, track_num=target_idx, total_tracks=playlist_count if track_number_enabled else None, album=target_album, artist=target_artist, title=target_title, year=target_year, lyrics=target_lyrics)
 
         # Apply custom naming pattern if specified
         if naming_pattern and naming_pattern.strip():
@@ -968,12 +1067,14 @@ def postprocess_audio_file(
             safe_title = title or path.stem
             safe_idx = f"{playlist_index:02d}" if playlist_index is not None else ""
             safe_album = album or ""
+            safe_year = str(year or "")
             
             new_stem = pat
             new_stem = new_stem.replace("{artist}", safe_artist)
             new_stem = new_stem.replace("{title}", safe_title)
             new_stem = new_stem.replace("{index}", safe_idx)
             new_stem = new_stem.replace("{album}", safe_album)
+            new_stem = new_stem.replace("{year}", safe_year)
             
             for ch in r'\/:*?"<>|':
                 new_stem = new_stem.replace(ch, "_")
@@ -993,6 +1094,60 @@ def postprocess_audio_file(
                 pass
     except Exception as e:
         print(f"Error during audio post-processing {path.name}: {e}")
+    return path
+
+
+def postprocess_video_file(
+    file_path: Path | str,
+    playlist_index: Optional[int] = None,
+    playlist_count: Optional[int] = None,
+    artist: Optional[str] = None,
+    title: Optional[str] = None,
+    resolution: Optional[str] = None,
+    fps: Optional[str] = None,
+    year: Optional[str] = None,
+    naming_pattern: Optional[str] = None,
+) -> Path:
+    """Apply custom naming pattern and timestamps to a downloaded video file."""
+    path = Path(file_path)
+    if not path.exists():
+        return path
+
+    if naming_pattern and naming_pattern.strip():
+        pat = naming_pattern.strip()
+        safe_title = title or path.stem
+        safe_artist = artist or ""
+        safe_res = resolution or ""
+        safe_fps = f"{fps}fps" if fps and not str(fps).endswith("fps") else str(fps or "")
+        safe_year = str(year or "")
+        safe_idx = f"{playlist_index:02d}" if playlist_index is not None else ""
+
+        new_stem = pat
+        new_stem = new_stem.replace("{title}", safe_title)
+        new_stem = new_stem.replace("{author}", safe_artist)
+        new_stem = new_stem.replace("{artist}", safe_artist)
+        new_stem = new_stem.replace("{resolution}", safe_res)
+        new_stem = new_stem.replace("{fps}", safe_fps)
+        new_stem = new_stem.replace("{year}", safe_year)
+        new_stem = new_stem.replace("{index}", safe_idx)
+
+        for ch in r'\/:*?"<>|':
+            new_stem = new_stem.replace(ch, "_")
+        new_stem = new_stem.strip(" -._")
+        if new_stem:
+            new_path = path.parent / f"{new_stem}{path.suffix}"
+            if new_path != path and not new_path.exists():
+                path = path.rename(new_path)
+
+    # Apply Windows / player timestamp ordering if in a playlist
+    if playlist_index is not None:
+        try:
+            base_time = time.time()
+            new_time = base_time - 86400 + playlist_index
+            os.utime(str(path), (new_time, new_time))
+        except Exception:
+            pass
+
     return path
 
 
@@ -1182,6 +1337,9 @@ class MediaDownloader:
         extracted_thumb: str = ""
         extracted_artist: str = ""
         extracted_title: str = ""
+        extracted_year: str = ""
+        extracted_resolution: str = ""
+        extracted_fps: str = ""
         if "v=" in clean_url:
             extracted_vid = clean_url.split("v=")[-1].split("&")[0]
         elif "youtu.be/" in clean_url:
@@ -1195,7 +1353,7 @@ class MediaDownloader:
             ydl_opts["download_archive"] = archive_path
 
         def internal_progress_hook(d: dict) -> None:
-            nonlocal extracted_vid, extracted_thumb, extracted_artist, extracted_title
+            nonlocal extracted_vid, extracted_thumb, extracted_artist, extracted_title, extracted_year, extracted_resolution, extracted_fps
             if d.get("status") == "finished":
                 fn = d.get("filename")
                 if fn:
@@ -1209,6 +1367,21 @@ class MediaDownloader:
                     extracted_artist = info.get("artist") or info.get("creator") or info.get("uploader")
                 if info.get("track") or info.get("title"):
                     extracted_title = info.get("track") or info.get("title")
+                if info.get("release_year"):
+                    extracted_year = str(info.get("release_year"))[:4]
+                elif info.get("upload_date"):
+                    extracted_year = str(info.get("upload_date"))[:4]
+                elif info.get("release_date"):
+                    extracted_year = str(info.get("release_date"))[:4]
+                if info.get("resolution"):
+                    extracted_resolution = str(info.get("resolution"))
+                elif info.get("height"):
+                    extracted_resolution = f"{info.get('height')}p"
+                if info.get("fps"):
+                    try:
+                        extracted_fps = str(int(info.get("fps")))
+                    except Exception:
+                        pass
                 stem = Path(fn).stem if fn else ""
                 if should_track_playlist and stem and extracted_vid:
                     update_stem_vid_map(self.output_dir, stem, extracted_vid)
@@ -1216,7 +1389,7 @@ class MediaDownloader:
                 progress_callback(d)
 
         def internal_postprocessor_hook(d: dict) -> None:
-            nonlocal extracted_vid, extracted_thumb, extracted_artist, extracted_title
+            nonlocal extracted_vid, extracted_thumb, extracted_artist, extracted_title, extracted_year, extracted_resolution, extracted_fps
             if d.get("status") == "finished":
                 fp = d.get("filepath") or (d.get("info_dict") or {}).get("filepath")
                 if fp:
@@ -1230,6 +1403,21 @@ class MediaDownloader:
                     extracted_artist = info.get("artist") or info.get("creator") or info.get("uploader")
                 if info.get("track") or info.get("title"):
                     extracted_title = info.get("track") or info.get("title")
+                if info.get("release_year"):
+                    extracted_year = str(info.get("release_year"))[:4]
+                elif info.get("upload_date"):
+                    extracted_year = str(info.get("upload_date"))[:4]
+                elif info.get("release_date"):
+                    extracted_year = str(info.get("release_date"))[:4]
+                if info.get("resolution"):
+                    extracted_resolution = str(info.get("resolution"))
+                elif info.get("height"):
+                    extracted_resolution = f"{info.get('height')}p"
+                if info.get("fps"):
+                    try:
+                        extracted_fps = str(int(info.get("fps")))
+                    except Exception:
+                        pass
                 stem = Path(fp).stem if fp else ""
                 if should_track_playlist and stem and extracted_vid:
                     update_stem_vid_map(self.output_dir, stem, extracted_vid)
@@ -1255,23 +1443,43 @@ class MediaDownloader:
                 pps.append({"key": "EmbedThumbnail"})
 
             ydl_opts["postprocessors"] = pps
+
+            if self.settings and self.settings.get('download_audio_lyrics', True):
+                ydl_opts["writesubtitles"] = True
+                ydl_opts["writeautomaticsub"] = True
+                ydl_opts["subtitleslangs"] = ["all", "-live_chat"]
+                ydl_opts["subtitlesformat"] = "lrc/srt/best"
         else:
-            if "H.264" in media_type:
-                ydl_opts["format"] = "bestvideo[vcodec^=avc]+bestaudio/best"
-                ydl_opts["merge_output_format"] = "mp4"
-            elif "H.265" in media_type:
-                ydl_opts["format"] = "bestvideo[vcodec^=hev]+bestaudio/best"
-                ydl_opts["merge_output_format"] = "mkv"
+            v_container = self.settings.get('video_container', 'mp4') if self.settings else 'mp4'
+            v_codec = self.settings.get('video_codec', 'auto') if self.settings else 'auto'
+            embed_all_v_meta = self.settings.get('embed_all_video_metadata', True) if self.settings else True
+            v_meta_tags = self.settings.get('video_metadata_tags', {}) if self.settings else {}
+
+            target_container = "mkv" if v_container == "mkv" else "mp4"
+
+            if v_codec == "h264" or "H.264" in media_type:
+                ydl_opts["format"] = "bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc]+bestaudio/best[vcodec^=avc]/best"
+                ydl_opts["merge_output_format"] = target_container
+            elif v_codec == "h265" or "H.265" in media_type:
+                ydl_opts["format"] = "bestvideo[vcodec^=hev]+bestaudio/bestvideo[vcodec^=h265]+bestaudio/best"
+                ydl_opts["merge_output_format"] = "mkv" if v_container == "mkv" else "mp4"
+            elif v_codec == "vp9_av1":
+                ydl_opts["format"] = "bestvideo[vcodec^=vp9]+bestaudio/bestvideo[vcodec^=av01]+bestaudio/bestvideo+bestaudio/best"
+                ydl_opts["merge_output_format"] = "mkv" if v_container == "mkv" else "mp4"
             else:
                 ydl_opts["format"] = self._map_quality(quality)
-                ydl_opts["merge_output_format"] = "mp4"
+                ydl_opts["merge_output_format"] = target_container
 
-            ydl_opts["postprocessors"] = [
-                {"key": "FFmpegMetadata", "add_metadata": True},
-                {"key": "EmbedThumbnail"},
-            ]
-            if subtitles and subtitles.get("download"):
-                ydl_opts["postprocessors"].append({"key": "FFmpegEmbedSubtitle"})
+            video_pps = []
+            if embed_all_v_meta or v_meta_tags.get('title_desc', True) or v_meta_tags.get('author', True):
+                add_chap = embed_all_v_meta or v_meta_tags.get('chapters', True)
+                video_pps.append({"key": "FFmpegMetadata", "add_metadata": True, "add_chapters": add_chap})
+            if embed_all_v_meta or v_meta_tags.get('thumbnail', True):
+                video_pps.append({"key": "EmbedThumbnail"})
+            if (embed_all_v_meta or v_meta_tags.get('subtitles', True)) and subtitles and subtitles.get("download"):
+                video_pps.append({"key": "FFmpegEmbedSubtitle"})
+
+            ydl_opts["postprocessors"] = video_pps
 
         start_time = time.time()
         success = False
@@ -1308,7 +1516,7 @@ class MediaDownloader:
             self.last_error = "Unknown error occurred."
 
         try:
-            # Post-process audio files: crop covers to 1000x1000 square & fix tags for Windows Explorer
+            # Post-process downloaded files: crop covers / tags for audio, custom renaming for video
             processed_files: list[Path] = []
             for fp in list(downloaded_files):
                 p = Path(fp)
@@ -1326,7 +1534,22 @@ class MediaDownloader:
                                 album=os.path.basename(self.output_dir) if playlist_count else None,
                                 artist=extracted_artist or author,
                                 title=extracted_title or title,
+                                year=extracted_year,
                                 naming_pattern=naming_pattern,
+                                settings=self.settings,
+                            )
+                        else:
+                            v_pat = self.settings.get('video_naming_pattern', '{title}') if self.settings else '{title}'
+                            candidate = postprocess_video_file(
+                                candidate,
+                                playlist_index=playlist_index,
+                                playlist_count=playlist_count,
+                                artist=extracted_artist or author,
+                                title=extracted_title or title,
+                                resolution=extracted_resolution,
+                                fps=extracted_fps,
+                                year=extracted_year,
+                                naming_pattern=v_pat,
                             )
                         processed_files.append(candidate)
                         if should_track_playlist:
@@ -1350,7 +1573,22 @@ class MediaDownloader:
                                 album=os.path.basename(self.output_dir) if playlist_count else None,
                                 artist=extracted_artist or author,
                                 title=extracted_title or title,
+                                year=extracted_year,
                                 naming_pattern=naming_pattern,
+                                settings=self.settings,
+                            )
+                        else:
+                            v_pat = self.settings.get('video_naming_pattern', '{title}') if self.settings else '{title}'
+                            f = postprocess_video_file(
+                                f,
+                                playlist_index=playlist_index,
+                                playlist_count=playlist_count,
+                                artist=extracted_artist or author,
+                                title=extracted_title or title,
+                                resolution=extracted_resolution,
+                                fps=extracted_fps,
+                                year=extracted_year,
+                                naming_pattern=v_pat,
                             )
                         processed_files.append(f)
                         if should_track_playlist:
