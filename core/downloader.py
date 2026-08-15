@@ -426,21 +426,61 @@ def check_and_clean_archive_if_file_missing(output_dir: Path | str, vid: str, ti
             pass
 
 
-def write_m3u8_playlist(output_dir: Path | str, file_names: list[str]) -> None:
-    """Generate standard UTF-8 playlist.m3u8 file in output directory."""
-    if not file_names:
-        return
+def write_m3u8_playlist(output_dir: Path | str, file_names: Optional[list[str]] = None) -> None:
+    """Generate standard UTF-8 playlist.m3u8 file in output directory with verified existing files."""
     out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    if not out.exists():
+        return
+
+    valid_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv", ".webm", ".aac", ".alac"}
+    
+    # 1. Gather all actual media files on disk
+    try:
+        actual_files = {f.name: f for f in out.iterdir() if f.is_file() and f.suffix.lower() in valid_exts}
+    except Exception:
+        return
+    if not actual_files:
+        return
+
+    # 2. Build ordered list of real existing filenames
+    ordered_existing: list[str] = []
+    seen = set()
+
+    # If file_names provided, use them first if they exist on disk
+    if file_names:
+        for fn in file_names:
+            if fn in actual_files and fn not in seen:
+                ordered_existing.append(fn)
+                seen.add(fn)
+
+    # If playlist_order.txt exists, use any remaining files from it
+    order_file = out / "playlist_order.txt"
+    if order_file.exists():
+        try:
+            for ln in order_file.read_text(encoding="utf-8").splitlines():
+                fn = ln.strip()
+                if fn in actual_files and fn not in seen:
+                    ordered_existing.append(fn)
+                    seen.add(fn)
+        except Exception:
+            pass
+
+    # Append any other actual files sorted by modification time
+    remaining = [fn for fn in actual_files if fn not in seen]
+    remaining.sort(key=lambda fn: actual_files[fn].stat().st_mtime)
+    ordered_existing.extend(remaining)
+
+    if not ordered_existing:
+        return
+
+    # Write UTF-8-sig (with BOM) for 100% compatibility across VLC, Windows Media Player, Groove, AIMP, foobar2000
     m3u8_path = out / "playlist.m3u8"
     try:
         lines = ["#EXTM3U\n"]
-        for fn in file_names:
-            if not fn:
-                continue
+        for fn in ordered_existing:
             clean_title = Path(fn).stem
             lines.append(f"#EXTINF:-1,{clean_title}\n{fn}\n")
-        m3u8_path.write_text("".join(lines), encoding="utf-8")
+        m3u8_path.write_text("".join(lines), encoding="utf-8-sig")
     except Exception as e:
         print(f"Error writing playlist.m3u8: {e}")
 
@@ -1581,7 +1621,7 @@ class MediaDownloader:
                 for candidate in target_paths:
                     if candidate.exists() and candidate.is_file() and candidate not in processed_files:
                         if is_audio:
-                            postprocess_audio_file(
+                            candidate = postprocess_audio_file(
                                 candidate,
                                 playlist_index=playlist_index,
                                 playlist_count=playlist_count,
@@ -1620,7 +1660,7 @@ class MediaDownloader:
                         and (time.time() - f.stat().st_mtime < 120 or f.stat().st_mtime >= start_time - 5)
                     ):
                         if is_audio:
-                            postprocess_audio_file(
+                            f = postprocess_audio_file(
                                 f,
                                 playlist_index=playlist_index,
                                 playlist_count=playlist_count,
