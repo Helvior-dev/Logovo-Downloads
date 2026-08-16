@@ -44,6 +44,7 @@ from core.utils import clean_filename_for_all_devices
 from core.settings import SettingsManager, get_app_data_dir
 from core.history import HistoryManager
 from core.taskbar import taskbar_manager
+from core.backup import export_backup, import_backup
 from core.playlists_manager import PlaylistsManager
 from core.updater import (
     get_installed_ytdlp_version,
@@ -183,6 +184,82 @@ class FetchPreviewWorker(QThread):
                 self.error_signal.emit("Could not fetch media metadata from YouTube.", self.context)
         except Exception as e:
             self.error_signal.emit(str(e), self.context)
+
+
+class StartupPlaylistCheckWorker(QThread):
+    finished_signal = pyqtSignal()
+
+    def __init__(self, playlists_mgr, cookies=None):
+        super().__init__()
+        self.playlists_mgr = playlists_mgr
+        self.cookies = cookies
+
+    def run(self):
+        try:
+            valid_media_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac", ".mp4", ".mkv", ".webm"}
+            items = self.playlists_mgr.get_all()
+            for p in items:
+                out_dir = p.get('folder_path')
+                url = p.get('url')
+                if not out_dir or not url or not os.path.exists(out_dir):
+                    continue
+
+                preview = get_video_preview(url, cookies=self.cookies)
+                if not preview or not preview.get('entries'):
+                    continue
+
+                stem_map = read_stem_vid_map(out_dir)
+                vid_set = set(stem_map.values())
+                stem_title_index = {}
+                all_local_stems = []
+
+                for f in Path(out_dir).iterdir():
+                    if f.is_file() and f.suffix.lower() in valid_media_exts and f.stat().st_size >= 500 * 1024:
+                        stem = f.stem
+                        all_local_stems.append(stem)
+                        parts = stem.split(' - ')
+                        if len(parts) >= 2:
+                            a0 = clean_artist_name(parts[0])
+                            t1 = clean_song_title(' - '.join(parts[1:]), a0)
+                            t0 = clean_song_title(parts[0], clean_artist_name(' - '.join(parts[1:])))
+                            a1 = clean_artist_name(' - '.join(parts[1:]))
+                            stem_title_index.setdefault(t1, []).append((a0, stem))
+                            stem_title_index.setdefault(t0, []).append((a1, stem))
+                        else:
+                            t = clean_song_title(stem)
+                            stem_title_index.setdefault(t, []).append(("", stem))
+
+                missing_cnt = 0
+                for entry in preview.get('entries', []):
+                    vid = entry.get('url', '').split('v=')[-1].split('&')[0]
+                    author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
+                    title = entry.get('title') or ""
+
+                    already = False
+                    if vid and vid in vid_set:
+                        already = True
+                    elif title:
+                        ct = clean_song_title(title, author)
+                        ca = clean_artist_name(author)
+                        if ct in stem_title_index:
+                            for stem_a, matched_stem in stem_title_index[ct]:
+                                if not ca or not stem_a or ca in stem_a or stem_a in ca or ca in ('release', 'topic', 'variousartists', 'music', 'soundtrack', 'official', 'vevo') or ca in ct or (stem_a and stem_a in ct):
+                                    already = True
+                                    break
+                        if not already:
+                            for f_stem in all_local_stems:
+                                if _author_and_title_match(f_stem, title, author):
+                                    already = True
+                                    break
+                    if not already:
+                        missing_cnt += 1
+
+                p['new_tracks_count'] = missing_cnt
+
+            self.playlists_mgr.save()
+            self.finished_signal.emit()
+        except Exception:
+            pass
 
 
 class SyncPlaylistWorker(QThread):
@@ -908,6 +985,12 @@ class MainWindow(QMainWindow):
             self.startup_update_thread.result_signal.connect(self.on_startup_update_check_result)
             self.startup_update_thread.start()
 
+        # Startup playlists check for new tracks
+        if self.settings.get('check_playlists_on_startup', False):
+            self.startup_playlist_thread = StartupPlaylistCheckWorker(self.playlists_mgr, cookies=self.get_cookies_config())
+            self.startup_playlist_thread.finished_signal.connect(self.refresh_playlists_ui)
+            self.startup_playlist_thread.start()
+
         # Loading overlay for smooth non-blocking operations
         self.loading_overlay = LoadingOverlay(self)
         self.loading_overlay.hide()
@@ -1234,14 +1317,16 @@ class MainWindow(QMainWindow):
                     pass
 
             pl_track_count = p.get('track_count', 0)
-            is_synced = p.get('status') == 'synced' or (downloaded_count >= pl_track_count and pl_track_count > 0)
-            if is_synced or (downloaded_count > 0 and abs(downloaded_count - pl_track_count) <= 6):
-                count_str = f"<b>{downloaded_count}</b> files (All <b>{pl_track_count}</b> synced)"
+            if downloaded_count >= pl_track_count and pl_track_count > 0:
+                count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date)"
                 status_color = "#10b981"
             else:
                 count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks"
                 status_color = "#38bdf8"
-            meta_lbl = QLabel(f"In Folder: {count_str}  |  Last Synced: {p.get('last_synced', 'Never')}")
+
+            new_cnt = p.get('new_tracks_count', 0)
+            badge_html = f"  <span style='color: #38bdf8; font-weight: bold; background-color: #0f172a; padding: 2px 6px; border-radius: 4px; border: 1px solid #0284c7;'>+{new_cnt} new track{'s' if new_cnt > 1 else ''}</span>" if new_cnt > 0 else ""
+            meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}  |  Last Synced: {p.get('last_synced', 'Never')}")
             meta_lbl.setStyleSheet(f"font-size: 11px; color: {status_color}; font-weight: 500;")
 
             info_layout.addWidget(title_lbl)
@@ -1932,10 +2017,17 @@ class MainWindow(QMainWindow):
         btn_check_update.clicked.connect(self.manual_check_ytdlp_update)
         core_layout.addWidget(btn_check_update)
         core_layout.addSpacing(20)
-        self.chk_auto_update = QCheckBox("Check updates on startup")
+        self.chk_auto_update = QCheckBox("Check yt-dlp updates on startup")
         self.chk_auto_update.setChecked(self.settings.get('check_ytdlp_updates_on_startup', True))
         self.chk_auto_update.toggled.connect(lambda c: self.settings.set('check_ytdlp_updates_on_startup', c))
         core_layout.addWidget(self.chk_auto_update)
+        core_layout.addSpacing(15)
+
+        self.chk_auto_check_playlists = QCheckBox("Check tracked playlists for new tracks on startup")
+        self.chk_auto_check_playlists.setChecked(self.settings.get('check_playlists_on_startup', False))
+        self.chk_auto_check_playlists.toggled.connect(lambda c: self.settings.set('check_playlists_on_startup', c))
+        core_layout.addWidget(self.chk_auto_check_playlists)
+
         core_layout.addStretch()
         layout.addLayout(core_layout)
 
@@ -2100,6 +2192,47 @@ class MainWindow(QMainWindow):
         _update_cookies_ui_state()
 
         layout.addWidget(cookies_group)
+
+        # 8. Data Backup & Migration (Export / Import AppData)
+        lbl_backup = QLabel("Data Backup & Migration")
+        lbl_backup.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 10px; margin-bottom: 2px;")
+        layout.addWidget(lbl_backup)
+
+        backup_group = QWidget()
+        backup_layout = QVBoxLayout(backup_group)
+        backup_layout.setContentsMargins(15, 12, 15, 12)
+        backup_layout.setSpacing(10)
+        backup_group.setStyleSheet("""
+            QWidget#BackupGroup {
+                background-color: #1e293b;
+                border: 1px solid #334155;
+                border-radius: 8px;
+            }
+        """)
+        backup_group.setObjectName("BackupGroup")
+
+        backup_desc = QLabel(
+            "Export or restore your tracked playlists, custom settings, and download history to transfer between PCs or create backups."
+        )
+        backup_desc.setWordWrap(True)
+        backup_desc.setStyleSheet("font-size: 12px; color: #94a3b8; line-height: 1.4;")
+        backup_layout.addWidget(backup_desc)
+
+        backup_btn_row = QHBoxLayout()
+        btn_export_data = QPushButton("Export Backup (.zip)...")
+        btn_export_data.setFixedHeight(32)
+        btn_export_data.clicked.connect(self.export_app_data)
+
+        btn_import_data = QPushButton("Import Backup (.zip)...")
+        btn_import_data.setFixedHeight(32)
+        btn_import_data.clicked.connect(self.import_app_data)
+
+        backup_btn_row.addWidget(btn_export_data)
+        backup_btn_row.addWidget(btn_import_data)
+        backup_btn_row.addStretch()
+        backup_layout.addLayout(backup_btn_row)
+
+        layout.addWidget(backup_group)
         layout.addStretch()
 
         scroll.setWidget(scroll_wrapper)
@@ -2107,6 +2240,40 @@ class MainWindow(QMainWindow):
         main_tab_layout.setContentsMargins(0, 0, 0, 0)
         main_tab_layout.addWidget(scroll)
         self.tabs.addTab(self.settings_tab, "SETTINGS")
+
+    def export_app_data(self):
+        now_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        def_name = f"LogovoDownloads_Backup_{now_date}.zip"
+        initial_dir = self.settings.get('last_selected_folder') or str(Path.home())
+        save_path, _ = QFileDialog.getSaveFileName(self, "Save Data Backup", os.path.join(initial_dir, def_name), "ZIP Archives (*.zip)")
+        if save_path:
+            ok, msg = export_backup(save_path)
+            if ok:
+                QMessageBox.information(self, "Backup Exported", f"Backup created successfully:\n{Path(save_path).name}")
+            else:
+                QMessageBox.warning(self, "Export Failed", msg)
+
+    def import_app_data(self):
+        initial_dir = self.settings.get('last_selected_folder') or str(Path.home())
+        zip_path, _ = QFileDialog.getOpenFileName(self, "Select Backup ZIP File", initial_dir, "ZIP Archives (*.zip)")
+        if zip_path:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Restore",
+                "Restoring backup will overwrite current settings, playlists, and history.\nDo you want to continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                ok, msg = import_backup(zip_path)
+                if ok:
+                    self.settings.data = self.settings.load()
+                    self.playlists_mgr.playlists = self.playlists_mgr.load()
+                    self.history.history = self.history.load()
+                    self.refresh_playlists_ui()
+                    self.refresh_history()
+                    QMessageBox.information(self, "Backup Restored", "Data restored successfully! Your playlists and settings have been reloaded.")
+                else:
+                    QMessageBox.warning(self, "Restore Failed", msg)
 
     def browse_cookies_file(self):
         initial_dir = self.settings.get('last_selected_folder') or str(Path.home())
@@ -2335,8 +2502,20 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Completed items removed from queue.")
 
     def open_downloads_folder(self):
-        folder = self.settings.get('download_path')
-        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        target_folder = None
+        for widget in reversed(self.download_queue):
+            p_dir = widget.item_data.get('playlist_output_dir')
+            if p_dir and os.path.exists(p_dir):
+                target_folder = p_dir
+                break
+
+        if not target_folder:
+            target_folder = self.settings.get('download_path')
+
+        if target_folder and os.path.exists(target_folder):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(target_folder))
+        else:
+            QMessageBox.warning(self, "Folder Not Found", f"Directory does not exist:\n{target_folder}")
 
     def browse_folder(self):
         initial_dir = self.settings.get('last_selected_folder') or self.settings.get('download_path')
@@ -2683,12 +2862,14 @@ class MainWindow(QMainWindow):
 
     def update_queue_ui(self):
         total = len(self.download_queue)
-        success_items = [w for w in self.download_queue if w.status_state == "Success"]
+        downloaded_items = [w for w in self.download_queue if w.status_state == "Success" and "Skipped" not in w.status_label.text()]
+        skipped_items = [w for w in self.download_queue if w.status_state == "Success" and "Skipped" in w.status_label.text()]
         error_items = [w for w in self.download_queue if w.status_state == "Error"]
         unavail_items = [w for w in self.download_queue if w.status_state == "Unavailable"]
         pending_items = [w for w in self.download_queue if w.status_state in ("Pending", "Downloading", "Retrying")]
 
-        completed_count = len(success_items)
+        downloaded_count = len(downloaded_items)
+        skipped_count = len(skipped_items)
         pending_count = len(pending_items)
         error_count = len(error_items)
         unavail_count = len(unavail_items)
@@ -2697,7 +2878,7 @@ class MainWindow(QMainWindow):
         if total == 0:
             self.top_telemetry_label.setText("")
         else:
-            downloaded_mb = sum(estimate_track_size_mb(w.item_data) for w in success_items)
+            downloaded_mb = sum(estimate_track_size_mb(w.item_data) for w in downloaded_items + skipped_items)
             total_mb = sum(estimate_track_size_mb(w.item_data) for w in self.download_queue)
 
             def fmt_mb(mb):
@@ -2733,12 +2914,18 @@ class MainWindow(QMainWindow):
             else:
                 self.global_progress.setValue(int(total_progress / total))
 
+        stats_parts = []
+        if downloaded_count > 0 or (skipped_count == 0 and error_count == 0 and unavail_count == 0):
+            stats_parts.append(f"Downloaded: {downloaded_count}")
+        if skipped_count > 0:
+            stats_parts.append(f"Skipped: {skipped_count}")
+        stats_parts.append(f"Queue: {pending_count}")
+        stats_parts.append(f"Errors: {error_count}")
         if unavail_count > 0:
-            self.stats_label.setText(f"Success: {completed_count} | Queue: {pending_count} | Errors: {error_count} | Removed: {unavail_count}")
-            self.stats_label.setToolTip(f"Success: {completed_count}\nIn queue: {pending_count}\nErrors: {error_count}\nRemoved from platform: {unavail_count}")
-        else:
-            self.stats_label.setText(f"Success: {completed_count} | Queue: {pending_count} | Errors: {error_count}")
-            self.stats_label.setToolTip(f"Success: {completed_count}\nIn queue: {pending_count}\nErrors: {error_count}")
+            stats_parts.append(f"Unavailable: {unavail_count}")
+
+        self.stats_label.setText(" | ".join(stats_parts))
+        self.stats_label.setToolTip("\n".join(stats_parts))
 
         if pending_count == 0:
             self.btn_download_all.setEnabled(False)
