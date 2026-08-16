@@ -2742,6 +2742,10 @@ class MainWindow(QMainWindow):
             return
 
         if d['status'] == 'downloading':
+            msg = d.get('msg')
+            if msg:
+                widget.set_status(msg, "Downloading")
+                return
             percent_str = d.get('_percent_str', '0.0%').replace('%', '').strip()
             percent_clean = re.sub(r'\x1b\[[0-9;]*m', '', percent_str)
             speed_clean = re.sub(r'\x1b\[[0-9;]*m', '', d.get('_speed_str', 'N/A')).strip()

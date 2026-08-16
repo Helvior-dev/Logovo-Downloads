@@ -519,18 +519,18 @@ def _author_and_title_match(stem: str, title: Optional[str], author: Optional[st
     if len(parts) >= 2:
         stem_a0 = clean_artist_name(parts[0])
         stem_t1 = clean_song_title(' - '.join(parts[1:]), stem_a0)
-        if clean_t == stem_t1 or (is_cyrillic and clean_t in stem_t1):
-            if _author_match(stem_a0) or (clean_a and clean_a in stem_t1) or is_cyrillic:
+        if _author_match(stem_a0) or (clean_a and clean_a in stem_t1):
+            if clean_t == stem_t1 or clean_t in stem_t1 or (len(stem_t1) >= 4 and stem_t1 in clean_t):
                 return True
 
         stem_t0 = clean_song_title(parts[0], clean_artist_name(' - '.join(parts[1:])))
         stem_a1 = clean_artist_name(' - '.join(parts[1:]))
-        if clean_t == stem_t0 or (is_cyrillic and clean_t in stem_t0):
-            if _author_match(stem_a1) or (clean_a and clean_a in stem_t0) or is_cyrillic:
+        if _author_match(stem_a1) or (clean_a and clean_a in stem_t0):
+            if clean_t == stem_t0 or clean_t in stem_t0 or (len(stem_t0) >= 4 and stem_t0 in clean_t):
                 return True
     else:
         stem_t = clean_song_title(stem, author or "")
-        if clean_t == stem_t or (is_cyrillic and clean_t in stem_t):
+        if clean_t == stem_t or clean_t in stem_t or (len(stem_t) >= 4 and stem_t in clean_t):
             return True
 
     return False
@@ -2167,6 +2167,8 @@ class MediaDownloader:
                 t = (title or extracted_title or "").strip()
                 a = (author or extracted_artist or "").strip()
                 if t:
+                    if progress_callback:
+                        progress_callback({"status": "downloading", "msg": "Searching official release..."})
                     import re
                     clean_q_t = re.sub(r"[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]", "", t, flags=re.IGNORECASE).strip()
                     search_q = f"{a} {clean_q_t}".strip()
@@ -2177,10 +2179,12 @@ class MediaDownloader:
                         with yt_dlp.YoutubeDL(s_opts) as ydl_s:
                             s_res = ydl_s.extract_info(f"ytsearch5:{search_q}", download=False)
                             cand_url = None
+                            cand_id = None
                             for entry in s_res.get("entries", []):
                                 e_id = entry.get("id")
                                 if e_id and e_id != extracted_vid:
                                     cand_url = f"https://www.youtube.com/watch?v={e_id}"
+                                    cand_id = e_id
                                     break
                             if cand_url:
                                 with yt_dlp.YoutubeDL(ydl_opts) as ydl_dl:
@@ -2188,6 +2192,17 @@ class MediaDownloader:
                                     if retcode == 0:
                                         success = True
                                         self.last_error = ""
+                                        # Record mapped original VID into archive and map
+                                        if should_track_playlist and extracted_vid:
+                                            archive_file = Path(self.output_dir) / "downloaded_archive.txt"
+                                            if archive_file.exists():
+                                                try:
+                                                    with open(archive_file, "a", encoding="utf-8") as f_arc:
+                                                        f_arc.write(f"youtube {extracted_vid}\n")
+                                                        if cand_id:
+                                                            f_arc.write(f"youtube {cand_id}\n")
+                                                except Exception:
+                                                    pass
                     except Exception:
                         pass
 
