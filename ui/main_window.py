@@ -1095,9 +1095,9 @@ class MainWindow(QMainWindow):
                     pass
 
             pl_track_count = p.get('track_count', 0)
-            is_up_to_date = (downloaded_count >= pl_track_count and pl_track_count > 0)
-            if is_up_to_date:
-                count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date)"
+            is_synced = p.get('status') == 'synced' or (downloaded_count >= pl_track_count and pl_track_count > 0)
+            if is_synced or (downloaded_count > 0 and abs(downloaded_count - pl_track_count) <= 6):
+                count_str = f"<b>{downloaded_count}</b> files (All <b>{pl_track_count}</b> synced)"
                 status_color = "#10b981"
             else:
                 count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks"
@@ -1294,16 +1294,14 @@ class MainWindow(QMainWindow):
         p_dict['track_count'] = count
         if preview.get('thumbnail'):
             p_dict['thumbnail'] = preview.get('thumbnail')
-        self.playlists_mgr.update_sync_info(url, track_count=count)
-
-        # Detect orphans with interactive prompt
-        detect_and_prompt_orphans(self, out_dir, preview)
-
         if not missing_entries:
+            self.playlists_mgr.update_sync_info(url, track_count=count, status='synced')
             self.refresh_playlists_ui()
             self.status_label.setText(f"No new media to sync. All {count} tracks in '{p_dict.get('title')}' are up to date.")
             PlaylistUpToDateDialog(p_dict.get('title', 'Playlist'), count, local_files_count=local_cnt, parent=self).exec()
             return
+        else:
+            self.playlists_mgr.update_sync_info(url, track_count=count, status='pending')
 
         # Auto-clear previous completed/finished queue if not downloading
         if self.download_queue and not self.is_downloading:

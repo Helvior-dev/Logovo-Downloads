@@ -82,12 +82,14 @@ class PlaylistsManager:
             return True
         return False
 
-    def update_sync_info(self, url: str, track_count: int = None) -> None:
+    def update_sync_info(self, url: str, track_count: int = None, status: str = None) -> None:
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         for p in self.playlists:
             if p.get('url') == url:
                 p['last_synced'] = now_str
                 if track_count is not None:
                     p['track_count'] = track_count
+                if status is not None:
+                    p['status'] = status
                 break
         self.save()
