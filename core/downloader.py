@@ -492,6 +492,20 @@ def clean_artist_name(author: str) -> str:
     return re.sub(r'[\W_]+', '', a.lower()).strip()
 
 
+def translit_ru_to_en(text: str) -> str:
+    mapping = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e', 'ж': 'zh', 'з': 'z',
+        'и': 'i', 'й': 'j', 'к': 'k', 'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r',
+        'с': 's', 'т': 't', 'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'u', 'я': 'a'
+    }
+    res = ''
+    for ch in (text or '').lower():
+        res += mapping.get(ch, ch)
+    res = res.replace('kh', 'h').replace('ju', 'u').replace('ja', 'a').replace('ya', 'a').replace('yu', 'u')
+    return re.sub(r'[\W_]+', '', res)
+
+
 def _author_and_title_match(stem: str, title: Optional[str], author: Optional[str]) -> bool:
     """Strictly matches both track title AND artist name against file stem to avoid cross-artist collisions."""
     if not title or len(title.strip()) < 2:
@@ -499,7 +513,6 @@ def _author_and_title_match(stem: str, title: Optional[str], author: Optional[st
 
     clean_t = clean_song_title(title, author or "")
     clean_a = clean_artist_name(author or "")
-    is_cyrillic = any(ord(ch) > 127 for ch in clean_t)
 
     if not clean_t or len(clean_t) < 2:
         return False
@@ -531,6 +544,14 @@ def _author_and_title_match(stem: str, title: Optional[str], author: Optional[st
     else:
         stem_t = clean_song_title(stem, author or "")
         if clean_t == stem_t or clean_t in stem_t or (len(stem_t) >= 4 and stem_t in clean_t):
+            return True
+
+    # Transliteration match for EN <-> RU title/artist variations
+    s_tr = translit_ru_to_en(stem)
+    t_tr = translit_ru_to_en(title)
+    a_tr = translit_ru_to_en(author or "")
+    if len(t_tr) >= 3 and (t_tr in s_tr or s_tr in t_tr):
+        if not a_tr or a_tr in s_tr or any(part in s_tr for part in a_tr.split() if len(part) >= 3):
             return True
 
     return False

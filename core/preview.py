@@ -36,6 +36,10 @@ def get_video_preview(url: str, cookies: dict = None) -> dict:
 
                 for entry in info.get('entries', []):
                     if entry:
+                        e_title = entry.get('title')
+                        if not e_title or str(e_title).strip() in ('', 'None', 'Unknown', '[Deleted video]', '[Private video]', 'Deleted video', 'Private video'):
+                            continue
+
                         thumbnail_url = None
                         if entry.get('thumbnails'):
                             thumbnail_url = entry.get('thumbnails')[-1].get('url')
@@ -52,7 +56,7 @@ def get_video_preview(url: str, cookies: dict = None) -> dict:
                         track_url = f"https://www.youtube.com/watch?v={entry_id}" if entry_id and len(entry_id) == 11 else clean_media_url(entry.get('url', clean_url))
 
                         entries.append({
-                            'title': entry.get('title', 'Unknown'),
+                            'title': e_title,
                             'url': track_url,
                             'duration': entry.get('duration'),
                             'thumbnail': thumbnail_url,
