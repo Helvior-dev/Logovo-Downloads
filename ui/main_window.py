@@ -285,18 +285,26 @@ class SyncPlaylistWorker(QThread):
                 if not already_downloaded:
                     missing_entries.append(entry)
 
-            # Detect online duplicates in playlist
+            # Detect online duplicates in playlist (strictly matching both artist and title)
             online_duplicates = []
-            seen_tracks = {}
+            seen_tracks = []
             for i, entry in enumerate(preview.get('entries', [])):
                 t = entry.get('title')
                 a = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
                 u = entry.get('url', '')
                 if not t or t in ('[Deleted video]', '[Private video]', 'None', 'Unknown'):
                     continue
-                key = clean_song_title(t, a)
-                if key in seen_tracks:
-                    orig_idx, orig_u, orig_t, orig_a = seen_tracks[key]
+
+                found_orig = None
+                for orig_idx, orig_u, orig_t, orig_a in seen_tracks:
+                    stem0 = f"{orig_a} - {orig_t}" if orig_a else orig_t
+                    stem1 = f"{a} - {t}" if a else t
+                    if _author_and_title_match(stem0, t, a) or _author_and_title_match(stem1, orig_t, orig_a):
+                        found_orig = (orig_idx, orig_u, orig_t, orig_a)
+                        break
+
+                if found_orig:
+                    orig_idx, orig_u, orig_t, orig_a = found_orig
                     online_duplicates.append({
                         'title': t,
                         'author': a,
@@ -306,7 +314,7 @@ class SyncPlaylistWorker(QThread):
                         'dupe_url': u
                     })
                 else:
-                    seen_tracks[key] = (i, u, t, a)
+                    seen_tracks.append((i, u, t, a))
 
             self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates)
         except Exception as e:
@@ -636,7 +644,7 @@ class OnlineDuplicatesDialog(QDialog):
             self.table.setItem(row, 1, item_orig)
 
             item_dupe = QTableWidgetItem(f"Duplicate #{dupe_idx}")
-            item_dupe.setForeground(QColor("#fbbf24"))
+            item_dupe.setForeground(QColor("#38bdf8"))
             self.table.setItem(row, 2, item_dupe)
 
             if dupe_url:
@@ -650,6 +658,7 @@ class OnlineDuplicatesDialog(QDialog):
                         border-radius: 4px;
                         padding: 3px 10px;
                         font-size: 11px;
+                        font-weight: 500;
                     }
                     QPushButton:hover {
                         background: #0284c7;
@@ -723,21 +732,21 @@ class PlaylistUpToDateDialog(QDialog):
         layout.addWidget(desc_lbl)
 
         if self.duplicates:
-            btn_dupes = QPushButton(f"⚠️ {len(self.duplicates)} Online Duplicate(s) Found — View List", card)
+            btn_dupes = QPushButton(f"ℹ️ {len(self.duplicates)} Online Duplicate(s) Found — View List", card)
             btn_dupes.setCursor(Qt.CursorShape.PointingHandCursor)
             btn_dupes.setStyleSheet("""
                 QPushButton {
                     background-color: #1e293b;
-                    color: #fbbf24;
-                    border: 1px solid #d97706;
+                    color: #38bdf8;
+                    border: 1px solid #0284c7;
                     border-radius: 6px;
                     font-weight: bold;
                     font-size: 12px;
-                    padding: 6px 12px;
+                    padding: 6px 14px;
                 }
                 QPushButton:hover {
-                    background-color: #78350f;
-                    color: #fef3c7;
+                    background-color: #0284c7;
+                    color: #ffffff;
                 }
             """)
             btn_dupes.clicked.connect(self._show_duplicates)
@@ -2002,7 +2011,11 @@ class MainWindow(QMainWindow):
 
         # File Chooser Row (visible when 'file' is selected)
         self.cookies_file_widget = QWidget()
-        file_row = QHBoxLayout(self.cookies_file_widget)
+        file_widget_layout = QVBoxLayout(self.cookies_file_widget)
+        file_widget_layout.setContentsMargins(0, 0, 0, 0)
+        file_widget_layout.setSpacing(8)
+
+        file_row = QHBoxLayout()
         file_row.setContentsMargins(0, 0, 0, 0)
         self.cookies_file_input = QLineEdit(self.settings.get('cookies_file', ''))
         self.cookies_file_input.setPlaceholderText("Select your exported cookies.txt file...")
@@ -2017,17 +2030,62 @@ class MainWindow(QMainWindow):
         file_row.addWidget(self.cookies_file_input)
         file_row.addWidget(btn_browse_cookie)
         file_row.addWidget(btn_clear_cookie)
+        file_widget_layout.addLayout(file_row)
+
+        file_instructions = QLabel(
+            "<b>📋 Пошаговая инструкция по экспорту cookies.txt:</b><br>"
+            "1. Установите расширение для браузера (например, <b>Get cookies.txt LOCALLY</b> или <b>Cookie-Editor</b> для Chrome / Firefox / Opera).<br>"
+            "2. Откройте сайт <a href='https://music.youtube.com' style='color: #38bdf8;'>music.youtube.com</a> или <a href='https://youtube.com' style='color: #38bdf8;'>youtube.com</a> и убедитесь, что вы вошли в свой Google / YouTube аккаунт.<br>"
+            "3. Нажмите на иконку расширения в панели браузера и нажмите <b>Export</b> (в формате <i>Netscape HTTP Cookie File</i>).<br>"
+            "4. Сохраните полученный файл (например, <code>music.youtube.com_cookies.txt</code>) на компьютер.<br>"
+            "5. Нажмите кнопку <b>Browse...</b> выше и выберите сохранённый файл."
+        )
+        file_instructions.setOpenExternalLinks(True)
+        file_instructions.setWordWrap(True)
+        file_instructions.setStyleSheet("""
+            background-color: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 10px 12px;
+            font-size: 11px;
+            color: #cbd5e1;
+            line-height: 1.5;
+        """)
+        file_widget_layout.addWidget(file_instructions)
         cookies_layout.addWidget(self.cookies_file_widget)
 
         # Browser Chooser Row (visible when 'browser' is selected)
         self.cookies_browser_widget = QWidget()
-        b_row = QHBoxLayout(self.cookies_browser_widget)
+        browser_widget_layout = QVBoxLayout(self.cookies_browser_widget)
+        browser_widget_layout.setContentsMargins(0, 0, 0, 0)
+        browser_widget_layout.setSpacing(8)
+
+        b_row = QHBoxLayout()
         b_row.setContentsMargins(0, 0, 0, 0)
         b_row.addWidget(QLabel("Browser:"))
-        self.cookies_browser_combo = make_combo(["Opera", "Chrome", "Edge", "Firefox", "Brave", "Vivaldi"])
-        self.cookies_browser_combo.setCurrentText(self.settings.get('cookies_browser', 'Opera').capitalize())
+        self.cookies_browser_combo = make_combo(["Firefox", "Opera", "Chrome", "Edge", "Brave", "Vivaldi"])
+        self.cookies_browser_combo.setCurrentText(self.settings.get('cookies_browser', 'Firefox').capitalize())
         self.cookies_browser_combo.currentTextChanged.connect(lambda b: self.settings.set('cookies_browser', b.lower()))
         b_row.addWidget(self.cookies_browser_combo, 1)
+        browser_widget_layout.addLayout(b_row)
+
+        browser_warning = QLabel(
+            "<b>⚠️ Ограничение прямого импорта из браузеров:</b><br>"
+            "В последних версиях Windows и браузеров на движке <b>Chromium</b> (Google Chrome, Microsoft Edge, Opera, Brave, Vivaldi, Яндекс Браузер и т.д.) прямое чтение cookies заблокировано системной защитой <b>App-Bound Encryption (DPAPI)</b>.<br><br>"
+            "Прямой импорт поддерживается только в браузерах на движке <b>Firefox</b>, однако этот режим является экспериментальным и официально нами не тестировался.<br><br>"
+            "💡 <b>Рекомендуется использовать режим «Cookies File (cookies.txt)»</b> — он полностью безопасен, стабилен и поддерживает авторизацию YouTube Premium."
+        )
+        browser_warning.setWordWrap(True)
+        browser_warning.setStyleSheet("""
+            background-color: #0f172a;
+            border: 1px solid #ef4444;
+            border-radius: 6px;
+            padding: 10px 12px;
+            font-size: 11px;
+            color: #fca5a5;
+            line-height: 1.5;
+        """)
+        browser_widget_layout.addWidget(browser_warning)
         cookies_layout.addWidget(self.cookies_browser_widget)
 
         def _update_cookies_ui_state():
