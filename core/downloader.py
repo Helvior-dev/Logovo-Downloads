@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, Optional
 from PIL import Image
 import yt_dlp
 from core.settings import SettingsManager
+from core.utils import clean_filename_for_all_devices
 
 try:
     from mutagen.flac import FLAC, Picture
@@ -1184,7 +1185,7 @@ def postprocess_audio_file(
                 fix_m4a_cover(path)
             fix_m4a_tags(path, track_num=target_idx, total_tracks=playlist_count if track_number_enabled else None, album=target_album, artist=target_artist, title=target_title, year=target_year, lyrics=target_lyrics)
 
-        # Apply custom naming pattern if specified
+        # Apply custom naming pattern if specified, or sanitize default name for Android/MTP/Windows
         if naming_pattern and naming_pattern.strip():
             pat = naming_pattern.strip()
             safe_artist = (artist or "")[:60]
@@ -1199,30 +1200,27 @@ def postprocess_audio_file(
             new_stem = new_stem.replace("{index}", safe_idx)
             new_stem = new_stem.replace("{album}", safe_album)
             new_stem = new_stem.replace("{year}", safe_year)
-            
-            for ch in r'\/:*?"<>|':
-                new_stem = new_stem.replace(ch, "_")
-            new_stem = new_stem.strip(" -._")
-            if len(new_stem) > 160:
-                new_stem = new_stem[:160].strip(" -._")
+            new_stem = clean_filename_for_all_devices(new_stem, max_len=160)
+        else:
+            new_stem = clean_filename_for_all_devices(path.stem, max_len=160)
 
-            if new_stem:
-                new_path = path.parent / f"{new_stem}{path.suffix}"
-                try:
-                    is_same = (new_path.resolve() == path.resolve())
-                except Exception:
-                    is_same = (str(new_path).lower() == str(path).lower())
+        if new_stem:
+            new_path = path.parent / f"{new_stem}{path.suffix}"
+            try:
+                is_same = (new_path.resolve() == path.resolve())
+            except Exception:
+                is_same = (str(new_path).lower() == str(path).lower())
 
-                if not is_same:
-                    for _ in range(5):
-                        try:
-                            os.replace(str(path), str(new_path))
-                            path = new_path
-                            break
-                        except (PermissionError, OSError):
-                            time.sleep(0.2)
-                        except Exception:
-                            break
+            if not is_same:
+                for _ in range(5):
+                    try:
+                        os.replace(str(path), str(new_path))
+                        path = new_path
+                        break
+                    except (PermissionError, OSError):
+                        time.sleep(0.2)
+                    except Exception:
+                        break
 
         # File timestamp for Windows / player ordering
         if playlist_index is not None:
@@ -1319,29 +1317,27 @@ def postprocess_video_file(
         new_stem = new_stem.replace("{fps}", safe_fps)
         new_stem = new_stem.replace("{year}", safe_year)
         new_stem = new_stem.replace("{index}", safe_idx)
+        new_stem = clean_filename_for_all_devices(new_stem, max_len=160)
+    else:
+        new_stem = clean_filename_for_all_devices(path.stem, max_len=160)
 
-        for ch in r'\/:*?"<>|':
-            new_stem = new_stem.replace(ch, "_")
-        new_stem = new_stem.strip(" -._")
-        if len(new_stem) > 160:
-            new_stem = new_stem[:160].strip(" -._")
-        if new_stem:
-            new_path = path.parent / f"{new_stem}{path.suffix}"
-            try:
-                is_same = (new_path.resolve() == path.resolve())
-            except Exception:
-                is_same = (str(new_path).lower() == str(path).lower())
+    if new_stem:
+        new_path = path.parent / f"{new_stem}{path.suffix}"
+        try:
+            is_same = (new_path.resolve() == path.resolve())
+        except Exception:
+            is_same = (str(new_path).lower() == str(path).lower())
 
-            if not is_same:
-                for _ in range(5):
-                    try:
-                        os.replace(str(path), str(new_path))
-                        path = new_path
-                        break
-                    except (PermissionError, OSError):
-                        time.sleep(0.2)
-                    except Exception:
-                        break
+        if not is_same:
+            for _ in range(5):
+                try:
+                    os.replace(str(path), str(new_path))
+                    path = new_path
+                    break
+                except (PermissionError, OSError):
+                    time.sleep(0.2)
+                except Exception:
+                    break
 
     # Apply Windows / player timestamp ordering if in a playlist
     if playlist_index is not None:

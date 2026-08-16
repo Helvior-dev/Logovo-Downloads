@@ -32,6 +32,7 @@ from core.downloader import (
     write_playlist_order,
     parse_speed_limit,
 )
+from core.utils import clean_filename_for_all_devices
 from core.settings import SettingsManager, get_app_data_dir
 from core.history import HistoryManager
 from core.playlists_manager import PlaylistsManager
@@ -563,12 +564,8 @@ class MainWindow(QMainWindow):
             thumb = preview.get('thumbnail', '') if preview else ''
             count = preview.get('count', 0) if preview else 0
 
-            # Sanitize playlist title
-            clean_title = title
-            for ch in r'\/:*?"<>|':
-                clean_title = clean_title.replace(ch, '_').strip()
-            if not clean_title:
-                clean_title = "Playlist"
+            # Sanitize playlist title for Android/MTP/Windows
+            clean_title = clean_filename_for_all_devices(title, max_len=100) or "Playlist"
 
             # Check if chosen folder already ends with playlist title
             chosen_p = Path(folder).resolve()
