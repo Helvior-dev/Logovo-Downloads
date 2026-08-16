@@ -1093,12 +1093,15 @@ class MainWindow(QMainWindow):
                     pass
 
             pl_track_count = p.get('track_count', 0)
-            if downloaded_count >= pl_track_count and pl_track_count > 0:
+            is_up_to_date = (downloaded_count >= pl_track_count and pl_track_count > 0)
+            if is_up_to_date:
                 count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date)"
+                status_color = "#10b981"
             else:
                 count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks"
+                status_color = "#38bdf8"
             meta_lbl = QLabel(f"In Folder: {count_str}  |  Last Synced: {p.get('last_synced', 'Never')}")
-            meta_lbl.setStyleSheet("font-size: 11px; color: #38bdf8;")
+            meta_lbl.setStyleSheet(f"font-size: 11px; color: {status_color}; font-weight: 500;")
 
             info_layout.addWidget(title_lbl)
             info_layout.addWidget(path_lbl)
@@ -1155,9 +1158,18 @@ class MainWindow(QMainWindow):
         form.addRow("Playlist URL:", url_input)
 
         folder_row = QHBoxLayout()
-        folder_input = QLineEdit(self.settings.get('download_path'))
+        initial_dir = self.settings.get('last_selected_folder') or self.settings.get('download_path')
+        folder_input = QLineEdit(initial_dir)
         btn_browse = QPushButton("Browse...")
-        btn_browse.clicked.connect(lambda: folder_input.setText(QFileDialog.getExistingDirectory(dialog, "Select Save Folder") or folder_input.text()))
+
+        def _browse_pl_folder():
+            start_dir = folder_input.text().strip() or initial_dir
+            chosen = QFileDialog.getExistingDirectory(dialog, "Select Save Folder", start_dir)
+            if chosen:
+                folder_input.setText(chosen)
+                self.settings.set('last_selected_folder', chosen)
+
+        btn_browse.clicked.connect(_browse_pl_folder)
         folder_row.addWidget(folder_input)
         folder_row.addWidget(btn_browse)
         form.addRow("Save Location:", folder_row)
@@ -1290,6 +1302,12 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"No new media to sync. All {count} tracks in '{p_dict.get('title')}' are up to date.")
             PlaylistUpToDateDialog(p_dict.get('title', 'Playlist'), count, local_files_count=local_cnt, parent=self).exec()
             return
+
+        # Auto-clear previous completed/finished queue if not downloading
+        if self.download_queue and not self.is_downloading:
+            all_done = all(w.status_state in ("Success", "Error", "Unavailable", "Completed", "Finished") for w in self.download_queue)
+            if all_done:
+                self.clear_queue()
 
         self.queue_container.setUpdatesEnabled(False)
         for entry in missing_entries:
@@ -2018,10 +2036,12 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Download Directory")
+        initial_dir = self.settings.get('last_selected_folder') or self.settings.get('download_path')
+        folder = QFileDialog.getExistingDirectory(self, "Select Download Directory", initial_dir)
         if folder:
             self.folder_input.setText(folder)
             self.settings.set('download_path', folder)
+            self.settings.set('last_selected_folder', folder)
 
     def toggle_subs_setting(self, checked):
         self.settings.set('download_subtitles', checked)
@@ -2232,6 +2252,8 @@ class MainWindow(QMainWindow):
                 cover_mode = self.settings.get('playlist_cover_mode') or 'both'
                 playlist_thumb = preview.get('thumbnail')
 
+                initial_dir = self.settings.get('last_selected_folder') or global_path
+
                 if clicked_btn == btn_auto_new:
                     out_dir = default_path
                     if not os.path.exists(out_dir):
@@ -2240,10 +2262,11 @@ class MainWindow(QMainWindow):
                         apply_playlist_cover_settings(out_dir, playlist_thumb, mode=cover_mode)
 
                 elif clicked_btn == btn_custom_new:
-                    chosen = QFileDialog.getExistingDirectory(self, "Select Save Folder for Playlist", global_path)
+                    chosen = QFileDialog.getExistingDirectory(self, "Select Save Folder for Playlist", initial_dir)
                     if not chosen:
                         self.status_label.setText("Playlist addition cancelled.")
                         return
+                    self.settings.set('last_selected_folder', chosen)
                     chosen_p = Path(chosen).resolve()
                     if chosen_p.name.lower() == playlist_title.lower():
                         out_dir = str(chosen_p)
@@ -2256,10 +2279,11 @@ class MainWindow(QMainWindow):
 
                 else:
                     # Sync existing folder mode
-                    out_dir = QFileDialog.getExistingDirectory(self, "Select Existing Playlist Folder", global_path)
+                    out_dir = QFileDialog.getExistingDirectory(self, "Select Existing Playlist Folder", initial_dir)
                     if not out_dir:
                         self.status_label.setText("Playlist addition cancelled.")
                         return
+                    self.settings.set('last_selected_folder', out_dir)
 
                     # Restore timestamps & detect orphans with interactive details dialog
                     restored = restore_dates_from_order(out_dir)
@@ -2273,6 +2297,12 @@ class MainWindow(QMainWindow):
 
                 # Re-index existing tracks so numbers 1..N match current playlist count without gaps
                 reindex_existing_playlist_files(out_dir, preview.get('entries', []))
+
+                # Auto-clear previous completed/finished queue if not currently downloading
+                if self.download_queue and not self.is_downloading:
+                    all_done = all(w.status_state in ("Success", "Error", "Unavailable", "Completed", "Finished") for w in self.download_queue)
+                    if all_done:
+                        self.clear_queue()
 
                 # Add tracks with batch speed optimization
                 added_count = 0
@@ -2394,7 +2424,11 @@ class MainWindow(QMainWindow):
                     total_progress += 100
                 elif w.status_state == "Downloading":
                     total_progress += w.progress_bar.value()
-            self.global_progress.setValue(int(total_progress / total))
+
+            if pending_count == 0 and not self.is_downloading:
+                self.global_progress.setValue(0)
+            else:
+                self.global_progress.setValue(int(total_progress / total))
 
         if unavail_count > 0:
             self.stats_label.setText(f"Success: {completed_count} | Queue: {pending_count} | Errors: {error_count} | Removed: {unavail_count}")
@@ -2465,6 +2499,7 @@ class MainWindow(QMainWindow):
                     # Entire queue finished
                     self.is_downloading = False
                     self.btn_stop.setEnabled(False)
+                    self.global_progress.setValue(0)
 
                     has_errors = bool(self.failed_queue) or any(w.status_state == "Error" for w in self.download_queue)
                     unavail_count = sum(1 for w in self.download_queue if w.status_state == "Unavailable")
