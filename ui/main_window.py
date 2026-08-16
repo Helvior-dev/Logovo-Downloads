@@ -185,7 +185,7 @@ class FetchPreviewWorker(QThread):
 
 
 class SyncPlaylistWorker(QThread):
-    finished_signal = pyqtSignal(dict, dict, list, int)
+    finished_signal = pyqtSignal(dict, dict, list, int, list)
     error_signal = pyqtSignal(str, dict)
 
     def __init__(self, p_dict: dict, settings, cookies=None):
@@ -285,7 +285,30 @@ class SyncPlaylistWorker(QThread):
                 if not already_downloaded:
                     missing_entries.append(entry)
 
-            self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt)
+            # Detect online duplicates in playlist
+            online_duplicates = []
+            seen_tracks = {}
+            for i, entry in enumerate(preview.get('entries', [])):
+                t = entry.get('title')
+                a = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
+                u = entry.get('url', '')
+                if not t or t in ('[Deleted video]', '[Private video]', 'None', 'Unknown'):
+                    continue
+                key = clean_song_title(t, a)
+                if key in seen_tracks:
+                    orig_idx, orig_u, orig_t, orig_a = seen_tracks[key]
+                    online_duplicates.append({
+                        'title': t,
+                        'author': a,
+                        'orig_index': orig_idx + 1,
+                        'dupe_index': i + 1,
+                        'orig_url': orig_u,
+                        'dupe_url': u
+                    })
+                else:
+                    seen_tracks[key] = (i, u, t, a)
+
+            self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates)
         except Exception as e:
             self.error_signal.emit(str(e), self.p_dict)
 
@@ -565,13 +588,98 @@ def detect_and_prompt_orphans(parent, out_dir: str, preview: dict) -> list[str]:
     return []
 
 
-class PlaylistUpToDateDialog(QDialog):
-    def __init__(self, title: str, count: int, local_files_count: Optional[int] = None, parent=None):
+class OnlineDuplicatesDialog(QDialog):
+    def __init__(self, duplicate_items: list[dict], playlist_title: str = "Playlist", parent=None):
         super().__init__(parent)
+        self.setWindowTitle("Online Duplicates Detected")
+        self.setMinimumSize(740, 440)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        header = QLabel(f"<h3>Found {len(duplicate_items)} duplicate track(s) in '{playlist_title}'</h3>")
+        header.setStyleSheet("color: #f8fafc;")
+        desc = QLabel(
+            "The following tracks are added multiple times in your online YouTube playlist.\n"
+            "You can open the duplicate links below to locate and remove them directly from YouTube Music:"
+        )
+        desc.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        desc.setWordWrap(True)
+
+        layout.addWidget(header)
+        layout.addWidget(desc)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Track / Artist", "Original Position", "Duplicate Position", "Action"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setRowCount(len(duplicate_items))
+
+        for row, item in enumerate(duplicate_items):
+            title = item.get('title', 'Unknown')
+            author = item.get('author', '')
+            display_name = f"{author} - {title}" if author else title
+            orig_idx = str(item.get('orig_index', ''))
+            dupe_idx = str(item.get('dupe_index', ''))
+            dupe_url = item.get('dupe_url', '') or item.get('orig_url', '')
+
+            item_title = QTableWidgetItem(display_name)
+            self.table.setItem(row, 0, item_title)
+
+            item_orig = QTableWidgetItem(f"Track #{orig_idx}")
+            item_orig.setForeground(QColor("#10b981"))
+            self.table.setItem(row, 1, item_orig)
+
+            item_dupe = QTableWidgetItem(f"Duplicate #{dupe_idx}")
+            item_dupe.setForeground(QColor("#fbbf24"))
+            self.table.setItem(row, 2, item_dupe)
+
+            if dupe_url:
+                btn_link = QPushButton("Open in YouTube ↗")
+                btn_link.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_link.setStyleSheet("""
+                    QPushButton {
+                        background: #1e293b;
+                        color: #38bdf8;
+                        border: 1px solid #334155;
+                        border-radius: 4px;
+                        padding: 3px 10px;
+                        font-size: 11px;
+                    }
+                    QPushButton:hover {
+                        background: #0284c7;
+                        color: #ffffff;
+                    }
+                """)
+                btn_link.clicked.connect(lambda _, u=dupe_url: QDesktopServices.openUrl(QUrl(u)))
+                self.table.setCellWidget(row, 3, btn_link)
+
+        layout.addWidget(self.table)
+
+        btn_box = QHBoxLayout()
+        btn_box.addStretch()
+        btn_close = QPushButton("Close")
+        btn_close.setFixedWidth(100)
+        btn_close.clicked.connect(self.accept)
+        btn_box.addWidget(btn_close)
+        layout.addLayout(btn_box)
+
+
+class PlaylistUpToDateDialog(QDialog):
+    def __init__(self, title: str, count: int, local_files_count: Optional[int] = None, duplicates: Optional[list] = None, parent=None):
+        super().__init__(parent)
+        self.duplicates = duplicates or []
+        self.playlist_title = title
         self.setWindowTitle("Sync Complete")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(480, 280)
+        h = 330 if self.duplicates else 280
+        self.setFixedSize(500, h)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
@@ -610,6 +718,31 @@ class PlaylistUpToDateDialog(QDialog):
         desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         desc_lbl.setWordWrap(True)
 
+        layout.addWidget(icon_lbl)
+        layout.addWidget(h_lbl)
+        layout.addWidget(desc_lbl)
+
+        if self.duplicates:
+            btn_dupes = QPushButton(f"⚠️ {len(self.duplicates)} Online Duplicate(s) Found — View List", card)
+            btn_dupes.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_dupes.setStyleSheet("""
+                QPushButton {
+                    background-color: #1e293b;
+                    color: #fbbf24;
+                    border: 1px solid #d97706;
+                    border-radius: 6px;
+                    font-weight: bold;
+                    font-size: 12px;
+                    padding: 6px 12px;
+                }
+                QPushButton:hover {
+                    background-color: #78350f;
+                    color: #fef3c7;
+                }
+            """)
+            btn_dupes.clicked.connect(self._show_duplicates)
+            layout.addWidget(btn_dupes, 0, Qt.AlignmentFlag.AlignCenter)
+
         btn_ok = QPushButton("Awesome", card)
         btn_ok.setFixedSize(140, 36)
         btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -633,18 +766,13 @@ class PlaylistUpToDateDialog(QDialog):
         """)
         btn_ok.clicked.connect(self.accept)
 
-        layout.addWidget(icon_lbl)
-        layout.addWidget(h_lbl)
-        layout.addWidget(desc_lbl)
-        layout.addSpacing(6)
+        layout.addSpacing(4)
         layout.addWidget(btn_ok, 0, Qt.AlignmentFlag.AlignCenter)
         
         main_layout.addWidget(card)
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.accept()
-        super().mousePressEvent(event)
+    def _show_duplicates(self):
+        OnlineDuplicatesDialog(self.duplicates, playlist_title=self.playlist_title, parent=self).exec()
 
 
 class UnavailableTracksDialog(QDialog):
@@ -1286,7 +1414,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Sync error for '{title}'.")
         QMessageBox.warning(self, "Sync Error", f"Could not fetch playlist metadata from YouTube:\n{err_msg}")
 
-    def _on_sync_playlist_finished(self, preview: dict, p_dict: dict, missing_entries: list, local_cnt: int):
+    def _on_sync_playlist_finished(self, preview: dict, p_dict: dict, missing_entries: list, local_cnt: int, online_duplicates: list = None):
         self.loading_overlay.hide_loading()
         url = p_dict.get('url')
         out_dir = p_dict.get('folder_path')
@@ -1298,7 +1426,7 @@ class MainWindow(QMainWindow):
             self.playlists_mgr.update_sync_info(url, track_count=count, status='synced')
             self.refresh_playlists_ui()
             self.status_label.setText(f"No new media to sync. All {count} tracks in '{p_dict.get('title')}' are up to date.")
-            PlaylistUpToDateDialog(p_dict.get('title', 'Playlist'), count, local_files_count=local_cnt, parent=self).exec()
+            PlaylistUpToDateDialog(p_dict.get('title', 'Playlist'), count, local_files_count=local_cnt, duplicates=online_duplicates, parent=self).exec()
             return
         else:
             self.playlists_mgr.update_sync_info(url, track_count=count, status='pending')
