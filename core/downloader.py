@@ -1803,16 +1803,23 @@ class MediaDownloader:
 
         # Client strategies for in-flight rotation
         if is_audio:
+          if cookies and cookies.get("use"):
+            client_rotations = [
+                ["mweb", "web"],
+                ["web", "ios"],
+                ["mweb"],
+            ]
+          else:
             client_rotations = [
                 ["android", "web"],
                 ["web", "android"],
             ]
         else:
-            # For video, prioritize high-resolution desktop clients
             client_rotations = [
-                ["web", "default"],
-                ["web"],
                 ["android", "web"],
+                ["mweb", "web"],
+                ["web"],
+                ["android"],
             ]
 
         ydl_opts: dict[str, Any] = {
@@ -1827,6 +1834,7 @@ class MediaDownloader:
             "noprogress": False,
             "retries": 20,
             "fragment_retries": 20,
+            "remote_components": ["ejs:github"],
             "retry_sleep_functions": {
                 "http": lambda n: min(2 * 2**n, 20),
                 "fragment": lambda n: min(2 * 2**n, 20),
@@ -1836,7 +1844,7 @@ class MediaDownloader:
             "parse_metadata": ["%(artist,uploader,creator,channel)s:%(meta_artist)s"],
             "color": "no_color",
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/131.0.0.0",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Referer": "https://www.youtube.com/",
             },
@@ -2151,6 +2159,37 @@ class MediaDownloader:
                     time.sleep(0.3)
                     continue
                 break
+
+        # Strict Verified Fallback for Deleted / Re-uploaded official tracks:
+        if not success and not self.was_skipped:
+            err_l = (self.last_error or "").lower()
+            if any(k in err_l for k in ("video unavailable", "not available", "this video is not available", "unplayable")):
+                t = (title or extracted_title or "").strip()
+                a = (author or extracted_artist or "").strip()
+                if t:
+                    import re
+                    clean_q_t = re.sub(r"[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]", "", t, flags=re.IGNORECASE).strip()
+                    search_q = f"{a} {clean_q_t}".strip()
+                    try:
+                        s_opts = dict(ydl_opts)
+                        s_opts["extract_flat"] = True
+                        s_opts.pop("download_archive", None)
+                        with yt_dlp.YoutubeDL(s_opts) as ydl_s:
+                            s_res = ydl_s.extract_info(f"ytsearch5:{search_q}", download=False)
+                            cand_url = None
+                            for entry in s_res.get("entries", []):
+                                e_id = entry.get("id")
+                                if e_id and e_id != extracted_vid:
+                                    cand_url = f"https://www.youtube.com/watch?v={e_id}"
+                                    break
+                            if cand_url:
+                                with yt_dlp.YoutubeDL(ydl_opts) as ydl_dl:
+                                    retcode = ydl_dl.download([cand_url])
+                                    if retcode == 0:
+                                        success = True
+                                        self.last_error = ""
+                    except Exception:
+                        pass
 
         if not success and not self.last_error:
             self.last_error = "Unknown error occurred."
