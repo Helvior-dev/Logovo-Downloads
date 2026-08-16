@@ -3,70 +3,66 @@
 <p align="center">
   <img src="media/icon.ico" width="80" height="80" alt="Logovo Downloads Logo" />
   <br>
-  <b>Next-Generation multi-threaded audio & video downloader with intelligent playlist synchronization built with PyQt6 and yt-dlp</b>
+  <b>A desktop audio & video downloader with smart playlist synchronization built with Python, PyQt6, and yt-dlp.</b>
 </p>
 
 ---
 
-## 🌟 Overview
-
-**Logovo Downloads** is a powerful desktop application for downloading audio and video from YouTube, YouTube Music, SoundCloud, Twitch, Spotify, and other platforms supported by `yt-dlp`.
-
-Designed for large music collections and automated workflows, it provides parallel multi-threaded downloading, intelligent tracked playlist synchronization, automatic replacement fallback for deleted/restricted tracks, interactive duplicate & orphan detection, square cover art cropping, and complete ID3/video metadata tagging.
-
----
-
-## ✨ Features
-
-### ⚡ Parallel Multi-Threaded Downloads
-- Download up to **6 items concurrently** with real-time speed, progress bars, and status updates for each individual item.
-- Supports pause, resume, individual queue item cancellation, and global queue controls.
-
-### 🔄 Intelligent Playlist Synchronization
-- **Tracked Playlists Library:** Track any number of YouTube / YouTube Music playlists. Sync new tracks in one click.
-- **Smart Duplicate Detection:** Automatically detects tracks added multiple times in your online playlist. Displays exact original and duplicate positions with a direct **`[Open in YouTube ↗]`** button to quickly remove duplicates from YouTube Music.
-- **Interactive Orphan Detection:** Detects files that were removed from the online playlist and presents a clean modal dialog to let you choose whether to delete them locally or preserve them on your disk.
-- **Bidirectional Transliteration (RU $\leftrightarrow$ EN):** Accurately recognizes matching tracks across Cyrillic and Latin transliterations (e.g. `Манхэттен` $\leftrightarrow$ `Mankhetten`), producer channel names, remix suffixes, and featured artist credits.
-- **Deleted / DMCA Ghost Filter:** Automatically filters out dead placeholder items and copyright-takedown entries without crashing or queueing blank items.
-- **Status & Up-to-Date Indicators:** Visual green status badges (`All X synced`) showing exact file count and synchronization health.
-
-### 🛡️ Smart Replacement Fallback Engine
-- When a music track is unavailable, region-locked, or deleted on YouTube, the engine automatically searches for verified official audio releases.
-- Real-time **`Searching official release...`** status indicator in the UI.
-- Fallback downloads are seamlessly mapped to local playlist indices and archive records without duplicate downloads.
-
-### 🍪 YouTube Authentication & Cookies Support
-- **Netscape Cookies File Support:** Full support for exported `cookies.txt` files to download age-restricted (18+), private, and YouTube Premium high-bitrate audio streams.
-- **EJS / n-sig Remote Decryption:** Integrated with remote components and web/mweb client rotation for reliable token decryption.
-- **Built-in Step-by-Step Guide:** Built-in instructions in the Settings tab explaining how to export and import cookies.
-
-### 🎵 High-Fidelity Audio Features
-- **Naming Templates:** Customizable patterns using tokens: `{artist}`, `{title}`, `{index}`, `{album}`, `{year}`.
-- **Square Artwork & Folder Covers:** Crops playlist and track artwork to clean 1000x1000 squares, generates Windows folder `.ico` icons, and saves high-res `cover.png`.
-- **Complete Tagging:** Embeds ID3v2.3 / ID3v2.4 (MP3), FLAC, Opus, and M4A tags with protection against Windows file locking.
-- **Synchronized Karaoke Lyrics:** Automatically fetches and embeds synced `.lrc` lyrics (`USLT`, `LYRICS`, `©lyr`) with dedicated language selection.
-
-### 🎬 Video Features
-- Supports 1080p, 1440p (2K), 2160p (4K UHD), and 60fps video downloads.
-- Codec selection: Auto, H.264 (AVC), H.265 (HEVC), VP9, and AV1.
-- Embeds soft subtitles, video chapter markers, description, channel, and cover posters into MP4/MKV containers.
-
-### ⚙️ Core Engine & System Controls
-- **In-App Core Updater:** Check and update `yt-dlp` directly inside the app with one click or automatically on startup.
-- **Post-Download Actions:** Automatically put your PC to sleep or shut down when the queue completes.
-- **Dark Slate UI:** Modern dark interface built with PyQt6.
+> [!NOTE]
+> **Disclaimer & AI Acknowledgement:**
+> This is a **fan-made, non-commercial open-source project created with AI assistance**. It is built strictly for personal educational purposes, offline media archiving, and backup of your own playlists.
+> The author is **not affiliated with, endorsed by, or connected to Google, YouTube, Spotify, SoundCloud, or any other media service**. The software is provided "as is", without warranty of any kind. Please respect copyright laws and the terms of service of the respective platforms.
 
 ---
 
-## 🚀 Installation & Quick Start
+## What is Logovo Downloads?
 
-### Prerequisites
-- **Python 3.10+** (64-bit recommended)
-- **[FFmpeg](https://ffmpeg.org/download.html)** installed and available in your system `PATH`.
+Logovo Downloads is a simple yet powerful desktop program for Windows (and other platforms) that lets you download music and videos from YouTube, YouTube Music, SoundCloud, Twitch, and other sites supported by `yt-dlp`.
 
-### Setup
+It is especially tailored for people who maintain offline music libraries and want to keep their local folders in sync with their online playlists without duplicates, missing songs, or broken files.
+
+---
+
+## Key Features
+
+- **Multi-threaded Downloads:** Download up to 6 tracks or videos simultaneously with live progress bars, speed metrics, and ETA.
+- **Windows Taskbar Progress:** Live progress bar indicator right on the Windows taskbar icon while downloads are running.
+- **Tracked Playlists Synchronization:**
+  - Save your favorite YouTube / YouTube Music playlists to your library and sync them with 1 click.
+  - **Online Duplicates Detection:** Scans your playlist for duplicate tracks added by mistake and provides direct links to open and remove them in YouTube Music.
+  - **Orphan File Detection:** When tracks are removed from an online playlist, the app asks whether you want to delete local copies or keep them on your drive.
+  - **Transliteration & Alias Matching:** Seamlessly matches songs between English and Russian / Ukrainian titles, handles remix tags, featured artist credits, and producer channel names.
+  - **DMCA / Ghost Filter:** Automatically suppresses dead placeholder entries from copyright takedowns so your sync status stays clean and accurate.
+- **Smart Fallback Search:** If a music track in your playlist is deleted, age-restricted, or geo-blocked, the app automatically searches for verified official alternative releases and downloads them seamlessly with real-time status.
+- **YouTube Authentication & Cookies Support:**
+  - Full support for importing `cookies.txt` (Netscape format) to download age-restricted (18+) content and high-bitrate YouTube Premium streams.
+  - Integrated with remote token decryption components.
+  - In-app step-by-step export guide.
+- **Audio & Tagging Features:**
+  - Customizable file naming templates: `{artist}`, `{title}`, `{index}`, `{album}`, `{year}`.
+  - Auto-crops artwork to 1000x1000 square covers and generates Windows folder `.ico` icons.
+  - Full ID3v2.3 / ID3v2.4 (MP3), FLAC, Opus, and M4A metadata embedding with Windows file-lock retry protections.
+  - Automatic synchronized `.lrc` Karaoke lyrics download and tagging.
+- **Video Features:**
+  - Downloads resolutions from 360p up to 4K UHD at 60fps.
+  - Choose preferred video codecs (H.264, HEVC, AV1, VP9) and container (MP4 / MKV).
+  - Embeds soft subtitles, chapter markers, and video descriptions.
+- **Built-in Tools:**
+  - In-app `yt-dlp` core updater.
+  - Post-download actions (sleep or shutdown PC after long queues finish).
+
+---
+
+## Requirements & Setup
+
+### Requirements
+- **Python 3.10+** (64-bit)
+- **[FFmpeg](https://ffmpeg.org/download.html)** installed and added to your system `PATH`.
+
+### Installation
+
 ```bash
-# 1. Clone the repository
+# 1. Clone this repository
 git clone https://github.com/Helvior-dev/Logovo-Downloads.git
 cd Logovo-Downloads
 
@@ -74,27 +70,25 @@ cd Logovo-Downloads
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# 3. Install dependencies
+# 3. Install required packages
 pip install -r requirements.txt
 
-# 4. Launch Logovo Downloads
+# 4. Run the program
 python main.py
 ```
 
 ---
 
-## 🛠️ Technology Stack
+## Tech Stack
 
-| Component | Technology |
-|---|---|
-| **GUI Framework** | PyQt6 (Python Qt6 bindings) |
-| **Download Engine** | yt-dlp |
-| **Audio Metadata** | Mutagen |
-| **Image Processing** | Pillow (PIL) |
-| **Networking** | requests, curl-cffi |
+- **GUI:** PyQt6
+- **Download Engine:** yt-dlp
+- **Metadata & Tags:** Mutagen
+- **Image Processing:** Pillow (PIL)
+- **Networking:** requests, curl-cffi
 
 ---
 
-## 📄 License & Credits
+## License
 
-Open-source project created for personal and educational use. Please respect copyright laws and the terms of service of the content platforms.
+MIT License. Open source and free for personal and educational use.

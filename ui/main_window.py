@@ -43,6 +43,7 @@ from core.downloader import (
 from core.utils import clean_filename_for_all_devices
 from core.settings import SettingsManager, get_app_data_dir
 from core.history import HistoryManager
+from core.taskbar import taskbar_manager
 from core.playlists_manager import PlaylistsManager
 from core.updater import (
     get_installed_ytdlp_version,
@@ -2034,12 +2035,12 @@ class MainWindow(QMainWindow):
         file_widget_layout.addLayout(file_row)
 
         file_instructions = QLabel(
-            "<b>📋 Пошаговая инструкция по экспорту cookies.txt:</b><br>"
-            "1. Установите расширение для браузера (например, <b>Get cookies.txt LOCALLY</b> или <b>Cookie-Editor</b> для Chrome / Firefox / Opera).<br>"
-            "2. Откройте сайт <a href='https://music.youtube.com' style='color: #38bdf8;'>music.youtube.com</a> или <a href='https://youtube.com' style='color: #38bdf8;'>youtube.com</a> и убедитесь, что вы вошли в свой Google / YouTube аккаунт.<br>"
-            "3. Нажмите на иконку расширения в панели браузера и нажмите <b>Export</b> (в формате <i>Netscape HTTP Cookie File</i>).<br>"
-            "4. Сохраните полученный файл (например, <code>music.youtube.com_cookies.txt</code>) на компьютер.<br>"
-            "5. Нажмите кнопку <b>Browse...</b> выше и выберите сохранённый файл."
+            "<b>📋 Step-by-Step Guide to Exporting cookies.txt:</b><br>"
+            "1. Install a browser extension (e.g. <b>Get cookies.txt LOCALLY</b> or <b>Cookie-Editor</b> for Chrome / Firefox / Edge / Opera).<br>"
+            "2. Open <a href='https://music.youtube.com' style='color: #38bdf8;'>music.youtube.com</a> or <a href='https://youtube.com' style='color: #38bdf8;'>youtube.com</a> and make sure you are logged into your Google account.<br>"
+            "3. Click the extension icon in your browser toolbar and click <b>Export</b> (in <i>Netscape HTTP Cookie File</i> format).<br>"
+            "4. Save the file (e.g. <code>music.youtube.com_cookies.txt</code>) on your computer.<br>"
+            "5. Click <b>Browse...</b> above and select the saved file."
         )
         file_instructions.setOpenExternalLinks(True)
         file_instructions.setWordWrap(True)
@@ -2071,10 +2072,10 @@ class MainWindow(QMainWindow):
         browser_widget_layout.addLayout(b_row)
 
         browser_warning = QLabel(
-            "<b>⚠️ Ограничение прямого импорта из браузеров:</b><br>"
-            "В последних версиях Windows и браузеров на движке <b>Chromium</b> (Google Chrome, Microsoft Edge, Opera, Brave, Vivaldi, Яндекс Браузер и т.д.) прямое чтение cookies заблокировано системной защитой <b>App-Bound Encryption (DPAPI)</b>.<br><br>"
-            "Прямой импорт поддерживается только в браузерах на движке <b>Firefox</b>, однако этот режим является экспериментальным и официально нами не тестировался.<br><br>"
-            "💡 <b>Рекомендуется использовать режим «Cookies File (cookies.txt)»</b> — он полностью безопасен, стабилен и поддерживает авторизацию YouTube Premium."
+            "<b>⚠️ Direct Browser Import Restriction:</b><br>"
+            "In modern versions of Windows and Chromium-based browsers (Google Chrome, Microsoft Edge, Opera, Brave, Vivaldi, etc.), direct cookie reading is blocked by system-level <b>App-Bound Encryption (DPAPI)</b> data protection.<br><br>"
+            "Direct cookie extraction is only supported for <b>Firefox</b>-based browsers, but this mode is experimental and has not been extensively tested.<br><br>"
+            "💡 <b>Recommendation:</b> Use the <b>«Cookies File (cookies.txt)»</b> mode — it is 100% reliable, safe, and fully supports YouTube Premium."
         )
         browser_warning.setWordWrap(True)
         browser_warning.setStyleSheet("""
@@ -2318,6 +2319,7 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
                 self.download_queue.remove(widget)
         self.update_queue_ui()
+        self._update_taskbar_progress()
         self.status_label.setText("Queue cleared (except active downloads).")
 
     def clear_completed(self):
@@ -2329,6 +2331,7 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
                 self.download_queue.remove(widget)
         self.update_queue_ui()
+        self._update_taskbar_progress()
         self.status_label.setText("Completed items removed from queue.")
 
     def open_downloads_folder(self):
@@ -2922,6 +2925,25 @@ class MainWindow(QMainWindow):
         thread.start()
         self.update_queue_ui()
 
+    def _update_taskbar_progress(self):
+        if not self.download_queue:
+            taskbar_manager.clear(int(self.winId()))
+            return
+        total = len(self.download_queue)
+        finished = sum(1 for w in self.download_queue if w.status_state in ("Success", "Completed", "Finished", "Skipped", "Unavailable", "Error"))
+        active_progress = 0.0
+        for w in self.download_queue:
+            if w.status_state == "Downloading":
+                try:
+                    active_progress += float(w.progress_bar.value()) / 100.0
+                except Exception:
+                    pass
+        if finished >= total:
+            taskbar_manager.clear(int(self.winId()))
+        else:
+            overall = int((finished + active_progress) / max(total, 1) * 100.0)
+            taskbar_manager.set_progress(int(self.winId()), overall, 100)
+
     def update_widget_progress(self, widget: QueueItemWidget, d: dict):
         if widget not in self.download_queue:
             return
@@ -2937,6 +2959,7 @@ class MainWindow(QMainWindow):
             eta_clean = re.sub(r'\x1b\[[0-9;]*m', '', d.get('_eta_str', 'Unknown')).strip()
 
             widget.update_progress(percent_clean, speed_clean, eta_clean)
+            self._update_taskbar_progress()
         elif d['status'] == 'finished':
             widget.set_status("Post-processing...", "Downloading")
 
@@ -2991,6 +3014,7 @@ class MainWindow(QMainWindow):
         self.history.add_entry(title, author, platform, status_text, url=url, media_type=widget.format_type)
         self.refresh_history()
         self.update_queue_ui()
+        self._update_taskbar_progress()
 
         # Pick up next item in queue
         self.process_queue()
