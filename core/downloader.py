@@ -6,6 +6,7 @@ import re
 import sys
 import time
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -49,6 +50,24 @@ def friendly_error(raw: str) -> str:
     clean = re.sub(r"^ERROR:\s*", "", clean).strip()
     first = re.split(r"[\n.]", clean)[0].strip()
     return first[:100] if first else raw[:100]
+
+
+def is_platform_unavailable(raw: str) -> bool:
+    """Return True if video is deleted/unavailable on YouTube/platform (not a software bug or download failure)."""
+    if not raw:
+        return False
+    low = raw.lower()
+    return any(k in low for k in (
+        "video unavailable",
+        "this video is not available",
+        "has been removed",
+        "copyright removal",
+        "copyright claim",
+        "private video",
+        "account has been terminated",
+        "no longer available",
+        "this video is unavailable",
+    ))
 
 
 def clean_media_url(url: str, keep_list: bool = False) -> str:
@@ -365,11 +384,24 @@ def apply_playlist_cover_settings(folder_path: Path | str, image_source: Any, mo
 # ─── Playlist Persistence Helpers ─────────────────────────────────────────────
 
 def read_stem_vid_map(output_dir: Path | str) -> dict[str, str]:
-    """Read stem -> video_id mapping from stem_vid_map.json."""
-    map_file = Path(output_dir) / "stem_vid_map.json"
+    """Read stem -> video_id mapping from stem_vid_map.json, keeping only existing files."""
+    out = Path(output_dir)
+    map_file = out / "stem_vid_map.json"
     if map_file.exists():
         try:
-            return json.loads(map_file.read_text(encoding="utf-8"))
+            raw = json.loads(map_file.read_text(encoding="utf-8"))
+            valid_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv", ".webm"}
+            cleaned = {}
+            for stem, vid in raw.items():
+                for ext in valid_exts:
+                    p = out / f"{stem}{ext}"
+                    try:
+                        if p.exists() and p.stat().st_size > 100 * 1024:
+                            cleaned[stem] = vid
+                            break
+                    except Exception:
+                        pass
+            return cleaned
         except Exception:
             pass
     return {}
@@ -423,6 +455,87 @@ def write_archive_ids(output_dir: Path | str, ids: set[str]) -> None:
         pass
 
 
+def clean_song_title(title: str, author: str = "") -> str:
+    """Strip only pure metadata video noise (preserving remixes, extended, feats)."""
+    t = (title or "").strip()
+    # Remove invisible zero-width characters
+    t = re.sub(r'[\u200b\u200c\u200d\ufeff\u00a0]+', '', t)
+    noise_patterns = [
+        r'[\(\[\{]\s*(?:official\s*(?:music\s*)?video|music\s*video|official\s*audio|official|audio|hd|4k|4k\s*upgrade|remaster(?:ed)?(?:\s*\d+)?|video|clip|lyrics?|visualizer|bonus\s*edition)\s*[\)\]\}]',
+        r'\[Official\s+HD\s+Music\s+Video\]',
+        r'\(from\s+the\s+series\s+Arcane\s+League\s+of\s+Legends\)',
+        r'[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]',
+    ]
+    for pat in noise_patterns:
+        t = re.sub(pat, '', t, flags=re.IGNORECASE)
+    # Strip repeated artists from title e.g. "Blank Banshee - Blank Banshee - B: / Start Up"
+    if ' - ' in t:
+        parts = [p.strip() for p in t.split(' - ') if p.strip()]
+        a_clean = re.sub(r'[\W_]+', '', (author or '').lower())
+        new_parts = []
+        for p in parts:
+            p_clean = re.sub(r'[\W_]+', '', p.lower())
+            if a_clean and (p_clean == a_clean or a_clean in p_clean):
+                continue
+            new_parts.append(p)
+        if new_parts:
+            t = ' - '.join(new_parts)
+    return re.sub(r'[\W_]+', '', t.lower()).strip()
+
+
+def clean_artist_name(author: str) -> str:
+    a = (author or "").strip()
+    a = re.sub(r'[\u200b\u200c\u200d\ufeff\u00a0]+', '', a)
+    for suffix in ('- Topic', 'Topic', 'VEVO', 'Official', 'Uptown', 'Music', 'TV', 'Records'):
+        if a.lower().endswith(suffix.lower()):
+            a = a[:-len(suffix)].strip()
+    return re.sub(r'[\W_]+', '', a.lower()).strip()
+
+
+def _author_and_title_match(stem: str, title: Optional[str], author: Optional[str]) -> bool:
+    """Strictly matches both track title AND artist name against file stem to avoid cross-artist collisions."""
+    if not title or len(title.strip()) < 2:
+        return False
+
+    clean_t = clean_song_title(title, author or "")
+    clean_a = clean_artist_name(author or "")
+    is_cyrillic = any(ord(ch) > 127 for ch in clean_t)
+
+    if not clean_t or len(clean_t) < 2:
+        return False
+
+    def _author_match(target_auth: str) -> bool:
+        if not clean_a or not target_auth:
+            return True
+        if clean_a in ('release', 'topic', 'variousartists', 'music', 'soundtrack', 'official', 'vevo'):
+            return True
+        if clean_a in target_auth or target_auth in clean_a:
+            return True
+        words_a = [w for w in re.findall(r'[a-zA-Z0-9\u0400-\u04FF]+', clean_a) if len(w) >= 3]
+        words_p = [w for w in re.findall(r'[a-zA-Z0-9\u0400-\u04FF]+', target_auth) if len(w) >= 3]
+        return any(wa in wp or wp in wa for wa in words_a for wp in words_p)
+
+    parts = stem.split(' - ')
+    if len(parts) >= 2:
+        stem_a0 = clean_artist_name(parts[0])
+        stem_t1 = clean_song_title(' - '.join(parts[1:]), stem_a0)
+        if clean_t == stem_t1 or (is_cyrillic and clean_t in stem_t1):
+            if _author_match(stem_a0) or (clean_a and clean_a in stem_t1) or is_cyrillic:
+                return True
+
+        stem_t0 = clean_song_title(parts[0], clean_artist_name(' - '.join(parts[1:])))
+        stem_a1 = clean_artist_name(' - '.join(parts[1:]))
+        if clean_t == stem_t0 or (is_cyrillic and clean_t in stem_t0):
+            if _author_match(stem_a1) or (clean_a and clean_a in stem_t0) or is_cyrillic:
+                return True
+    else:
+        stem_t = clean_song_title(stem, author or "")
+        if clean_t == stem_t or (is_cyrillic and clean_t in stem_t):
+            return True
+
+    return False
+
+
 def check_and_clean_archive_if_file_missing(output_dir: Path | str, vid: str, title: str = "", author: str = "") -> None:
     """If a track is listed in downloaded_archive.txt but not found on disk, remove it from archive so yt-dlp re-downloads it."""
     if not vid:
@@ -432,27 +545,30 @@ def check_and_clean_archive_if_file_missing(output_dir: Path | str, vid: str, ti
     if not archive_file.exists():
         return
 
+    valid_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv", ".webm"}
     stem_map = read_stem_vid_map(out)
-    valid_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv", ".webm", ".avi"}
     file_exists = False
 
-    # 1. Check via stem_map
+    # Check stem_map
     for stem, mapped_vid in stem_map.items():
         if mapped_vid == vid:
             for ext in valid_exts:
-                if (out / f"{stem}{ext}").exists():
-                    file_exists = True
-                    break
-        if file_exists:
-            break
+                p = out / f"{stem}{ext}"
+                try:
+                    if p.exists() and p.stat().st_size >= 500 * 1024:
+                        file_exists = True
+                        break
+                except Exception:
+                    pass
+            if file_exists:
+                break
 
-    # 2. Check via title matching in filenames if not found in stem_map
-    if not file_exists and title and len(title.strip()) >= 3:
-        clean_t = title.strip().lower()
+    # Check via strict Author & Title matching in filenames
+    if not file_exists and title and len(title.strip()) >= 2:
         try:
             for f in out.iterdir():
-                if f.is_file() and f.suffix.lower() in valid_exts:
-                    if clean_t in f.name.lower() or f.stem.lower() in clean_t:
+                if f.is_file() and f.suffix.lower() in valid_exts and f.stat().st_size >= 500 * 1024:
+                    if _author_and_title_match(f.stem, title, author):
                         file_exists = True
                         break
         except Exception:
@@ -469,6 +585,112 @@ def check_and_clean_archive_if_file_missing(output_dir: Path | str, vid: str, ti
             hide_file(archive_file)
         except Exception:
             pass
+
+
+def is_file_already_downloaded(output_dir: Path | str, vid: str, title: Optional[str] = None, author: Optional[str] = None) -> bool:
+    """Instant local disk check: returns True in ~0.0001s if valid media file (>=500KB) already exists on disk."""
+    out = Path(output_dir)
+    if not out.exists():
+        return False
+
+    valid_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv", ".webm"}
+    stem_map = read_stem_vid_map(out)
+
+    # 1. Check via stem_map
+    for stem, mapped_vid in stem_map.items():
+        if mapped_vid == vid:
+            for ext in valid_exts:
+                p = out / f"{stem}{ext}"
+                try:
+                    if p.exists() and p.stat().st_size >= 500 * 1024:
+                        return True
+                except Exception:
+                    pass
+
+    # 2. Check via strict Author & Title matching in filenames
+    if title and len(title.strip()) >= 2:
+        try:
+            for f in out.iterdir():
+                if f.is_file() and f.suffix.lower() in valid_exts and f.stat().st_size >= 500 * 1024:
+                    if _author_and_title_match(f.stem, title, author):
+                        update_stem_vid_map(out, f.stem, vid)
+                        return True
+        except Exception:
+            pass
+
+    return False
+
+
+def cleanup_orphan_files(output_dir: Path | str, is_audio_playlist: bool = True) -> int:
+    """Clean up orphan .webp, .png, .jpg thumbnails, .part, .ytdl, corrupted audio stubs (<500KB), and leftover .mp4/.webm in audio folders.
+    Preserves playlist covers (cover.png, cover.jpg, cover.webp, folder.ico, desktop.ini) and service logs.
+    """
+    out = Path(output_dir)
+    if not out.exists():
+        return 0
+
+    protected_basenames = {
+        "cover.png", "cover.jpg", "cover.jpeg", "cover.webp", "cover.ico",
+        "folder.ico", "desktop.ini",
+        "stem_vid_map.json", "playlist_order.txt", "downloaded_archive.txt",
+        "failed_downloads.txt", "app_logs.txt"
+    }
+
+    audio_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav"}
+    cleaned_count = 0
+    try:
+        all_files = list(out.iterdir())
+        has_audio = any(f.suffix.lower() in audio_exts for f in all_files if f.is_file())
+        audio_stems = {f.stem.lower() for f in all_files if f.is_file() and f.suffix.lower() in audio_exts}
+
+        for f in all_files:
+            if not f.is_file():
+                continue
+            name_lower = f.name.lower()
+            if name_lower in protected_basenames:
+                continue
+
+            # 1. Temporary download fragments
+            if f.suffix.lower() in (".part", ".ytdl", ".tmp", ".temp"):
+                try:
+                    f.unlink(missing_ok=True)
+                    cleaned_count += 1
+                except Exception:
+                    pass
+            # 2. Orphan thumbnails left after failed or interrupted downloads
+            elif f.suffix.lower() in (".webp", ".png", ".jpg", ".jpeg"):
+                try:
+                    f.unlink(missing_ok=True)
+                    cleaned_count += 1
+                except Exception:
+                    pass
+            # 3. Corrupted / truncated audio stubs (<500 KB) that cannot be played
+            elif f.suffix.lower() in audio_exts:
+                try:
+                    if f.stat().st_size < 500 * 1024:
+                        f.unlink(missing_ok=True)
+                        cleaned_count += 1
+                except Exception:
+                    pass
+            # 4. Leftover .mp4 / .webm video containers in audio playlists
+            elif (has_audio or is_audio_playlist) and f.suffix.lower() in (".mp4", ".webm", ".mkv"):
+                # If an audio version already exists, delete the duplicate video container
+                if f.stem.lower() in audio_stems:
+                    try:
+                        f.unlink(missing_ok=True)
+                        cleaned_count += 1
+                    except Exception:
+                        pass
+                else:
+                    # If only the .mp4 remains, convert to .mp3 and delete .mp4
+                    try:
+                        ensure_audio_format(f, ".mp3")
+                        cleaned_count += 1
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return cleaned_count
 
 
 def write_playlist_order(output_dir: Path | str, file_names: list[str]) -> None:
@@ -574,6 +796,7 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict],
         title = entry.get("title", "")
         author = entry.get("uploader") or entry.get("artist") or entry.get("channel") or ""
         year = str(entry.get("release_year") or entry.get("upload_date") or "")[:4] or None
+        thumb = entry.get("thumbnail") or ""
 
         target_file: Optional[Path] = None
 
@@ -581,11 +804,10 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict],
         if vid and vid in vid_to_paths and vid_to_paths[vid]:
             target_file = vid_to_paths[vid][0]
 
-        # 2. Look up via title match
-        if not target_file and title and len(title.strip()) >= 3:
-            clean_t = title.strip().lower()
+        # 2. Look up via strict Author & Title match
+        if not target_file and title and len(title.strip()) >= 2:
             for f in all_local_files:
-                if clean_t in f.name.lower() or f.stem.lower() in clean_t:
+                if _author_and_title_match(f.stem, title, author):
                     target_file = f
                     break
 
@@ -620,7 +842,7 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict],
 
 
 def log_failed_download(output_dir: Path | str, title: str, author: str, url: str, reason: str) -> None:
-    """Append failed download record to failed_downloads.txt in the output directory."""
+    """Append failed download record to failed_downloads.txt and app_logs.txt."""
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     failed_log = out / "failed_downloads.txt"
@@ -635,9 +857,18 @@ def log_failed_download(output_dir: Path | str, title: str, author: str, url: st
     except Exception:
         pass
 
+    try:
+        import datetime
+        from core.settings import get_app_data_dir
+        app_log = get_app_data_dir() / "app_logs.txt"
+        with open(app_log, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ERROR: Failed to download '{title}': {friendly_error(reason)}\n")
+    except Exception:
+        pass
+
 
 def clear_failed_log_if_clean(output_dir: Path | str) -> None:
-    """Remove failed_downloads.txt from output directory if all tracks succeeded."""
+    """If all tracks in playlist directory exist and are valid, remove failed_downloads.txt."""
     out = Path(output_dir)
     failed_log = out / "failed_downloads.txt"
     if failed_log.exists():
@@ -650,44 +881,163 @@ def clear_failed_log_if_clean(output_dir: Path | str) -> None:
 
 # ─── Tag & Cover Processing ───────────────────────────────────────────────────
 
-def fix_mp3_cover(path: Path) -> None:
-    """Crop embedded MP3 cover to 1000x1000 square and save strictly with ID3v2.3 for Windows Explorer."""
+def fetch_and_crop_cover_jpeg(
+    path: Path,
+    thumbnail_url: Optional[str] = None,
+    artist: Optional[str] = None,
+    title: Optional[str] = None
+) -> Optional[bytes]:
+    """Search for downloaded thumbnail, or download thumbnail_url / YouTube / iTunes cover, crop to 1000x1000 square, and return JPEG bytes."""
+    # 1. Search local thumbnail files in path.parent
+    try:
+        parent = path.parent
+        stem = path.stem
+        for ext in (".jpg", ".jpeg", ".webp", ".png"):
+            cand = parent / f"{stem}{ext}"
+            if cand.exists() and cand.is_file():
+                try:
+                    img = Image.open(cand)
+                    sq = crop_to_square(img)
+                    buf = io.BytesIO()
+                    sq.save(buf, format="JPEG", quality=95)
+                    cand.unlink(missing_ok=True)
+                    return buf.getvalue()
+                except Exception:
+                    pass
+        for f in parent.glob(f"{stem[:25]}*.*"):
+            if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".webp", ".png") and not f.name.startswith("cover."):
+                try:
+                    img = Image.open(f)
+                    sq = crop_to_square(img)
+                    buf = io.BytesIO()
+                    sq.save(buf, format="JPEG", quality=95)
+                    f.unlink(missing_ok=True)
+                    return buf.getvalue()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 2. Download from explicit thumbnail_url
+    if thumbnail_url and str(thumbnail_url).startswith("http"):
+        try:
+            req = urllib.request.Request(thumbnail_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = resp.read()
+            img = Image.open(io.BytesIO(data))
+            sq = crop_to_square(img)
+            buf = io.BytesIO()
+            sq.save(buf, format="JPEG", quality=95)
+            return buf.getvalue()
+        except Exception:
+            pass
+
+    # 3. Lookup video ID from stem_vid_map.json and fetch YouTube HQ thumbnail
+    try:
+        stem_map = read_stem_vid_map(path.parent)
+        vid = stem_map.get(path.stem)
+        if vid:
+            for yt_url in (f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"):
+                try:
+                    req = urllib.request.Request(yt_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        if resp.status == 200:
+                            data = resp.read()
+                            img = Image.open(io.BytesIO(data))
+                            sq = crop_to_square(img)
+                            buf = io.BytesIO()
+                            sq.save(buf, format="JPEG", quality=95)
+                            return buf.getvalue()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 4. Search iTunes API for original high-resolution square cover
+    if (artist and title) or path.stem:
+        try:
+            query = f"{artist} {title}".strip() if (artist and title) else path.stem
+            query_clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', query).strip()
+            if query_clean:
+                q_enc = urllib.parse.quote_plus(query_clean)
+                itunes_url = f"https://itunes.apple.com/search?term={q_enc}&entity=song&limit=1"
+                req = urllib.request.Request(itunes_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        import json as _json
+                        data = _json.loads(resp.read().decode("utf-8", errors="ignore"))
+                        results = data.get("results", [])
+                        if results:
+                            art_url = results[0].get("artworkUrl100", "")
+                            if art_url:
+                                high_res = art_url.replace("100x100bb.jpg", "1000x1000bb.jpg").replace("100x100bb.png", "1000x1000bb.png")
+                                req_img = urllib.request.Request(high_res, headers={"User-Agent": "Mozilla/5.0"})
+                                with urllib.request.urlopen(req_img, timeout=6) as r_img:
+                                    if r_img.status == 200:
+                                        img = Image.open(io.BytesIO(r_img.read()))
+                                        sq = crop_to_square(img)
+                                        buf = io.BytesIO()
+                                        sq.save(buf, format="JPEG", quality=95)
+                                        return buf.getvalue()
+        except Exception:
+            pass
+
+    return None
+
+
+def fix_mp3_cover(path: Path, thumbnail_url: Optional[str] = None, artist: Optional[str] = None, title: Optional[str] = None) -> None:
+    """Crop embedded MP3 cover to 1000x1000 square, or download & embed if missing, saving strictly with ID3v2.3."""
     if ID3 is None or APIC is None:
         return
     try:
         tags = ID3(path)
     except Exception:
-        return
+        try:
+            tags = ID3()
+            tags.save(str(path), v2_version=3)
+        except Exception:
+            return
 
     apic_keys = [k for k in tags if k.startswith("APIC")]
-    if not apic_keys:
-        return
-
-    changed = False
-    for key in apic_keys:
-        apic = tags[key]
-        try:
-            img = Image.open(io.BytesIO(apic.data))
-            if img.width == img.height == 1000:
-                continue
-            buf = io.BytesIO()
-            crop_to_square(img).save(buf, format="JPEG", quality=95)
-            tags[key] = APIC(
-                encoding=3,
-                mime="image/jpeg",
-                type=3,  # Cover (front)
-                desc=getattr(apic, "desc", "Cover") or "Cover",
-                data=buf.getvalue(),
-            )
-            changed = True
-        except Exception:
-            pass
-
-    if changed:
-        try:
-            tags.save(v2_version=3)
-        except Exception:
-            pass
+    if apic_keys:
+        changed = False
+        for key in apic_keys:
+            apic = tags[key]
+            try:
+                img = Image.open(io.BytesIO(apic.data))
+                if img.width == img.height == 1000:
+                    continue
+                buf = io.BytesIO()
+                crop_to_square(img).save(buf, format="JPEG", quality=95)
+                tags[key] = APIC(
+                    encoding=3,
+                    mime="image/jpeg",
+                    type=3,  # Cover (front)
+                    desc=getattr(apic, "desc", "Cover") or "Cover",
+                    data=buf.getvalue(),
+                )
+                changed = True
+            except Exception:
+                pass
+        if changed:
+            try:
+                tags.save(str(path), v2_version=3)
+            except Exception:
+                pass
+    else:
+        img_bytes = fetch_and_crop_cover_jpeg(path, thumbnail_url=thumbnail_url, artist=artist, title=title)
+        if img_bytes:
+            try:
+                tags["APIC:Cover"] = APIC(
+                    encoding=3,
+                    mime="image/jpeg",
+                    type=3,
+                    desc="Cover",
+                    data=img_bytes,
+                )
+                tags.save(str(path), v2_version=3)
+            except Exception:
+                pass
 
 
 def fix_mp3_tags(
@@ -758,8 +1108,8 @@ def fix_mp3_tags(
                 break
 
 
-def fix_flac_cover(path: Path) -> None:
-    """Crop embedded FLAC cover to 1000x1000 square Picture block."""
+def fix_flac_cover(path: Path, thumbnail_url: Optional[str] = None, artist: Optional[str] = None, title: Optional[str] = None) -> None:
+    """Crop embedded FLAC cover to 1000x1000 square Picture block, or embed if missing."""
     if FLAC is None:
         return
     try:
@@ -768,50 +1118,65 @@ def fix_flac_cover(path: Path) -> None:
         return
 
     pictures = list(audio.pictures)
-    if not pictures:
-        return
-
-    changed = False
-    new_pictures = []
-    for pic in pictures:
-        try:
-            img = Image.open(io.BytesIO(pic.data))
-            if img.width == img.height == 1000:
-                new_pictures.append(pic)
-                continue
-            buf = io.BytesIO()
-            crop_to_square(img).save(buf, format="JPEG", quality=95)
-            if Picture:
-                new_pic = Picture()
-                new_pic.data = buf.getvalue()
-                new_pic.mime = "image/jpeg"
-                new_pic.type = 3  # Cover (front)
-                new_pic.width = 1000
-                new_pic.height = 1000
-                new_pic.depth = 24
-                new_pic.desc = getattr(pic, "desc", "Cover") or "Cover"
-                new_pictures.append(new_pic)
-            else:
-                pic.data = buf.getvalue()
-                pic.mime = "image/jpeg"
-                pic.width, pic.height, pic.depth = 1000, 1000, 24
-                pic.type = 3
-                new_pictures.append(pic)
-        except Exception:
-            new_pictures.append(pic)
-
-    if changed:
-        for _ in range(4):
+    if pictures:
+        changed = False
+        new_pictures = []
+        for pic in pictures:
             try:
-                audio.clear_pictures()
-                for p in new_pictures:
-                    audio.add_picture(p)
-                audio.save()
-                break
-            except (PermissionError, OSError):
-                time.sleep(0.15)
+                img = Image.open(io.BytesIO(pic.data))
+                if img.width == img.height == 1000:
+                    new_pictures.append(pic)
+                    continue
+                buf = io.BytesIO()
+                crop_to_square(img).save(buf, format="JPEG", quality=95)
+                if Picture:
+                    new_pic = Picture()
+                    new_pic.data = buf.getvalue()
+                    new_pic.mime = "image/jpeg"
+                    new_pic.type = 3  # Cover (front)
+                    new_pic.width = 1000
+                    new_pic.height = 1000
+                    new_pic.depth = 24
+                    new_pic.desc = getattr(pic, "desc", "Cover") or "Cover"
+                    new_pictures.append(new_pic)
+                else:
+                    pic.data = buf.getvalue()
+                    pic.mime = "image/jpeg"
+                    pic.width, pic.height, pic.depth = 1000, 1000, 24
+                    pic.type = 3
+                    new_pictures.append(pic)
+                changed = True
             except Exception:
-                break
+                new_pictures.append(pic)
+
+        if changed:
+            for _ in range(4):
+                try:
+                    audio.clear_pictures()
+                    for p in new_pictures:
+                        audio.add_picture(p)
+                    audio.save()
+                    break
+                except (PermissionError, OSError):
+                    time.sleep(0.15)
+                except Exception:
+                    break
+    else:
+        img_bytes = fetch_and_crop_cover_jpeg(path, thumbnail_url=thumbnail_url, artist=artist, title=title)
+        if img_bytes and Picture:
+            try:
+                pic = Picture()
+                pic.data = img_bytes
+                pic.mime = "image/jpeg"
+                pic.type = 3
+                pic.width = 1000
+                pic.height = 1000
+                pic.depth = 24
+                pic.desc = "Cover"
+                audio.add_picture(pic)
+                audio.save()
+            except Exception:
+                pass
 
 
 def fix_flac_tags(
@@ -871,8 +1236,8 @@ def fix_flac_tags(
             pass
 
 
-def fix_opus_cover(path: Path) -> None:
-    """Crop embedded Opus/OGG cover to 1000x1000 square Picture block."""
+def fix_opus_cover(path: Path, thumbnail_url: Optional[str] = None, artist: Optional[str] = None, title: Optional[str] = None) -> None:
+    """Crop embedded Opus/OGG cover to 1000x1000 square Picture block, or embed if missing."""
     if OggOpus is None or Picture is None:
         return
     try:
@@ -881,42 +1246,56 @@ def fix_opus_cover(path: Path) -> None:
         return
 
     pic_keys = [k for k in audio.keys() if k.lower() == "metadata_block_picture"]
-    if not pic_keys:
-        return
-
-    changed = False
-    new_b64_list = []
-    for k in pic_keys:
-        for b64_str in audio[k]:
-            try:
-                raw_bytes = base64.b64decode(b64_str)
-                pic = Picture(raw_bytes)
-                img = Image.open(io.BytesIO(pic.data))
-                if img.width == img.height == 1000:
+    if pic_keys:
+        changed = False
+        new_b64_list = []
+        for k in pic_keys:
+            for b64_str in audio[k]:
+                try:
+                    raw_bytes = base64.b64decode(b64_str)
+                    pic = Picture(raw_bytes)
+                    img = Image.open(io.BytesIO(pic.data))
+                    if img.width == img.height == 1000:
+                        new_b64_list.append(b64_str)
+                        continue
+                    buf = io.BytesIO()
+                    crop_to_square(img).save(buf, format="JPEG", quality=95)
+                    pic.data = buf.getvalue()
+                    pic.mime = "image/jpeg"
+                    pic.type = 3
+                    pic.width = 1000
+                    pic.height = 1000
+                    pic.depth = 24
+                    pic.desc = "Cover"
+                    new_b64_list.append(base64.b64encode(pic.write()).decode("ascii"))
+                    changed = True
+                except Exception:
                     new_b64_list.append(b64_str)
-                    continue
-                buf = io.BytesIO()
-                crop_to_square(img).save(buf, format="JPEG", quality=95)
-                pic.data = buf.getvalue()
+
+        if changed:
+            try:
+                for k in pic_keys:
+                    del audio[k]
+                audio["metadata_block_picture"] = new_b64_list
+                audio.save()
+            except Exception:
+                pass
+    else:
+        img_bytes = fetch_and_crop_cover_jpeg(path, thumbnail_url=thumbnail_url, artist=artist, title=title)
+        if img_bytes:
+            try:
+                pic = Picture()
+                pic.data = img_bytes
                 pic.mime = "image/jpeg"
                 pic.type = 3
                 pic.width = 1000
                 pic.height = 1000
                 pic.depth = 24
                 pic.desc = "Cover"
-                new_b64_list.append(base64.b64encode(pic.write()).decode("ascii"))
-                changed = True
+                audio["metadata_block_picture"] = [base64.b64encode(pic.write()).decode("ascii")]
+                audio.save()
             except Exception:
-                new_b64_list.append(b64_str)
-
-    if changed:
-        try:
-            for k in pic_keys:
-                del audio[k]
-            audio["metadata_block_picture"] = new_b64_list
-            audio.save()
-        except Exception:
-            pass
+                pass
 
 
 def fix_opus_tags(
@@ -976,8 +1355,8 @@ def fix_opus_tags(
             pass
 
 
-def fix_m4a_cover(path: Path) -> None:
-    """Crop embedded M4A/ALAC cover to 1000x1000 square."""
+def fix_m4a_cover(path: Path, thumbnail_url: Optional[str] = None, artist: Optional[str] = None, title: Optional[str] = None) -> None:
+    """Crop embedded M4A/ALAC cover to 1000x1000 square, or embed if missing."""
     if MP4 is None or MP4Cover is None:
         return
     try:
@@ -986,30 +1365,36 @@ def fix_m4a_cover(path: Path) -> None:
         return
 
     covers = audio.get("covr", [])
-    if not covers:
-        return
-
-    changed = False
-    new_covers = []
-    for cover in covers:
-        try:
-            img = Image.open(io.BytesIO(cover))
-            if img.width == img.height == 1000:
+    if covers:
+        changed = False
+        new_covers = []
+        for cover in covers:
+            try:
+                img = Image.open(io.BytesIO(cover))
+                if img.width == img.height == 1000:
+                    new_covers.append(cover)
+                    continue
+                buf = io.BytesIO()
+                crop_to_square(img).save(buf, format="JPEG", quality=95)
+                new_covers.append(MP4Cover(buf.getvalue(), imageformat=MP4Cover.FORMAT_JPEG))
+                changed = True
+            except Exception:
                 new_covers.append(cover)
-                continue
-            buf = io.BytesIO()
-            crop_to_square(img).save(buf, format="JPEG", quality=95)
-            new_covers.append(MP4Cover(buf.getvalue(), imageformat=MP4Cover.FORMAT_JPEG))
-            changed = True
-        except Exception:
-            new_covers.append(cover)
 
-    if changed:
-        try:
-            audio["covr"] = new_covers
-            audio.save()
-        except Exception:
-            pass
+        if changed:
+            try:
+                audio["covr"] = new_covers
+                audio.save()
+            except Exception:
+                pass
+    else:
+        img_bytes = fetch_and_crop_cover_jpeg(path, thumbnail_url=thumbnail_url, artist=artist, title=title)
+        if img_bytes:
+            try:
+                audio["covr"] = [MP4Cover(img_bytes, imageformat=MP4Cover.FORMAT_JPEG)]
+                audio.save()
+            except Exception:
+                pass
 
 
 def fix_m4a_tags(
@@ -1126,6 +1511,7 @@ def postprocess_audio_file(
     year: Optional[str] = None,
     naming_pattern: Optional[str] = None,
     settings: Optional[Any] = None,
+    thumbnail_url: Optional[str] = None,
 ) -> Path:
     """Fix artwork to 1000x1000 and ID3 tags for Windows Explorer / Groove."""
     path = Path(file_path)
@@ -1170,28 +1556,32 @@ def postprocess_audio_file(
     try:
         if ext == ".mp3":
             if cover_enabled:
-                fix_mp3_cover(path)
+                fix_mp3_cover(path, thumbnail_url=thumbnail_url, artist=target_artist, title=target_title)
             fix_mp3_tags(path, track_num=target_idx, total_tracks=playlist_count if track_number_enabled else None, album=target_album, artist=target_artist, title=target_title, year=target_year, lyrics=target_lyrics)
         elif ext == ".flac":
             if cover_enabled:
-                fix_flac_cover(path)
+                fix_flac_cover(path, thumbnail_url=thumbnail_url, artist=target_artist, title=target_title)
             fix_flac_tags(path, track_num=target_idx, total_tracks=playlist_count if track_number_enabled else None, album=target_album, artist=target_artist, title=target_title, year=target_year, lyrics=target_lyrics)
         elif ext in (".opus", ".ogg"):
             if cover_enabled:
-                fix_opus_cover(path)
+                fix_opus_cover(path, thumbnail_url=thumbnail_url, artist=target_artist, title=target_title)
             fix_opus_tags(path, track_num=target_idx, total_tracks=playlist_count if track_number_enabled else None, album=target_album, artist=target_artist, title=target_title, year=target_year, lyrics=target_lyrics)
         elif ext in (".m4a", ".aac", ".alac"):
             if cover_enabled:
-                fix_m4a_cover(path)
+                fix_m4a_cover(path, thumbnail_url=thumbnail_url, artist=target_artist, title=target_title)
             fix_m4a_tags(path, track_num=target_idx, total_tracks=playlist_count if track_number_enabled else None, album=target_album, artist=target_artist, title=target_title, year=target_year, lyrics=target_lyrics)
 
-        # Apply custom naming pattern if specified, or sanitize default name for Android/MTP/Windows
+        # Apply custom naming pattern if specified, or sanitize default name
+        mode = "windows"
+        if settings:
+            mode = settings.get('filename_compat', 'windows')
+
         if naming_pattern and naming_pattern.strip():
             pat = naming_pattern.strip()
-            safe_artist = (artist or "")[:60]
-            safe_title = (title or path.stem)[:120]
+            safe_artist = (artist or "")
+            safe_title = (title or path.stem)
             safe_idx = f"{playlist_index:02d}" if playlist_index is not None else ""
-            safe_album = (album or "")[:60]
+            safe_album = (album or "")
             safe_year = str(year or "")[:4]
             
             new_stem = pat
@@ -1200,27 +1590,21 @@ def postprocess_audio_file(
             new_stem = new_stem.replace("{index}", safe_idx)
             new_stem = new_stem.replace("{album}", safe_album)
             new_stem = new_stem.replace("{year}", safe_year)
-            new_stem = clean_filename_for_all_devices(new_stem, max_len=160)
+            new_stem = clean_filename_for_all_devices(new_stem, max_len=240, mode=mode)
         else:
-            new_stem = clean_filename_for_all_devices(path.stem, max_len=160)
+            new_stem = clean_filename_for_all_devices(path.stem, max_len=240, mode=mode)
 
-        if new_stem:
+        if new_stem and new_stem.lower() != path.stem.lower():
             new_path = path.parent / f"{new_stem}{path.suffix}"
-            try:
-                is_same = (new_path.resolve() == path.resolve())
-            except Exception:
-                is_same = (str(new_path).lower() == str(path).lower())
-
-            if not is_same:
-                for _ in range(5):
-                    try:
-                        os.replace(str(path), str(new_path))
-                        path = new_path
-                        break
-                    except (PermissionError, OSError):
-                        time.sleep(0.2)
-                    except Exception:
-                        break
+            for _ in range(5):
+                try:
+                    os.replace(str(path), str(new_path))
+                    path = new_path
+                    break
+                except (PermissionError, OSError):
+                    time.sleep(0.2)
+                except Exception:
+                    break
 
         # File timestamp for Windows / player ordering
         if playlist_index is not None:
@@ -1300,6 +1684,10 @@ def postprocess_video_file(
 
     fix_video_tags(path, artist=artist, title=title, year=year, settings=settings)
 
+    mode = "windows"
+    if settings:
+        mode = settings.get('filename_compat', 'windows')
+
     if naming_pattern and naming_pattern.strip():
         pat = naming_pattern.strip()
         safe_title = title or path.stem
@@ -1317,27 +1705,21 @@ def postprocess_video_file(
         new_stem = new_stem.replace("{fps}", safe_fps)
         new_stem = new_stem.replace("{year}", safe_year)
         new_stem = new_stem.replace("{index}", safe_idx)
-        new_stem = clean_filename_for_all_devices(new_stem, max_len=160)
+        new_stem = clean_filename_for_all_devices(new_stem, max_len=240, mode=mode)
     else:
-        new_stem = clean_filename_for_all_devices(path.stem, max_len=160)
+        new_stem = clean_filename_for_all_devices(path.stem, max_len=240, mode=mode)
 
-    if new_stem:
+    if new_stem and new_stem.lower() != path.stem.lower():
         new_path = path.parent / f"{new_stem}{path.suffix}"
-        try:
-            is_same = (new_path.resolve() == path.resolve())
-        except Exception:
-            is_same = (str(new_path).lower() == str(path).lower())
-
-        if not is_same:
-            for _ in range(5):
-                try:
-                    os.replace(str(path), str(new_path))
-                    path = new_path
-                    break
-                except (PermissionError, OSError):
-                    time.sleep(0.2)
-                except Exception:
-                    break
+        for _ in range(5):
+            try:
+                os.replace(str(path), str(new_path))
+                path = new_path
+                break
+            except (PermissionError, OSError):
+                time.sleep(0.2)
+            except Exception:
+                break
 
     # Apply Windows / player timestamp ordering if in a playlist
     if playlist_index is not None:
@@ -1392,8 +1774,10 @@ class MediaDownloader:
         author: Optional[str] = None,
         speed_limit: Optional[str] = None,
         naming_pattern: Optional[str] = None,
+        thumbnail: Optional[str] = None,
     ) -> tuple[bool, str, bool]:
         """Download media from the given URL with auto client rotation, rate limit, and playlist tracking."""
+        self.current_title = f"{author} - {title}".strip(" -") if (author or title) else ""
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir, exist_ok=True)
 
@@ -1433,10 +1817,11 @@ class MediaDownloader:
 
         ydl_opts: dict[str, Any] = {
             "outtmpl": outtmpl,
-            "writethumbnail": (is_audio and codec != "wav") or not is_audio,
+            "noplaylist": True,
+            "writethumbnail": not is_audio,
             "convertthumbnails": "jpg",
             "addmetadata": True,
-            "embedthumbnail": (is_audio and codec != "wav") or not is_audio,
+            "embedthumbnail": not is_audio,
             "quiet": False,
             "no_warnings": True,
             "noprogress": False,
@@ -1494,9 +1879,10 @@ class MediaDownloader:
                 clean_msg = re.sub(r"\x1b\[[0-9;]*m", "", msg).strip()
                 self.parent.last_error = clean_msg
                 try:
+                    track_tag = f"[{self.parent.current_title}] " if getattr(self.parent, "current_title", "") else ""
                     with open(self.log_path, "a", encoding="utf-8") as f:
                         f.write(
-                            f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {clean_msg}\n"
+                            f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {track_tag}{clean_msg}\n"
                         )
                 except Exception:
                     pass
@@ -1551,9 +1937,18 @@ class MediaDownloader:
         elif "youtu.be/" in clean_url:
             extracted_vid = clean_url.split("youtu.be/")[-1].split("?")[0]
 
-        if should_track_playlist:
-            if extracted_vid:
-                check_and_clean_archive_if_file_missing(self.output_dir, extracted_vid, title=title, author=author)
+        if should_track_playlist and extracted_vid:
+            if is_file_already_downloaded(self.output_dir, extracted_vid, title=title, author=author):
+                self.was_skipped = True
+                if progress_callback:
+                    try:
+                        progress_callback({"status": "finished", "total_bytes": 1, "downloaded_bytes": 1, "_percent_str": "100%", "_speed_str": "0 MB/s", "_eta_str": "0s", "status_text": "Already downloaded (Skipped)"})
+                    except Exception:
+                        pass
+                cleanup_orphan_files(self.output_dir)
+                return True, "", True
+
+            check_and_clean_archive_if_file_missing(self.output_dir, extracted_vid, title=title, author=author)
             archive_path = os.path.join(self.output_dir, "downloaded_archive.txt")
             unhide_file(archive_path)
             ydl_opts["download_archive"] = archive_path
@@ -1686,7 +2081,7 @@ class MediaDownloader:
 
         # Postprocessors setup
         if is_audio:
-            ydl_opts["format"] = "bestaudio/bestvideo+bestaudio/best"
+            ydl_opts["format"] = "bestaudio/best"
             post_audio = {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": codec,
@@ -1694,14 +2089,7 @@ class MediaDownloader:
             if quality_val is not None:
                 post_audio["preferredquality"] = quality_val
 
-            pps = [
-                post_audio,
-                {"key": "FFmpegMetadata"},
-            ]
-            if codec != "wav":
-                pps.append({"key": "EmbedThumbnail"})
-
-            ydl_opts["postprocessors"] = pps
+            ydl_opts["postprocessors"] = [post_audio]
         else:
             v_container = self.settings.get('video_container', 'mp4') if self.settings else 'mp4'
             v_codec = self.settings.get('video_codec', 'auto') if self.settings else 'auto'
@@ -1748,7 +2136,7 @@ class MediaDownloader:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     retcode = ydl.download([clean_url])
 
-                success = retcode == 0
+                success = (retcode == 0) and not self.last_error
                 if success or self.was_skipped:
                     break
 
@@ -1763,53 +2151,6 @@ class MediaDownloader:
                     time.sleep(0.3)
                     continue
                 break
-
-        # Smart Auto-Fallback: if 18+ age restriction or video unavailable, search and download official alternate
-        if not success and not self.was_skipped:
-            err_lower = self.last_error.lower()
-            if any(k in err_lower for k in ("sign in to confirm your age", "age-restricted", "video unavailable", "not available", "private video", "blocked")):
-                try:
-                    safe_title = (title or "").strip()
-                    safe_author = (author or "").strip()
-                    if safe_author and safe_author.lower() in safe_title.lower():
-                        search_query = safe_title
-                    else:
-                        search_query = f"{safe_author} {safe_title}".strip()
-
-                    if not search_query or search_query == "Unknown":
-                        try:
-                            import requests
-                            r_oe = requests.get(f"https://www.youtube.com/oembed?url={clean_url}&format=json", timeout=4)
-                            if r_oe.status_code == 200:
-                                d_oe = r_oe.json()
-                                oe_title = d_oe.get("title", "")
-                                oe_author = d_oe.get("author_name", "")
-                                if oe_author.endswith(" - Topic"):
-                                    oe_author = oe_author[:-8]
-                                search_query = f"{oe_author} {oe_title}".strip()
-                        except Exception:
-                            pass
-
-                    if not search_query or search_query == "Unknown":
-                        # Try flat extract to get track name
-                        with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": True}) as ydl_flat:
-                            try:
-                                meta = ydl_flat.extract_info(clean_url, download=False)
-                                u = meta.get('uploader', '') or meta.get('artist', '')
-                                t = meta.get('title', '')
-                                search_query = f"{u} {t}".strip()
-                            except Exception:
-                                pass
-
-                    if search_query and search_query != "Unknown":
-                        fallback_term = f"ytsearch1:{search_query} audio" if is_audio else f"ytsearch1:{search_query}"
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            retcode = ydl.download([fallback_term])
-                            if retcode == 0:
-                                success = True
-                                self.last_error = ""
-                except Exception:
-                    pass
 
         if not success and not self.last_error:
             self.last_error = "Unknown error occurred."
@@ -1836,6 +2177,7 @@ class MediaDownloader:
                                 year=extracted_year,
                                 naming_pattern=naming_pattern,
                                 settings=self.settings,
+                                thumbnail_url=extracted_thumb or thumbnail,
                             )
                         else:
                             v_pat = self.settings.get('video_naming_pattern', '{title}') if self.settings else '{title}'
@@ -1857,13 +2199,15 @@ class MediaDownloader:
                             if extracted_vid:
                                 update_stem_vid_map(self.output_dir, candidate.stem, extracted_vid)
 
-            # Fallback scan in output directory if hook didn't capture full name
-            if not processed_files:
+            # Strict validation: Only accept newly created/modified files matching this download
+            if not processed_files and not self.was_skipped:
                 for f in Path(self.output_dir).glob("*.*"):
                     if (
                         f.is_file()
                         and f.suffix.lower() in (".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv")
-                        and (time.time() - f.stat().st_mtime < 120 or f.stat().st_mtime >= start_time - 5)
+                        and f.stat().st_size >= 500 * 1024
+                        and f.stat().st_mtime >= start_time
+                        and _author_and_title_match(f.stem, title or extracted_title, author or extracted_artist)
                     ):
                         if is_audio:
                             f = postprocess_audio_file(
@@ -1876,6 +2220,7 @@ class MediaDownloader:
                                 year=extracted_year,
                                 naming_pattern=naming_pattern,
                                 settings=self.settings,
+                                thumbnail_url=extracted_thumb or thumbnail,
                             )
                         else:
                             v_pat = self.settings.get('video_naming_pattern', '{title}') if self.settings else '{title}'
@@ -1897,6 +2242,12 @@ class MediaDownloader:
                             if extracted_vid:
                                 update_stem_vid_map(self.output_dir, f.stem, extracted_vid)
 
+            if processed_files:
+                success = True
+                self.last_error = ""
+            elif not self.was_skipped:
+                success = False
+
             # Hide service files on Windows if created/updated
             if should_track_playlist:
                 hide_file(out_path / "downloaded_archive.txt")
@@ -1905,17 +2256,18 @@ class MediaDownloader:
 
             # If download failed, log to failed_downloads.txt in playlist folder
             if not success and self.last_error and not self.was_skipped:
-                if should_track_playlist:
-                    log_failed_download(
-                        self.output_dir,
-                        title=title or "Unknown Title",
-                        author=author or "Unknown Artist",
-                        url=url,
-                        reason=self.last_error,
-                    )
+                log_failed_download(
+                    self.output_dir,
+                    title=title or "Unknown Title",
+                    author=author or "Unknown Artist",
+                    url=url,
+                    reason=self.last_error,
+                )
 
+            cleanup_orphan_files(self.output_dir)
             return success, self.last_error, self.was_skipped
         except Exception as e:
+            cleanup_orphan_files(self.output_dir)
             if success:
                 return True, "", self.was_skipped
             return False, str(e), False

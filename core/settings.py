@@ -21,6 +21,7 @@ class SettingsManager:
             'max_concurrent_downloads': 3, # 1 to 6
             'naming_pattern': '{artist} - {title}', # e.g. '{artist} - {title}', '{index}. {artist} - {title}'
             'speed_limit': 'Unlimited', # 'Unlimited', '1 MB/s', '3 MB/s', '5 MB/s', '10 MB/s', '20 MB/s'
+            'filename_compat': 'Windows (Original)', # 'Windows (Original)' or 'UNIX / POSIX / MTP'
             'post_download_action': 'Disabled', # 'Disabled', 'Shutdown PC', 'Sleep / Suspend'
             'check_ytdlp_updates_on_startup': True,
             'embed_all_metadata': True,

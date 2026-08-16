@@ -81,6 +81,8 @@ class QueueItemWidget(QWidget):
         
         self.title_label = QLabel(item_data.get('title', 'Unknown Title'))
         self.title_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #f8fafc;")
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.title_label.setMinimumWidth(50)
         self.title_label.setWordWrap(False)
         
         platform = "YouTube"
@@ -103,14 +105,29 @@ class QueueItemWidget(QWidget):
         author = item_data.get('uploader') or item_data.get('channel') or item_data.get('artist') or "Unknown Author"
         self.subtitle_label = QLabel(f"{platform}{dur_str} • {author}")
         self.subtitle_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        self.subtitle_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.subtitle_label.setMinimumWidth(50)
         
         self.status_label = QLabel("Pending")
         self.status_label.setStyleSheet("color: #cbd5e1; font-size: 12px;")
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.status_label.setMinimumWidth(50)
         
         self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedHeight(4)
+        self.progress_bar.setFixedHeight(6)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setValue(0)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: #1e293b;
+                border: none;
+                border-radius: 3px;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #38bdf8, stop:1 #2563eb);
+                border-radius: 3px;
+            }
+        """)
         self.progress_bar.hide()
         
         details_layout.addWidget(self.title_label)
@@ -328,6 +345,10 @@ class QueueItemWidget(QWidget):
                 self.status_label.setStyleSheet("color: #10b981; font-size: 12px; font-weight: 500;") # Green
             else:
                 self.status_label.setStyleSheet("color: #ef4444; font-size: 12px; font-weight: 500;") # Red
+        elif state == "Unavailable":
+            self.progress_bar.hide()
+            self.btn_remove.setEnabled(True)
+            self.status_label.setStyleSheet("color: #94a3b8; font-size: 12px; font-weight: 500;") # Slate neutral
         elif state == "Pending":
             self.progress_bar.hide()
             self.btn_remove.setEnabled(True)
@@ -338,10 +359,15 @@ class QueueItemWidget(QWidget):
 
     def update_progress(self, percent, speed_clean, eta_clean):
         try:
-            self.progress_bar.setValue(int(float(percent)))
-        except ValueError:
-            pass
+            val = int(float(percent))
+            self.progress_bar.setValue(val)
+        except (ValueError, TypeError):
+            val = 0
+        if not self.progress_bar.isVisible():
+            self.progress_bar.show()
         prefix = "Retrying... " if getattr(self, 'is_retry', False) else "Downloading... "
         self.status_label.setText(f"{prefix}{percent}% | {speed_clean} | ETA: {eta_clean}")
         if getattr(self, 'is_retry', False):
             self.status_label.setStyleSheet("color: #fbbf24; font-size: 12px; font-weight: 500;")
+        else:
+            self.status_label.setStyleSheet("color: #38bdf8; font-size: 12px;")

@@ -15,48 +15,61 @@ def format_bytes(bytes_num: int) -> str:
     return "%3.1f %s" % (bytes_num, 'PB')
 
 
-def clean_filename_for_all_devices(name: str, max_len: int = 160) -> str:
-    """Sanitize filename to be 100% compatible with Windows NTFS, Android MTP, FAT32, exFAT and Samsung USB transfers."""
+def clean_filename_for_all_devices(name: str, max_len: int = 240, mode: str = "windows") -> str:
+    """Sanitize filename for Windows NTFS (default) or strict UNIX/POSIX/MTP."""
     if not name:
         return "unnamed"
 
-    replacements = {
-        "？": "", "?": "",
-        "：": " - ", ":": " - ",
-        "／": "-", "⧸": "-", "\\": "-", "/": "-", "＼": "-",
-        "｜": " - ", "|": " - ",
-        "＂": "'", '"': "'", "“": "'", "”": "'", "«": "'", "»": "'",
-        "＜": "", "＞": "", "<": "", ">": "",
-        "＊": "", "*": "",
-        "\xa0": " ", "\u200b": "", "\ufeff": "",
-        "\t": " ", "\n": " ", "\r": "",
-    }
+    is_unix = str(mode).lower().startswith("unix") or str(mode).lower().startswith("posix")
 
-    cleaned = name
-    for bad_char, rep in replacements.items():
-        cleaned = cleaned.replace(bad_char, rep)
+    if is_unix:
+        # Strict POSIX / FAT32 mode
+        replacements = {
+            "？": "", "?": "",
+            "：": " - ", ":": " - ",
+            "／": "-", "⧸": "-", "\\": "-", "/": "-", "＼": "-",
+            "｜": " - ", "|": " - ",
+            "＂": "'", '"': "'", "“": "'", "”": "'", "«": "'", "»": "'",
+            "＜": "", "＞": "", "<": "", ">": "",
+            "＊": "", "*": "",
+            "\xa0": " ", "\u200b": "", "\ufeff": "",
+            "\t": " ", "\n": " ", "\r": "",
+        }
+        cleaned = name
+        for bad_char, rep in replacements.items():
+            cleaned = cleaned.replace(bad_char, rep)
+        cleaned = "".join(ch for ch in cleaned if unicodedata.category(ch)[0] != "C")
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        cleaned = re.sub(r"(\s*-\s*)+", " - ", cleaned)
+        cleaned = cleaned.strip(" .-_#")
+        if len(cleaned) > 160:
+            cleaned = cleaned[:160].strip(" .-_#")
+        return cleaned or "unnamed"
+    else:
+        # Windows Native (Original full names, preserves all characters except 9 forbidden Windows NTFS chars)
+        replacements = {
+            "?": "",
+            ":": " - ",
+            "\\": "-", "/": "-",
+            "|": " - ",
+            '"': "'",
+            "<": "", ">": "",
+            "*": "",
+            "\xa0": " ", "\u200b": "", "\ufeff": "",
+            "\t": " ", "\n": " ", "\r": "",
+        }
+        cleaned = name
+        for bad_char, rep in replacements.items():
+            cleaned = cleaned.replace(bad_char, rep)
+        cleaned = "".join(ch for ch in cleaned if unicodedata.category(ch)[0] != "C")
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        cleaned = cleaned.strip(" .")
+        if len(cleaned) > max_len:
+            cleaned = cleaned[:max_len].strip(" .")
+        return cleaned or "unnamed"
 
-    # Remove non-printable / control characters
-    cleaned = "".join(ch for ch in cleaned if unicodedata.category(ch)[0] != "C")
 
-    # Collapse multiple spaces and dashes
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    cleaned = re.sub(r"(\s*-\s*)+", " - ", cleaned)
-    cleaned = re.sub(r"_+", "_", cleaned)
-
-    # Strip leading/trailing invalid chars (especially trailing dots/spaces which break MTP)
-    cleaned = cleaned.strip(" .-_#")
-
-    if not cleaned:
-        cleaned = "unnamed"
-
-    if len(cleaned) > max_len:
-        cleaned = cleaned[:max_len].strip(" .-_#")
-
-    return cleaned or "unnamed"
-
-
-def sanitize_filename(filename: str) -> str:
-    """Sanitize string to be used as filename across all devices."""
-    return clean_filename_for_all_devices(filename)
+def sanitize_filename(filename: str, mode: str = "windows") -> str:
+    """Sanitize string to be used as filename."""
+    return clean_filename_for_all_devices(filename, mode=mode)
 
