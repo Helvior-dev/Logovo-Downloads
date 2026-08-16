@@ -2187,7 +2187,9 @@ class MediaDownloader:
                                     cand_id = e_id
                                     break
                             if cand_url:
-                                with yt_dlp.YoutubeDL(ydl_opts) as ydl_dl:
+                                dl_fallback_opts = dict(ydl_opts)
+                                dl_fallback_opts.pop("download_archive", None)
+                                with yt_dlp.YoutubeDL(dl_fallback_opts) as ydl_dl:
                                     retcode = ydl_dl.download([cand_url])
                                     if retcode == 0:
                                         success = True
@@ -2197,10 +2199,12 @@ class MediaDownloader:
                                             archive_file = Path(self.output_dir) / "downloaded_archive.txt"
                                             if archive_file.exists():
                                                 try:
+                                                    unhide_file(archive_file)
                                                     with open(archive_file, "a", encoding="utf-8") as f_arc:
                                                         f_arc.write(f"youtube {extracted_vid}\n")
                                                         if cand_id:
                                                             f_arc.write(f"youtube {cand_id}\n")
+                                                    hide_file(archive_file)
                                                 except Exception:
                                                     pass
                     except Exception:
