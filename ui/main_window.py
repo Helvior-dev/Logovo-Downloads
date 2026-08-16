@@ -167,14 +167,15 @@ class FetchPreviewWorker(QThread):
     finished_signal = pyqtSignal(dict, object)
     error_signal = pyqtSignal(str, object)
 
-    def __init__(self, url, context=None):
+    def __init__(self, url, context=None, cookies=None):
         super().__init__()
         self.url = url
         self.context = context
+        self.cookies = cookies
 
     def run(self):
         try:
-            preview = get_video_preview(self.url)
+            preview = get_video_preview(self.url, cookies=self.cookies)
             if preview:
                 self.finished_signal.emit(preview, self.context)
             else:
@@ -187,10 +188,11 @@ class SyncPlaylistWorker(QThread):
     finished_signal = pyqtSignal(dict, dict, list, int)
     error_signal = pyqtSignal(str, dict)
 
-    def __init__(self, p_dict: dict, settings):
+    def __init__(self, p_dict: dict, settings, cookies=None):
         super().__init__()
         self.p_dict = p_dict
         self.settings = settings
+        self.cookies = cookies
 
     def run(self):
         try:
@@ -198,7 +200,7 @@ class SyncPlaylistWorker(QThread):
             out_dir = self.p_dict.get('folder_path')
             media_type_category = self.p_dict.get('media_type', 'Audio')
 
-            preview = get_video_preview(url)
+            preview = get_video_preview(url, cookies=self.cookies)
             if not preview or not preview.get('is_playlist'):
                 self.error_signal.emit("Invalid playlist response from YouTube.", self.p_dict)
                 return
@@ -1208,7 +1210,7 @@ class MainWindow(QMainWindow):
 
             self.status_label.setText("Fetching playlist info...")
             QApplication.processEvents()
-            preview = get_video_preview(url)
+            preview = get_video_preview(url, cookies=self.get_cookies_config())
             title = preview.get('title', 'Playlist') if preview else 'Playlist'
             thumb = preview.get('thumbnail', '') if preview else ''
             count = preview.get('count', 0) if preview else 0
@@ -1262,7 +1264,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Syncing playlist '{title}' in background...")
         self.loading_overlay.show_loading(f"Syncing '{title}'...", "Connecting to YouTube and comparing tracks...")
 
-        worker = SyncPlaylistWorker(p_dict, self.settings)
+        worker = SyncPlaylistWorker(p_dict, self.settings, cookies=self.get_cookies_config())
         worker.finished_signal.connect(self._on_sync_playlist_finished)
         worker.error_signal.connect(self._on_sync_playlist_error)
         if not hasattr(self, '_sync_workers'):
@@ -1828,6 +1830,90 @@ class MainWindow(QMainWindow):
             quality_grid.setColumnStretch((i % 2) * 3 + 2, 1)
 
         layout.addLayout(quality_grid)
+
+        # 7. YouTube Authentication (Cookies)
+        lbl_cookies = QLabel("YouTube Authentication & Cookies")
+        lbl_cookies.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 10px; margin-bottom: 2px;")
+        layout.addWidget(lbl_cookies)
+
+        cookies_group = QWidget()
+        cookies_layout = QVBoxLayout(cookies_group)
+        cookies_layout.setContentsMargins(15, 12, 15, 12)
+        cookies_layout.setSpacing(10)
+        cookies_group.setStyleSheet("""
+            QWidget#CookiesGroup {
+                background-color: #1e293b;
+                border: 1px solid #334155;
+                border-radius: 8px;
+            }
+        """)
+        cookies_group.setObjectName("CookiesGroup")
+
+        cookies_desc = QLabel(
+            "Use your exported cookies.txt file or browser session to download age-restricted (18+), "
+            "private, and high-quality YouTube Music tracks without errors."
+        )
+        cookies_desc.setWordWrap(True)
+        cookies_desc.setStyleSheet("font-size: 12px; color: #94a3b8; line-height: 1.4;")
+        cookies_layout.addWidget(cookies_desc)
+
+        # Source Selection (None / File cookies.txt / Browser)
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("Cookies Source:"))
+        self.cookies_source_combo = make_combo()
+        self.cookies_source_combo.addItem("Disabled (None)", "none")
+        self.cookies_source_combo.addItem("Cookies File (cookies.txt - Recommended)", "file")
+        self.cookies_source_combo.addItem("Direct from Browser (Auto)", "browser")
+
+        current_source = self.settings.get('cookies_source', 'none')
+        idx = self.cookies_source_combo.findData(current_source)
+        if idx >= 0:
+            self.cookies_source_combo.setCurrentIndex(idx)
+        else:
+            self.cookies_source_combo.setCurrentIndex(0)
+        source_row.addWidget(self.cookies_source_combo, 1)
+        cookies_layout.addLayout(source_row)
+
+        # File Chooser Row (visible when 'file' is selected)
+        self.cookies_file_widget = QWidget()
+        file_row = QHBoxLayout(self.cookies_file_widget)
+        file_row.setContentsMargins(0, 0, 0, 0)
+        self.cookies_file_input = QLineEdit(self.settings.get('cookies_file', ''))
+        self.cookies_file_input.setPlaceholderText("Select your exported cookies.txt file...")
+        self.cookies_file_input.setReadOnly(True)
+        btn_browse_cookie = QPushButton("Browse...")
+        btn_browse_cookie.setFixedWidth(90)
+        btn_browse_cookie.clicked.connect(self.browse_cookies_file)
+        btn_clear_cookie = QPushButton("Clear")
+        btn_clear_cookie.setFixedWidth(70)
+        btn_clear_cookie.clicked.connect(self.clear_cookies_file)
+        file_row.addWidget(QLabel("File Path:"))
+        file_row.addWidget(self.cookies_file_input)
+        file_row.addWidget(btn_browse_cookie)
+        file_row.addWidget(btn_clear_cookie)
+        cookies_layout.addWidget(self.cookies_file_widget)
+
+        # Browser Chooser Row (visible when 'browser' is selected)
+        self.cookies_browser_widget = QWidget()
+        b_row = QHBoxLayout(self.cookies_browser_widget)
+        b_row.setContentsMargins(0, 0, 0, 0)
+        b_row.addWidget(QLabel("Browser:"))
+        self.cookies_browser_combo = make_combo(["Opera", "Chrome", "Edge", "Firefox", "Brave", "Vivaldi"])
+        self.cookies_browser_combo.setCurrentText(self.settings.get('cookies_browser', 'Opera').capitalize())
+        self.cookies_browser_combo.currentTextChanged.connect(lambda b: self.settings.set('cookies_browser', b.lower()))
+        b_row.addWidget(self.cookies_browser_combo, 1)
+        cookies_layout.addWidget(self.cookies_browser_widget)
+
+        def _update_cookies_ui_state():
+            src = self.cookies_source_combo.currentData()
+            self.settings.set('cookies_source', src)
+            self.cookies_file_widget.setVisible(src == 'file')
+            self.cookies_browser_widget.setVisible(src == 'browser')
+
+        self.cookies_source_combo.currentIndexChanged.connect(_update_cookies_ui_state)
+        _update_cookies_ui_state()
+
+        layout.addWidget(cookies_group)
         layout.addStretch()
 
         scroll.setWidget(scroll_wrapper)
@@ -1835,6 +1921,35 @@ class MainWindow(QMainWindow):
         main_tab_layout.setContentsMargins(0, 0, 0, 0)
         main_tab_layout.addWidget(scroll)
         self.tabs.addTab(self.settings_tab, "SETTINGS")
+
+    def browse_cookies_file(self):
+        initial_dir = self.settings.get('last_selected_folder') or str(Path.home())
+        file, _ = QFileDialog.getOpenFileName(self, "Select cookies.txt file", initial_dir, "Text Files (*.txt);;All Files (*)")
+        if file:
+            self.cookies_file_input.setText(file)
+            self.settings.set('cookies_file', file)
+            self.settings.set('cookies_source', 'file')
+            idx = self.cookies_source_combo.findData('file')
+            if idx >= 0:
+                self.cookies_source_combo.setCurrentIndex(idx)
+            QMessageBox.information(self, "Cookies Loaded", f"Successfully loaded cookies file:\n{Path(file).name}")
+
+    def clear_cookies_file(self):
+        self.cookies_file_input.clear()
+        self.settings.set('cookies_file', '')
+        self.settings.set('cookies_source', 'none')
+        self.cookies_source_combo.setCurrentIndex(0)
+
+    def get_cookies_config(self):
+        cookies_source = self.settings.get('cookies_source', 'none')
+        if cookies_source == 'file':
+            c_file = self.settings.get('cookies_file')
+            if c_file and os.path.exists(c_file):
+                return {'use': True, 'source': 'file', 'file': c_file}
+        elif cookies_source == 'browser':
+            b_name = self.settings.get('cookies_browser', 'opera').lower()
+            return {'use': True, 'source': 'browser', 'browser': b_name}
+        return None
 
     def insert_naming_token(self, token: str):
         text = self.naming_input.text()
@@ -2201,7 +2316,7 @@ class MainWindow(QMainWindow):
         self.btn_add_queue.setEnabled(False)
         self.loading_overlay.show_loading("Fetching Media Info...", "Connecting to YouTube...")
 
-        worker = FetchPreviewWorker(url, context={'url': url, 'selected_type': selected_type})
+        worker = FetchPreviewWorker(url, context={'url': url, 'selected_type': selected_type}, cookies=self.get_cookies_config())
         worker.finished_signal.connect(self._on_queue_preview_ready)
         worker.error_signal.connect(lambda err, ctx: self._on_queue_preview_error(err))
         if not hasattr(self, '_preview_workers'):

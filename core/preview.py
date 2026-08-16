@@ -1,7 +1,8 @@
+import os
 import yt_dlp
 from core.downloader import clean_media_url
 
-def get_video_preview(url: str) -> dict:
+def get_video_preview(url: str, cookies: dict = None) -> dict:
     clean_url = clean_media_url(url, keep_list=True)
     ydl_opts = {
         'quiet': True,
@@ -14,6 +15,13 @@ def get_video_preview(url: str) -> dict:
             'Accept-Language': 'en-US,en;q=0.9',
         },
     }
+    if cookies and cookies.get('use'):
+        if cookies.get('source') == 'browser' and cookies.get('browser'):
+            ydl_opts['cookiesfrombrowser'] = (cookies.get('browser'), None, None, None)
+        elif cookies.get('source') == 'file' and cookies.get('file'):
+            cookie_path = cookies.get('file')
+            if cookie_path and os.path.exists(cookie_path):
+                ydl_opts['cookiefile'] = cookie_path
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(clean_url, download=False)
