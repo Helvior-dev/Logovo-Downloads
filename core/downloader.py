@@ -486,7 +486,10 @@ def clean_song_title(title: str, author: str = "") -> str:
 def clean_artist_name(author: str) -> str:
     a = (author or "").strip()
     a = re.sub(r'[\u200b\u200c\u200d\ufeff\u00a0]+', '', a)
-    for suffix in ('- Topic', 'Topic', 'VEVO', 'Official', 'Uptown', 'Music', 'TV', 'Records'):
+    for p in ('the ', 'we are ', 'weare', 'i am ', 'iam ', 'official ', 'dj '):
+        if a.lower().startswith(p):
+            a = a[len(p):].strip()
+    for suffix in ('- Topic', 'Topic', 'VEVO', 'Official', 'Uptown', 'Music', 'TV', 'Records', 'Channel', 'HD', 'HQ'):
         if a.lower().endswith(suffix.lower()):
             a = a[:-len(suffix)].strip()
     return re.sub(r'[\W_]+', '', a.lower()).strip()

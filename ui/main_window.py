@@ -285,7 +285,7 @@ class SyncPlaylistWorker(QThread):
                 if not already_downloaded:
                     missing_entries.append(entry)
 
-            # Detect online duplicates in playlist (strictly matching both artist and title)
+            # Detect online duplicates in playlist (exact matching title+artist or identical video ID)
             online_duplicates = []
             seen_tracks = []
             for i, entry in enumerate(preview.get('entries', [])):
@@ -294,12 +294,13 @@ class SyncPlaylistWorker(QThread):
                 u = entry.get('url', '')
                 if not t or t in ('[Deleted video]', '[Private video]', 'None', 'Unknown'):
                     continue
+                e_vid = u.split('v=')[-1].split('&')[0]
+                e_ct = clean_song_title(t, a)
+                e_ca = clean_artist_name(a)
 
                 found_orig = None
-                for orig_idx, orig_u, orig_t, orig_a in seen_tracks:
-                    stem0 = f"{orig_a} - {orig_t}" if orig_a else orig_t
-                    stem1 = f"{a} - {t}" if a else t
-                    if _author_and_title_match(stem0, t, a) or _author_and_title_match(stem1, orig_t, orig_a):
+                for orig_idx, orig_u, orig_t, orig_a, orig_vid, orig_ct, orig_ca in seen_tracks:
+                    if (e_vid and orig_vid and e_vid == orig_vid) or (e_ct and orig_ct and e_ct == orig_ct and (e_ca == orig_ca or not e_ca or not orig_ca)):
                         found_orig = (orig_idx, orig_u, orig_t, orig_a)
                         break
 
@@ -314,7 +315,7 @@ class SyncPlaylistWorker(QThread):
                         'dupe_url': u
                     })
                 else:
-                    seen_tracks.append((i, u, t, a))
+                    seen_tracks.append((i, u, t, a, e_vid, e_ct, e_ca))
 
             self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates)
         except Exception as e:
