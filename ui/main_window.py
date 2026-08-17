@@ -914,7 +914,7 @@ class UnavailableTracksDialog(QDialog):
     def __init__(self, items: list[tuple[dict, str]], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Unavailable Tracks on YouTube")
-        self.setMinimumSize(620, 440)
+        self.setMinimumSize(660, 520)
         self.setStyleSheet("""
             QDialog { background-color: #0b1120; color: #f8fafc; }
             QTextEdit { background-color: #0f172a; border: 1px solid #1e293b; border-radius: 8px; color: #cbd5e1; font-family: monospace; font-size: 12px; padding: 10px; }
@@ -952,6 +952,35 @@ class UnavailableTracksDialog(QDialog):
             lines.append(f"{i}. {a} - {t}\n   URL: {u}\n   Status: {clean_reason}\n")
         self.text_area.setPlainText("\n".join(lines))
         layout.addWidget(self.text_area, 1)
+
+        # Step-by-step guide banner
+        guide_box = QFrame()
+        guide_box.setStyleSheet("""
+            QFrame {
+                background-color: #1e293b;
+                border: 1px solid #334155;
+                border-radius: 8px;
+            }
+        """)
+        guide_layout = QVBoxLayout(guide_box)
+        guide_layout.setContentsMargins(12, 10, 12, 10)
+        guide_layout.setSpacing(6)
+
+        guide_title = QLabel("💡 <b>How to remove unavailable videos from your YouTube playlist:</b>")
+        guide_title.setStyleSheet("color: #38bdf8; font-size: 12px; font-weight: bold; background: transparent; border: none;")
+        
+        guide_body = QLabel(
+            "1. Open your playlist on YouTube or YouTube Music.<br>"
+            "2. Click the <b>three dots menu (⋮)</b> under the playlist title/cover and select <b>'Show unavailable videos'</b>.<br>"
+            "3. The hidden/deleted items will appear grayed out in your playlist.<br>"
+            "4. Click the <b>three dots (⋮)</b> next to each unavailable video and choose <b>'Remove from playlist'</b>."
+        )
+        guide_body.setWordWrap(True)
+        guide_body.setStyleSheet("color: #cbd5e1; font-size: 11px; line-height: 1.45; background: transparent; border: none;")
+
+        guide_layout.addWidget(guide_title)
+        guide_layout.addWidget(guide_body)
+        layout.addWidget(guide_box)
 
         btn_box = QHBoxLayout()
         btn_copy = QPushButton("📋 Copy List to Clipboard")
