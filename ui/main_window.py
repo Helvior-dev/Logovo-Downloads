@@ -256,6 +256,9 @@ class StartupPlaylistCheckWorker(QThread):
                     if not already:
                         missing_cnt += 1
 
+                unavail_cnt = sum(1 for entry in preview.get('entries', []) if entry.get('is_unavailable') or "unavailable / deleted" in str(entry.get('title', '')).lower())
+                p['unavailable_count'] = unavail_cnt
+                p['track_count'] = preview.get('count', 0)
                 p['new_tracks_count'] = missing_cnt
 
             self.playlists_mgr.save()
@@ -1361,8 +1364,14 @@ class MainWindow(QMainWindow):
                     pass
 
             pl_track_count = p.get('track_count', 0)
-            if downloaded_count >= pl_track_count and pl_track_count > 0:
-                count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date)"
+            unavail_count = p.get('unavailable_count', 0)
+            available_track_count = max(0, pl_track_count - unavail_count)
+
+            if downloaded_count >= available_track_count and (available_track_count > 0 or pl_track_count > 0):
+                if unavail_count > 0:
+                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date — {unavail_count} removed from platform)"
+                else:
+                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date)"
                 status_color = "#10b981"
                 new_cnt = 0
                 if p.get('new_tracks_count', 0) != 0:
@@ -1566,14 +1575,16 @@ class MainWindow(QMainWindow):
         p_dict['track_count'] = count
         if preview.get('thumbnail'):
             p_dict['thumbnail'] = preview.get('thumbnail')
+        unavail_cnt = len(unavailable_entries) if unavailable_entries else 0
+        p_dict['unavailable_count'] = unavail_cnt
         if not missing_entries:
-            self.playlists_mgr.update_sync_info(url, track_count=count, status='synced')
+            self.playlists_mgr.update_sync_info(url, track_count=count, status='synced', unavailable_count=unavail_cnt)
             self.refresh_playlists_ui()
-            self.status_label.setText(f"No new media to sync. All {count} tracks in '{p_dict.get('title')}' are up to date.")
+            self.status_label.setText(f"No new media to sync. All {count - unavail_cnt} available tracks in '{p_dict.get('title')}' are up to date.")
             PlaylistUpToDateDialog(p_dict.get('title', 'Playlist'), count, local_files_count=local_cnt, duplicates=online_duplicates, unavailable=unavailable_entries, parent=self).exec()
             return
         else:
-            self.playlists_mgr.update_sync_info(url, track_count=count, status='pending')
+            self.playlists_mgr.update_sync_info(url, track_count=count, status='pending', unavailable_count=unavail_cnt)
 
         # Auto-clear previous completed/finished queue if not downloading
         if self.download_queue and not self.is_downloading:
