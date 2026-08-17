@@ -621,6 +621,36 @@ def _author_and_title_match(stem: str, title: Optional[str], author: Optional[st
     return False
 
 
+def match_search_candidate(cand_title: str, cand_uploader: str, orig_title: str, orig_artist: str) -> bool:
+    """Verify that search candidate actually matches original song title and artist."""
+    if not orig_title:
+        return False
+
+    t_clean = re.sub(r'[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]', '', orig_title, flags=re.IGNORECASE)
+    t_clean = re.sub(r'[\(\[\{]\s*(?:official\s*(?:music\s*)?video|music\s*video|official\s*audio|official|video|audio|lyrics?|visualizer|remaster(?:ed)?)\s*[\)\]\}]', '', t_clean, flags=re.IGNORECASE)
+
+    words_t = [w for w in re.findall(r'[a-zA-Z0-9\u0400-\u04FF]+', t_clean.lower()) if len(w) >= 2 and w not in ('from', 'the', 'series', 'official', 'video', 'audio', 'lyrics', 'visualizer', 'version', 'feat', 'ft', 'with', 'and')]
+    words_a = [w for w in re.findall(r'[a-zA-Z0-9\u0400-\u04FF]+', orig_artist.lower()) if len(w) >= 2 and w not in ('the', 'official', 'music', 'topic', 'channel', 'read', 'desc')]
+
+    cand_full = f"{cand_title} {cand_uploader}".lower()
+
+    if not words_t:
+        return False
+    title_match = all(w in cand_full for w in words_t)
+
+    # Sequel check: ensure Roman numerals or part numbers aren't mismatched
+    for part in ('ii', 'iii', 'iv', '2', '3', '4', 'pt 2', 'part 2'):
+        if part in cand_full.split() and part not in orig_title.lower().split():
+            return False
+
+    if words_a:
+        artist_match = any(w in cand_full for w in words_a) or any(u in cand_uploader.lower() for u in ('topic', 'release', 'soundtrack', 'vevo', 'records', 'official', 'riot games music'))
+    else:
+        artist_match = True
+
+    return title_match and artist_match
+
+
 def check_and_clean_archive_if_file_missing(output_dir: Path | str, vid: str, title: str = "", author: str = "") -> None:
     """If a track is listed in downloaded_archive.txt but not found on disk, remove it from archive so yt-dlp re-downloads it."""
     if not vid:
@@ -2270,7 +2300,8 @@ class MediaDownloader:
                         progress_callback({"status": "downloading", "msg": "Searching official release..."})
                     import re
                     clean_q_t = re.sub(r"[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]", "", t, flags=re.IGNORECASE).strip()
-                    search_q = f"{a} {clean_q_t}".strip()
+                    clean_q_a = re.sub(r"[\(\[\{]\s*read\s+desc[^\)\]\}]*[\)\]\}]", "", a, flags=re.IGNORECASE).strip()
+                    search_q = f"{clean_q_a} {clean_q_t}".strip()
                     try:
                         s_opts = dict(ydl_opts)
                         s_opts["extract_flat"] = True
@@ -2283,7 +2314,7 @@ class MediaDownloader:
                                 e_id = entry.get("id")
                                 e_title = entry.get("title", "")
                                 e_uploader = entry.get("uploader", "")
-                                if e_id and e_id != extracted_vid and _author_and_title_match(f"{e_title} - {e_uploader}", t, a):
+                                if e_id and e_id != extracted_vid and match_search_candidate(e_title, e_uploader, t, a):
                                     cand_url = f"https://www.youtube.com/watch?v={e_id}"
                                     cand_id = e_id
                                     break
