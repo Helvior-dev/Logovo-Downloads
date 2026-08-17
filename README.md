@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.6.0-007acc.svg?style=flat-square" alt="Version 1.6.0" />
+  <img src="https://img.shields.io/badge/version-1.7.0-007acc.svg?style=flat-square" alt="Version 1.7.0" />
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52.svg?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
   <img src="https://img.shields.io/badge/Core-yt--dlp-red.svg?style=flat-square" alt="yt-dlp" />
@@ -37,6 +37,7 @@ The application is built for managing large local music libraries: it syncs play
 
 ### Playlist Synchronization
 - **Fast Local Indexing:** Compares local folders against online playlists in seconds using cached metadata.
+- **Removed Tracks Detection & Cleanup:** Automatically detects tracks removed from online playlists and prompts an interactive dialog to review and delete local copies if desired.
 - **Metadata Cleaning:** Automatically strips video labels, promo tags, and release years while preserving distinct version tags (`Remix`, `VIP`, `Extended`, `Acoustic`, `Instrumental`, `Live`).
 - **Artist Extraction:** Resolves artist and title from channel uploads and record label titles (e.g. `Hospital Records - Netsky - Secret Agent`).
 - **Online Duplicate Detection:** Identifies duplicate tracks within online playlists and provides direct links to manage them on YouTube Music.
