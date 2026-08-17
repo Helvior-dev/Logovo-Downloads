@@ -84,6 +84,7 @@ class LogViewerDialog(QDialog):
         self.user_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.user_table.verticalHeader().setVisible(False)
         self.user_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.user_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.user_table.setStyleSheet("""
             QTableWidget {
                 background-color: #0b1329;
@@ -323,8 +324,10 @@ class LogViewerDialog(QDialog):
             is_divider = rec.get("is_divider", False)
             item_time = QTableWidgetItem(rec.get("time", ""))
             item_time.setForeground(QColor("#64748b"))
+            item_time.setFlags(item_time.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
             item_event = QTableWidgetItem(rec.get("event", ""))
+            item_event.setFlags(item_event.flags() & ~Qt.ItemFlag.ItemIsEditable)
             if is_divider:
                 item_event.setForeground(QColor("#38bdf8"))
                 f = item_event.font()
@@ -335,9 +338,11 @@ class LogViewerDialog(QDialog):
 
             item_status = QTableWidgetItem(rec.get("status", ""))
             item_status.setForeground(QColor(rec.get("color", "#94a3b8")))
+            item_status.setFlags(item_status.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
             item_summary = QTableWidgetItem(rec.get("summary", ""))
             item_summary.setForeground(QColor("#cbd5e1" if not is_divider else "#64748b"))
+            item_summary.setFlags(item_summary.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
             self.user_table.setItem(row, 0, item_time)
             self.user_table.setItem(row, 1, item_event)

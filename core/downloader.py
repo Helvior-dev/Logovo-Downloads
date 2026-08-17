@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -500,21 +501,44 @@ def write_archive_ids(output_dir: Path | str, ids: set[str]) -> None:
         pass
 
 
+def normalize_unicode_text(text: str) -> str:
+    """Normalize Unicode stylistic fonts (small caps, fullwidth, gothic) into standard Latin characters."""
+    small_caps = {
+        'ᴀ': 'a', 'ʙ': 'b', 'ᴄ': 'c', 'ᴅ': 'd', 'ᴇ': 'e', 'ꜰ': 'f', 'ɢ': 'g', 'ʜ': 'h', 'ɪ': 'i',
+        'ᴊ': 'j', 'ᴋ': 'k', 'ʟ': 'l', 'ᴍ': 'm', 'ɴ': 'n', 'ᴏ': 'o', 'ᴘ': 'p', 'ǫ': 'q', 'ʀ': 'r',
+        'ꜱ': 's', 'ᴛ': 't', 'ᴜ': 'u', 'ᴠ': 'v', 'ᴡ': 'w', 'x': 'x', 'ʏ': 'y', 'ᴢ': 'z',
+    }
+    t = text or ''
+    res = ''
+    for ch in t:
+        res += small_caps.get(ch, ch)
+    res = unicodedata.normalize('NFKD', res)
+    return res
+
+
 def clean_song_title(title: str, author: str = "") -> str:
     """Strip only pure metadata video noise (preserving remixes, extended, feats)."""
     t = (title or "").strip()
-    # Remove invisible zero-width characters
+    t = normalize_unicode_text(t)
     t = re.sub(r'[\u200b\u200c\u200d\ufeff\u00a0]+', '', t)
     noise_patterns = [
-        r'[\(\[\{]\s*(?:official\s*(?:music\s*)?video|music\s*video|official\s*audio|official\s*visualizer|official\s*hd\s*music\s*video|official|audio|hd|hq|4k|4k\s*upgrade|remaster(?:ed)?(?:\s*\d+)?|video|clip|lyrics?|visualizer|bonus\s*edition|bonus\s*track)\s*[\)\]\}]',
+        r'[\(\[\{]\s*(?:official\s*(?:music\s*)?video|music\s*video|official\s*audio|official\s*visualizer|official\s*hd\s*music\s*video|official|audio|hd|hq|4k|4k\s*upgrade|remaster(?:ed)?(?:\s*\d+)?|\d{4}\s*remaster|mixed|video|clip|lyrics?|visualizer|bonus\s*edition|bonus\s*track|original\s*mix|album\s*version|read\s+desc|out\s+on\s+spotify[!]*|slowed|reverb|resurgence)[^\)\]\}]*[\)\]\}]',
+        r'[\(\[\{]\s*\b(?:19\d\d|20\d\d)\b\s*[\)\]\}]',
+        r'[\(\[\{]\s*(?:feat|ft|with)\.?\s+[^)\]\}]+[\)\]\}]',
         r'\(from\s+the\s+series\s+Arcane\s+League\s+of\s+Legends\)',
         r'[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]',
+        r'\[[A-Za-z0-9_-]+\]',
     ]
     for pat in noise_patterns:
         t = re.sub(pat, '', t, flags=re.IGNORECASE)
+
+    # Strip feat / with in title
+    t = re.sub(r'\b(?:feat|ft|with)\.?\s+[a-zA-Z0-9\u0400-\u04FF\s]+(?=[\(\[\{]|$)', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'[-–—]\s*[a-zA-Z0-9\s]+\(out\s+on\s+spotify[!]*\)', '', t, flags=re.IGNORECASE)
+
     # Strip repeated artists from title e.g. "Blank Banshee - Blank Banshee - B: / Start Up"
-    if ' - ' in t:
-        parts = [p.strip() for p in t.split(' - ') if p.strip()]
+    if re.search(r'\s*[-–—]\s*', t):
+        parts = [p.strip() for p in re.split(r'\s*[-–—]\s*', t) if p.strip()]
         a_clean = re.sub(r'[\W_]+', '', (author or '').lower())
         new_parts = []
         for p in parts:
@@ -527,13 +551,24 @@ def clean_song_title(title: str, author: str = "") -> str:
     return re.sub(r'[\W_]+', '', t.lower()).strip()
 
 
+def extract_significant_version_tags(text: str) -> set[str]:
+    """Extract distinct audio versions like Remix, VIP, Extended, Acoustic, Instrumental, Live."""
+    text_lower = (text or '').lower()
+    tags = set()
+    for tag in ('remix', 'vip', 'extended', 'acoustic', 'instrumental', 'orchestral', 'live', 'dub', 'cover', 'slowed', 'reverb', 'sped up', 'vocal mix'):
+        if re.search(rf'\b{re.escape(tag)}\b', text_lower):
+            tags.add(tag)
+    return tags
+
+
 def clean_artist_name(author: str) -> str:
     a = (author or "").strip()
+    a = normalize_unicode_text(a)
     a = re.sub(r'[\u200b\u200c\u200d\ufeff\u00a0]+', '', a)
-    for p in ('the ', 'we are ', 'weare', 'i am ', 'iam ', 'official ', 'dj ', 'dj'):
+    for p in ('the ', 'we are ', 'weare', 'i am ', 'iam ', 'official ', 'dj ', 'dj', 'its ', 'itsthe ', 'itsthe', 'theofficial ', 'theofficial'):
         if a.lower().startswith(p):
             a = a[len(p):].strip()
-    for suffix in ('- Topic', 'Topic', 'VEVO', 'Official', 'Uptown', 'Music', 'TV', 'Records', 'Channel', 'HD', 'HQ'):
+    for suffix in ('- Topic', 'Topic', 'VEVO', 'Official', 'Uptown', 'Music', 'TV', 'Records', 'Channel', 'HD', 'HQ', 'Show', 'Band'):
         if a.lower().endswith(suffix.lower()):
             a = a[:-len(suffix)].strip()
     return re.sub(r'[\W_]+', '', a.lower()).strip()
@@ -544,7 +579,7 @@ def translit_ru_to_en(text: str) -> str:
         'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e', 'ж': 'zh', 'з': 'z',
         'и': 'i', 'й': 'j', 'к': 'k', 'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r',
         'с': 's', 'т': 't', 'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
-        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'u', 'я': 'a'
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'u', 'я': 'a', 'і': 'i', 'ї': 'yi', 'є': 'ye'
     }
     res = ''
     for ch in (text or '').lower():
@@ -553,76 +588,114 @@ def translit_ru_to_en(text: str) -> str:
     return re.sub(r'[\W_]+', '', res)
 
 
-def _author_and_title_match(stem: str, title: Optional[str], author: Optional[str]) -> bool:
-    """Strictly matches track title AND artist against file stem, supporting transliteration, multi-part filenames, and CamelCase."""
+def translit_both_ways(text: str) -> set[str]:
+    mapping_ru_en = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e', 'ж': 'zh', 'з': 'z',
+        'и': 'i', 'й': 'j', 'к': 'k', 'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r',
+        'с': 's', 'т': 't', 'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'u', 'я': 'a', 'і': 'i', 'ї': 'yi', 'є': 'ye'
+    }
+    mapping_en_ru = {
+        'a': 'а', 'b': 'б', 'v': 'в', 'g': 'г', 'd': 'д', 'e': 'е', 'z': 'з', 'i': 'і', 'y': 'и',
+        'k': 'к', 'l': 'л', 'm': 'м', 'n': 'н', 'o': 'о', 'p': 'п', 'r': 'р', 's': 'с', 't': 'т',
+        'u': 'у', 'f': 'ф', 'h': 'х'
+    }
+    t = (text or '').lower()
+    res = {re.sub(r'[\W_]+', '', t)}
+    s_en = ''
+    for ch in t:
+        s_en += mapping_ru_en.get(ch, ch)
+    res.add(re.sub(r'[\W_]+', '', s_en))
+    s_ru = ''
+    for ch in t:
+        s_ru += mapping_en_ru.get(ch, ch)
+    res.add(re.sub(r'[\W_]+', '', s_ru))
+    return {x for x in res if x}
+
+
+def _author_and_title_match(stem: str, title: Optional[str], author: Optional[str], is_in_archive: bool = False) -> bool:
+    """Strictly matches track title AND artist against file stem, supporting multi-part filenames, promotional channels, and version tags."""
     if not title or len(title.strip()) < 2:
         return False
 
-    def _split_camel_case(s: str) -> str:
-        return re.sub(r'([a-z])([A-Z])', r'\1 \2', s)
+    tags_title = extract_significant_version_tags(title)
+    tags_stem = extract_significant_version_tags(stem)
 
-    def _extract_words(text: str) -> set[str]:
-        clean = _split_camel_case(text or "")
-        clean = re.sub(r'[\(\[\{]\s*(?:from|official|video|audio|lyrics?|visualizer|read\s+desc|out\s+on\s+spotify)[^\)\]\}]*[\)\]\}]', '', clean, flags=re.IGNORECASE)
-        clean = re.sub(r'\b(?:Russia|VEVO|Topic|Official|Channel|Records|Music)\b', '', clean, flags=re.IGNORECASE)
-        words = set(re.findall(r'[a-zA-Z0-9\u0400-\u04FF]+', clean.lower()))
-        res = set()
-        for w in words:
-            if len(w) >= 2 and w not in ('from', 'the', 'series', 'official', 'video', 'audio', 'lyrics', 'visualizer', 'version', 'feat', 'ft', 'with', 'and', 'music', 'topic', 'release', 'channel', 'vevo', 'records'):
-                res.add(w)
-                tr = translit_ru_to_en(w)
-                if tr and tr != w:
-                    res.add(tr)
-                    res.add(tr.replace('iya', 'ia').replace('ya', 'ia').replace('y', 'i'))
-                if w.startswith('dj') and len(w) >= 5:
-                    res.add(w[2:])
-        return res
-
-    # 1. Exact cleaned check
-    clean_t = clean_song_title(title, author or "")
-    clean_a = clean_artist_name(author or "")
-    clean_s = clean_song_title(stem, author or "")
-    if clean_t and clean_t in clean_s and (not clean_a or clean_a in clean_s or any(u in clean_s for u in ('topic', 'release', 'variousartists', 'soundtrack'))):
-        return True
-
-    # 2. Word-set intersection
-    words_t = _extract_words(title)
-    words_a = _extract_words(author or "")
-    words_s = _extract_words(stem)
-
-    if not words_t:
+    if tags_title and tags_title != tags_stem:
         return False
-
-    title_matches = all(wt in words_s or any(wt in ws or ws in wt for ws in words_s) for wt in words_t)
-    if not title_matches:
-        stem_tr = translit_ru_to_en(stem)
-        words_s_tr = _extract_words(stem_tr)
-        title_matches = all(wt in words_s_tr or any(wt in ws or ws in wt for ws in words_s_tr) for wt in words_t)
-
-    if not title_matches:
-        return False
-
-    # Sequel check: ensure Roman numerals or part numbers aren't mismatched
-    stem_lower_words = set(stem.lower().split())
-    title_lower_words = set(title.lower().split())
-    for part in ('ii', 'iii', 'iv', '2', '3', '4', 'pt 2', 'part 2'):
-        if part in stem_lower_words and part not in title_lower_words:
+    if tags_stem and not tags_title:
+        critical_tags = {'remix', 'vip', 'extended', 'acoustic', 'instrumental', 'orchestral', 'live', 'dub', 'cover'}
+        if any(t in critical_tags for t in tags_stem):
             return False
 
-    if not words_a:
-        return True
+    title_candidates = [title]
+    if re.search(r'\s+[-–—]\s+', title):
+        t_parts = [p.strip() for p in re.split(r'\s+[-–—]\s+', title) if p.strip()]
+        if len(t_parts) >= 2:
+            title_candidates.append(t_parts[-1])
+            title_candidates.append(' - '.join(t_parts[1:]))
 
-    artist_matches = any(wa in words_s or any(wa in ws or ws in wa for ws in words_s) for wa in words_a)
-    if not artist_matches:
-        stem_tr = translit_ru_to_en(stem)
-        words_s_tr = _extract_words(stem_tr)
-        artist_matches = any(wa in words_s_tr or any(wa in ws or ws in wa for ws in words_s_tr) for wa in words_a)
-    if not artist_matches:
-        stem_lower = stem.lower()
-        if any(lbl in stem_lower for lbl in ('riot games music', 'soundtrack', 'original soundtrack', 'ost', 'release - topic', 'vevo')):
-            artist_matches = True
+    # Extract all candidate (artist, title) splits from multi-part stem
+    parts = [p.strip() for p in re.split(r'\s+[-–—]\s+', stem) if p.strip()]
+    candidates = []
 
-    return artist_matches
+    if len(parts) == 1:
+        candidates.append(("", parts[0]))
+    elif len(parts) == 2:
+        candidates.append((parts[0], parts[1]))
+        candidates.append((parts[1], parts[0]))
+        candidates.append(("", stem))
+    elif len(parts) >= 3:
+        candidates.append((parts[0], ' - '.join(parts[1:])))
+        candidates.append((parts[1], ' - '.join(parts[2:])))
+        candidates.append((' - '.join(parts[:-1]), parts[-1]))
+        candidates.append((parts[0] + ' ' + parts[1], ' - '.join(parts[2:])))
+        candidates.append(("", stem))
+
+    generic_uploaders = {'topic', 'release', 'variousartists', 'soundtrack', ''}
+    clean_a_variants = translit_both_ways(clean_artist_name(author or ""))
+
+    for raw_t in title_candidates:
+        clean_t_variants = translit_both_ways(clean_song_title(raw_t, author or ""))
+
+        for cand_a_raw, cand_t_raw in candidates:
+            cand_t_variants = translit_both_ways(clean_song_title(cand_t_raw, cand_a_raw))
+            cand_a_variants = translit_both_ways(clean_artist_name(cand_a_raw))
+
+            t_match = bool(clean_t_variants & cand_t_variants)
+            if not t_match:
+                for ct in clean_t_variants:
+                    for cdt in cand_t_variants:
+                        if ct and cdt and (ct in cdt or cdt in ct):
+                            if min(len(ct), len(cdt)) / max(len(ct), len(cdt)) >= 0.7:
+                                t_match = True
+                                break
+                    if t_match:
+                        break
+
+            if not t_match:
+                if is_in_archive and (clean_a_variants & cand_a_variants):
+                    return True
+                continue
+
+            if is_in_archive:
+                return True
+
+            # If title matches, verify artist
+            if not author or any(g in clean_a_variants for g in generic_uploaders):
+                if len(clean_song_title(raw_t)) >= 5:
+                    return True
+                continue
+
+            if clean_a_variants & cand_a_variants:
+                return True
+
+            for ca in clean_a_variants:
+                for cda in cand_a_variants:
+                    if ca and cda and (ca in cda or cda in ca):
+                        return True
+
+    return False
 
 
 def match_search_candidate(cand_title: str, cand_uploader: str, orig_title: str, orig_artist: str) -> bool:
@@ -706,7 +779,16 @@ def check_and_clean_archive_if_file_missing(output_dir: Path | str, vid: str, ti
             pass
 
 
-def is_file_already_downloaded(output_dir: Path | str, vid: str, title: Optional[str] = None, author: Optional[str] = None, is_audio: bool = True) -> bool:
+def is_file_already_downloaded(
+    output_dir: Path | str,
+    vid: str,
+    title: Optional[str] = None,
+    author: Optional[str] = None,
+    is_audio: bool = True,
+    stem_map: Optional[dict[str, str]] = None,
+    local_stems: Optional[list[str]] = None,
+    archive_ids: Optional[set[str]] = None,
+) -> bool:
     """Instant local disk check: returns True in ~0.0001s if valid media file (>=500KB) already exists on disk."""
     out = Path(output_dir)
     if not out.exists():
@@ -717,47 +799,233 @@ def is_file_already_downloaded(output_dir: Path | str, vid: str, title: Optional
     else:
         valid_exts = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
 
-    stem_map = read_stem_vid_map(out)
+    if stem_map is None:
+        stem_map = read_stem_vid_map(out)
 
-    # 1. Check via stem_map
-    for stem, mapped_vid in stem_map.items():
-        if mapped_vid == vid:
-            for ext in valid_exts:
-                p = out / f"{stem}{ext}"
-                try:
-                    if p.exists() and p.stat().st_size >= 500 * 1024:
-                        return True
-                except Exception:
-                    pass
+    # 1. Fast check via video ID in stem_map
+    if vid and any(mapped_vid == vid for mapped_vid in stem_map.values()):
+        return True
+
+    if archive_ids is None:
+        archive_ids = read_archive_ids(out)
+
+    is_in_archive = bool(vid and vid in archive_ids)
 
     # 2. Check via strict Author & Title matching in filenames
     if title and len(title.strip()) >= 2:
-        try:
-            for f in out.iterdir():
-                if f.is_file() and f.suffix.lower() in valid_exts and f.stat().st_size >= 500 * 1024:
-                    if _author_and_title_match(f.stem, title, author):
-                        update_stem_vid_map(out, f.stem, vid)
-                        return True
+        if local_stems is None:
+            try:
+                local_stems = [
+                    f.stem for f in out.iterdir()
+                    if f.is_file() and f.suffix.lower() in valid_exts and f.stat().st_size >= 500 * 1024
+                ]
+            except Exception:
+                local_stems = []
 
-            # 3. Check via ID3 / audio tags if not matched by filename (e.g. truncated filename)
-            if is_audio and EasyID3:
-                for f in out.iterdir():
-                    if f.is_file() and f.suffix.lower() in (".mp3", ".flac", ".m4a") and f.stat().st_size >= 500 * 1024:
-                        try:
-                            tag_t, tag_a = "", ""
-                            if f.suffix.lower() == ".mp3":
-                                e = EasyID3(f)
-                                tag_t = (e.get('title') or [''])[0]
-                                tag_a = (e.get('artist') or [''])[0]
-                            if tag_t and _author_and_title_match(f"{tag_a} - {tag_t}", title, author):
-                                update_stem_vid_map(out, f.stem, vid)
-                                return True
-                        except Exception:
-                            pass
-        except Exception:
-            pass
+        for stem in local_stems:
+            if _author_and_title_match(stem, title, author, is_in_archive=is_in_archive):
+                return True
 
     return False
+
+
+def build_local_files_index(
+    output_dir: Path | str,
+    is_audio: bool = True
+) -> tuple[set[str], dict[str, list[tuple[set[str], set[str], str]]], int]:
+    """Build an in-memory inverted index for instant O(1) matching of online playlist entries.
+    Returns:
+        (combined_vid_set, title_index, valid_file_count)
+    """
+    out = Path(output_dir)
+    if not out.exists():
+        return set(), {}, 0
+
+    if is_audio:
+        valid_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac"}
+    else:
+        valid_exts = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
+
+    stem_map = read_stem_vid_map(out)
+    archive_ids = read_archive_ids(out)
+    combined_vid_set = set(stem_map.values()) | archive_ids
+
+    title_index: dict[str, list[tuple[set[str], set[str], str]]] = {}
+    valid_file_count = 0
+
+    try:
+        for f in out.iterdir():
+            if f.is_file() and f.suffix.lower() in valid_exts and f.stat().st_size >= 500 * 1024:
+                valid_file_count += 1
+                stem = f.stem
+                parts = [p.strip() for p in re.split(r'\s+[-–—]\s+', stem) if p.strip()] if (' - ' in stem or ' – ' in stem or ' — ' in stem) else [stem]
+                tags = extract_significant_version_tags(stem)
+
+                candidates = []
+                if len(parts) == 1:
+                    candidates.append(("", parts[0]))
+                elif len(parts) == 2:
+                    candidates.append((parts[0], parts[1]))
+                    candidates.append((parts[1], parts[0]))
+                    candidates.append(("", stem))
+                elif len(parts) >= 3:
+                    candidates.append((parts[0], ' - '.join(parts[1:])))
+                    candidates.append((parts[1], ' - '.join(parts[2:])))
+                    candidates.append((' - '.join(parts[:-1]), parts[-1]))
+                    candidates.append((parts[0] + ' ' + parts[1], ' - '.join(parts[2:])))
+                    candidates.append(("", stem))
+
+                for cand_a_raw, cand_t_raw in candidates:
+                    cand_t_vars = translit_both_ways(clean_song_title(cand_t_raw, cand_a_raw))
+                    cand_a_vars = translit_both_ways(clean_artist_name(cand_a_raw))
+                    for tv in cand_t_vars:
+                        title_index.setdefault(tv, []).append((tags, cand_a_vars, stem))
+    except Exception:
+        pass
+
+    return combined_vid_set, title_index, valid_file_count
+
+
+def is_entry_in_index(
+    vid: str,
+    title: str,
+    author: str,
+    combined_vid_set: set[str],
+    title_index: dict[str, list[tuple[set[str], set[str], str]]],
+) -> bool:
+    """O(1) lookup to check if an online track already exists locally."""
+    # 1. Exact match via video ID in downloaded archive or stem map
+    if vid and vid in combined_vid_set:
+        return True
+
+    if not title or len(title.strip()) < 2:
+        return False
+
+    tags_online = extract_significant_version_tags(title)
+    online_a_vars = translit_both_ways(clean_artist_name(author or ""))
+    generic = {'topic', 'release', 'variousartists', 'soundtrack', ''}
+
+    title_candidates = [title]
+    if re.search(r'\s+[-–—]\s+', title):
+        t_parts = [p.strip() for p in re.split(r'\s+[-–—]\s+', title) if p.strip()]
+        if len(t_parts) >= 2:
+            title_candidates.append(t_parts[-1])
+            title_candidates.append(' - '.join(t_parts[1:]))
+
+    for raw_t in title_candidates:
+        clean_t_vars = translit_both_ways(clean_song_title(raw_t, author or ""))
+        for ctv in clean_t_vars:
+            if ctv in title_index:
+                for file_tags, file_a_vars, raw_stem in title_index[ctv]:
+                    if tags_online and tags_online != file_tags:
+                        continue
+                    if file_tags and not tags_online:
+                        if any(t in {'remix', 'vip', 'extended', 'acoustic', 'instrumental', 'orchestral', 'live', 'dub', 'cover'} for t in file_tags):
+                            continue
+                    if not author or any(g in online_a_vars for g in generic):
+                        if len(ctv) >= 5:
+                            return True
+                        continue
+                    if online_a_vars & file_a_vars:
+                        return True
+                    for ca in online_a_vars:
+                        for cda in file_a_vars:
+                            if ca and cda and (ca in cda or cda in ca):
+                                return True
+
+    return False
+
+
+def detect_online_playlist_duplicates(entries: list[dict]) -> list[dict]:
+    """Detect real duplicate tracks in an online playlist (matching artist+title or video ID)."""
+    def _get_entry_candidates(t: str, a: str):
+        tags = extract_significant_version_tags(t)
+        candidates = []
+        c_t = clean_song_title(t, a)
+        c_a = clean_artist_name(a)
+        if c_t:
+            candidates.append((c_t, c_a, tags))
+
+        if re.search(r'\s*[-–—]\s*', t):
+            parts = [p.strip() for p in re.split(r'\s*[-–—]\s*', t) if p.strip()]
+            if len(parts) == 2:
+                candidates.append((clean_song_title(parts[1], parts[0]), clean_artist_name(parts[0]), tags))
+                candidates.append((clean_song_title(parts[0], parts[1]), clean_artist_name(parts[1]), tags))
+            elif len(parts) >= 3:
+                candidates.append((clean_song_title(parts[-1], parts[-2]), clean_artist_name(parts[-2]), tags))
+                candidates.append((clean_song_title(' - '.join(parts[1:]), parts[0]), clean_artist_name(parts[0]), tags))
+                candidates.append((clean_song_title(parts[-1], ' - '.join(parts[:-1])), clean_artist_name(' - '.join(parts[:-1])), tags))
+
+        return candidates
+
+    online_duplicates = []
+    seen_by_vid = {}
+    seen_by_title = {}
+    generic = {'topic', 'release', 'variousartists', 'soundtrack', ''}
+
+    for i, entry in enumerate(entries):
+        t = entry.get('title')
+        a = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
+        u = entry.get('url', '')
+        if not t or t in ('[Deleted video]', '[Private video]', 'None', 'Unknown') or entry.get('is_unavailable') or 'unavailable / deleted' in str(t).lower():
+            continue
+
+        e_vid = u.split('v=')[-1].split('&')[0]
+        dur = entry.get('duration') or 0
+        alb = (entry.get('album') or '').strip().lower()
+
+        found_orig = None
+        if e_vid and e_vid in seen_by_vid:
+            found_orig = seen_by_vid[e_vid]
+        else:
+            candidates = _get_entry_candidates(t, a)
+            for cand_t, cand_a, cand_tags in candidates:
+                if not cand_t or len(cand_t) < 3:
+                    continue
+                if cand_t in seen_by_title:
+                    for orig_idx, orig_u, orig_t, orig_a, orig_ca, orig_alb, orig_tags, orig_dur in seen_by_title[cand_t]:
+                        # Version tags MUST match exactly (e.g. remix vs original never match)
+                        if cand_tags != orig_tags:
+                            continue
+                        if alb and orig_alb and alb != orig_alb:
+                            continue
+
+                        a_match = False
+                        if not cand_a or not orig_ca or cand_a in generic or orig_ca in generic:
+                            if len(cand_t) >= 5:
+                                a_match = True
+                        elif cand_a == orig_ca or cand_a in orig_ca or orig_ca in cand_a:
+                            a_match = True
+                        elif (cand_a and cand_a in orig_t.lower()) or (orig_ca and orig_ca in t.lower()):
+                            a_match = True
+
+                        if a_match:
+                            found_orig = (orig_idx, orig_u, orig_t, orig_a)
+                            break
+                if found_orig:
+                    break
+
+        if found_orig:
+            orig_idx, orig_u, orig_t, orig_a = found_orig
+            online_duplicates.append({
+                'title': t,
+                'author': a,
+                'orig_title': orig_t,
+                'orig_author': orig_a,
+                'orig_index': orig_idx + 1,
+                'dupe_index': i + 1,
+                'orig_url': orig_u,
+                'dupe_url': u
+            })
+        else:
+            if e_vid:
+                seen_by_vid[e_vid] = (i, u, t, a)
+            candidates = _get_entry_candidates(t, a)
+            for cand_t, cand_a, cand_tags in candidates:
+                if cand_t and len(cand_t) >= 3:
+                    seen_by_title.setdefault(cand_t, []).append((i, u, t, a, cand_a, alb, cand_tags, dur))
+
+    return online_duplicates
 
 
 def cleanup_orphan_files(output_dir: Path | str, is_audio_playlist: bool = True) -> int:

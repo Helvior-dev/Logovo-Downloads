@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 import datetime
 from pathlib import Path
 from core.settings import get_app_data_dir
@@ -15,7 +16,27 @@ class PlaylistsManager:
                 with open(self.file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     if isinstance(data, list):
-                        return data
+                        # Validate: only keep entries with required fields
+                        valid = []
+                        for item in data:
+                            if isinstance(item, dict) and item.get('url') and item.get('folder_path'):
+                                valid.append(item)
+                            else:
+                                print(f"[PlaylistsManager] Skipping invalid playlist entry: {item}")
+                        return valid
+            except json.JSONDecodeError as e:
+                print(f"Error loading playlists.json (corrupted): {e}")
+                # Try to restore from backup
+                backup = self.file_path.with_suffix('.tmp.json')
+                if backup.exists():
+                    try:
+                        with open(backup, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            if isinstance(data, list):
+                                return data
+                    except Exception:
+                        pass
+                return []
             except Exception as e:
                 print(f"Error loading playlists.json: {e}")
                 return []
@@ -23,8 +44,11 @@ class PlaylistsManager:
 
     def save(self) -> None:
         try:
-            with open(self.file_path, 'w', encoding='utf-8') as f:
+            # Atomic write: write to temp file first, then rename to avoid corruption
+            tmp_path = self.file_path.with_suffix('.tmp.json')
+            with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(self.playlists, f, indent=4, ensure_ascii=False)
+            tmp_path.replace(self.file_path)
         except Exception as e:
             print(f"Error saving playlists.json: {e}")
 

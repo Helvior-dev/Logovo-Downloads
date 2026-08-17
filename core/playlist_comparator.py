@@ -118,8 +118,9 @@ class PlaylistComparator:
         if not self.pl_index:
             self.scan_all_playlists()
 
-        clusters = [] # list of { 'key': str, 'tracks': [list of track records] }
-        seen_keys = {} # key -> cluster_index
+        clusters: list[dict] = []
+        vid_index: dict[str, int] = {}    # vid -> cluster_index (O(1) lookup)
+        title_index: dict[str, int] = {}  # clean_title -> cluster_index (O(1) lookup)
 
         for pl_title, tracks in self.pl_index.items():
             for t in tracks:
@@ -128,13 +129,14 @@ class PlaylistComparator:
                 ca = t['clean_artist']
 
                 matched_idx = None
-                if vid and f"vid:{vid}" in seen_keys:
-                    matched_idx = seen_keys[f"vid:{vid}"]
-                elif ct:
-                    for key, idx in seen_keys.items():
-                        if key.startswith("title:") and key.endswith(f":{ct}"):
-                            matched_idx = idx
-                            break
+
+                # O(1) lookup by video ID
+                if vid and vid in vid_index:
+                    matched_idx = vid_index[vid]
+
+                # O(1) lookup by clean title
+                if matched_idx is None and ct and ct in title_index:
+                    matched_idx = title_index[ct]
 
                 if matched_idx is not None:
                     clusters[matched_idx]['tracks'].append(t)
@@ -149,9 +151,9 @@ class PlaylistComparator:
                     }
                     clusters.append(cluster)
                     if vid:
-                        seen_keys[f"vid:{vid}"] = new_idx
+                        vid_index[vid] = new_idx
                     if ct:
-                        seen_keys[f"title:{ca}:{ct}"] = new_idx
+                        title_index[ct] = new_idx
 
         # Only return clusters that appear in 2 or more DIFFERENT playlists
         results = []

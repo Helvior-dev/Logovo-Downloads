@@ -5,6 +5,12 @@ import requests
 import re
 import os
 from pathlib import Path
+
+try:
+    import sip
+except ImportError:
+    sip = None
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLineEdit, QPushButton, QLabel, QProgressBar, 
@@ -40,8 +46,13 @@ from core.downloader import (
     clean_song_title,
     clean_artist_name,
     translit_ru_to_en,
+    extract_significant_version_tags,
     _author_and_title_match,
+    build_local_files_index,
+    is_entry_in_index,
+    detect_online_playlist_duplicates,
 )
+from core.constants import APP_VERSION
 from core.utils import clean_filename_for_all_devices
 from core.settings import SettingsManager, get_app_data_dir
 from core.history import HistoryManager
@@ -198,6 +209,8 @@ class StartupPlaylistCheckWorker(QThread):
         self.cookies = cookies
 
     def run(self):
+        from core.logger import get_logger
+        logger = get_logger("logovo.startup_check")
         try:
             valid_media_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac", ".mp4", ".mkv", ".webm"}
             items = self.playlists_mgr.get_all()
@@ -211,26 +224,8 @@ class StartupPlaylistCheckWorker(QThread):
                 if not preview or not preview.get('entries'):
                     continue
 
-                stem_map = read_stem_vid_map(out_dir)
-                vid_set = set(stem_map.values())
-                stem_title_index = {}
-                all_local_stems = []
-
-                for f in Path(out_dir).iterdir():
-                    if f.is_file() and f.suffix.lower() in valid_media_exts and f.stat().st_size >= 500 * 1024:
-                        stem = f.stem
-                        all_local_stems.append(stem)
-                        parts = stem.split(' - ')
-                        if len(parts) >= 2:
-                            a0 = clean_artist_name(parts[0])
-                            t1 = clean_song_title(' - '.join(parts[1:]), a0)
-                            t0 = clean_song_title(parts[0], clean_artist_name(' - '.join(parts[1:])))
-                            a1 = clean_artist_name(' - '.join(parts[1:]))
-                            stem_title_index.setdefault(t1, []).append((a0, stem))
-                            stem_title_index.setdefault(t0, []).append((a1, stem))
-                        else:
-                            t = clean_song_title(stem)
-                            stem_title_index.setdefault(t, []).append(("", stem))
+                is_audio = (p.get('media_type', 'Audio') == 'Audio')
+                combined_vid_set, title_index, local_cnt = build_local_files_index(out_dir, is_audio=is_audio)
 
                 missing_cnt = 0
                 for entry in preview.get('entries', []):
@@ -240,14 +235,14 @@ class StartupPlaylistCheckWorker(QThread):
                     author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
                     title = entry.get('title') or ""
 
-                    already = is_file_already_downloaded(out_dir, vid, title, author, is_audio=(p.get('media_type', 'Audio') == 'Audio'))
+                    already = is_entry_in_index(vid, title, author, combined_vid_set, title_index)
                     if not already:
                         missing_cnt += 1
 
-                local_cnt = len([f for f in Path(out_dir).iterdir() if f.is_file() and f.suffix.lower() in valid_media_exts and f.stat().st_size >= 500*1024])
+                dupes = detect_online_playlist_duplicates(preview.get('entries', []))
+                dupes_cnt = len(dupes)
                 unavail_cnt = sum(1 for entry in preview.get('entries', []) if entry.get('is_unavailable') or "unavailable / deleted" in str(entry.get('title', '')).lower())
                 total_cnt = preview.get('count', 0)
-                dupes_cnt = max(0, total_cnt - unavail_cnt - local_cnt - missing_cnt)
                 p['unavailable_count'] = unavail_cnt
                 p['duplicates_count'] = dupes_cnt
                 p['track_count'] = total_cnt
@@ -255,8 +250,12 @@ class StartupPlaylistCheckWorker(QThread):
 
             self.playlists_mgr.save()
             self.finished_signal.emit()
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                from core.logger import get_logger
+                get_logger("logovo.startup_check").exception("StartupPlaylistCheckWorker failed: %s", e)
+            except Exception:
+                pass
 
 
 class SyncPlaylistWorker(QThread):
@@ -292,39 +291,9 @@ class SyncPlaylistWorker(QThread):
             if pl_thumb and cover_mode != 'none':
                 apply_playlist_cover_settings(out_dir, pl_thumb, mode=cover_mode)
 
-            # Restore dates & reindex in background
-            restore_dates_from_order(out_dir)
-            reindex_existing_playlist_files(out_dir, preview.get('entries', []))
-
             # Build in-memory index of existing local files for instant O(1) comparison
-            stem_map = read_stem_vid_map(out_dir)
-            vid_set = set(stem_map.values())
-            stem_title_index = {}
-            valid_media_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac", ".mp4", ".mkv", ".webm"}
-            local_cnt = 0
-            all_local_stems = []
-
-            if os.path.exists(out_dir):
-                for f in Path(out_dir).iterdir():
-                    if f.is_file() and f.suffix.lower() in valid_media_exts:
-                        try:
-                            if f.stat().st_size >= 500 * 1024:
-                                local_cnt += 1
-                                stem = f.stem
-                                all_local_stems.append(stem)
-                                parts = stem.split(' - ')
-                                if len(parts) >= 2:
-                                    a0 = clean_artist_name(parts[0])
-                                    t1 = clean_song_title(' - '.join(parts[1:]), a0)
-                                    t0 = clean_song_title(parts[0], clean_artist_name(' - '.join(parts[1:])))
-                                    a1 = clean_artist_name(' - '.join(parts[1:]))
-                                    stem_title_index.setdefault(t1, []).append((a0, stem))
-                                    stem_title_index.setdefault(t0, []).append((a1, stem))
-                                else:
-                                    t = clean_song_title(stem)
-                                    stem_title_index.setdefault(t, []).append(("", stem))
-                        except Exception:
-                            pass
+            is_audio = (media_type_category == "Audio")
+            combined_vid_set, title_index, local_cnt = build_local_files_index(out_dir, is_audio=is_audio)
 
             missing_entries = []
             for i, entry in enumerate(preview.get('entries', [])):
@@ -338,7 +307,11 @@ class SyncPlaylistWorker(QThread):
                 author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
                 title = entry.get('title') or ""
 
-                already_downloaded = is_file_already_downloaded(out_dir, vid, title, author, is_audio=(media_type_category == "Audio"))
+                already_downloaded = is_entry_in_index(
+                    vid, title, author,
+                    combined_vid_set,
+                    title_index
+                )
 
                 if not already_downloaded:
                     if entry.get('is_unavailable') or "unavailable / deleted" in str(title).lower():
@@ -352,70 +325,8 @@ class SyncPlaylistWorker(QThread):
                 if entry.get('is_unavailable') or "unavailable / deleted" in str(entry.get('title', '')).lower():
                     unavailable_entries.append((entry, "Removed from YouTube / Copyright Claim"))
 
-            # Detect online duplicates in playlist (exact matching title+artist or identical video ID)
-            def _extract_artist_words(text: str) -> set:
-                clean = re.sub(r'([a-z])([A-Z])', r'\1 \2', text or '')
-                clean = re.sub(r'[\(\[\{][^\)\]\}]*[\)\]\}]', '', clean)
-                words = set(re.findall(r'[a-zA-Z0-9\u0400-\u04FF]+', clean.lower()))
-                res = set()
-                for w in words:
-                    if len(w) >= 3 and w not in ('topic', 'release', 'variousartists', 'music', 'official', 'records', 'vevo', 'channel', 'soundtrack', 'feat', 'with'):
-                        res.add(w)
-                        tr = translit_ru_to_en(w)
-                        if tr and tr != w:
-                            res.add(tr)
-                        if w.startswith('dj') and len(w) >= 5:
-                            res.add(w[2:])
-                return res
-
-            online_duplicates = []
-            seen_by_vid = {}
-            seen_by_title = {}
-
-            for i, entry in enumerate(preview.get('entries', [])):
-                t = entry.get('title')
-                a = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
-                u = entry.get('url', '')
-                if not t or t in ('[Deleted video]', '[Private video]', 'None', 'Unknown') or entry.get('is_unavailable'):
-                    continue
-                e_vid = u.split('v=')[-1].split('&')[0]
-                ct = clean_song_title(t, a)
-                ca = clean_artist_name(a)
-                alb = (entry.get('album') or '').strip().lower()
-                if not ct or len(ct) < 3:
-                    continue
-
-                found_orig = None
-                if e_vid and e_vid in seen_by_vid:
-                    found_orig = seen_by_vid[e_vid]
-                elif ct in seen_by_title:
-                    raw_t = t.lower()
-                    for orig_idx, orig_u, orig_t, orig_a, orig_ca, orig_alb in seen_by_title[ct]:
-                        if alb and orig_alb and alb != orig_alb:
-                            continue
-                        if not ca or not orig_ca or ca in ('topic', 'release', 'variousartists') or orig_ca in ('topic', 'release', 'variousartists') or ca == orig_ca or ca in orig_ca or orig_ca in ca:
-                            found_orig = (orig_idx, orig_u, orig_t, orig_a)
-                            break
-                        if (ca and ca in orig_t.lower()) or (orig_ca and orig_ca in raw_t):
-                            found_orig = (orig_idx, orig_u, orig_t, orig_a)
-                            break
-
-                if found_orig:
-                    orig_idx, orig_u, orig_t, orig_a = found_orig
-                    online_duplicates.append({
-                        'title': t,
-                        'author': a,
-                        'orig_title': orig_t,
-                        'orig_author': orig_a,
-                        'orig_index': orig_idx + 1,
-                        'dupe_index': i + 1,
-                        'orig_url': orig_u,
-                        'dupe_url': u
-                    })
-                else:
-                    if e_vid:
-                        seen_by_vid[e_vid] = (i, u, t, a)
-                    seen_by_title.setdefault(ct, []).append((i, u, t, a, ca, alb))
+            # Detect online duplicates in playlist
+            online_duplicates = detect_online_playlist_duplicates(preview.get('entries', []))
 
             self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates, unavailable_entries)
         except Exception as e:
@@ -521,7 +432,9 @@ class OrphanFilesDialog(QDialog):
     def __init__(self, orphan_items: list[dict], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Removed Tracks Detected")
+        self.setStyleSheet("QDialog { background-color: #0b0e14; }")
         self.setMinimumSize(700, 440)
+        self.resize(700, 440)
         self.deleted_files = []
 
         layout = QVBoxLayout(self)
@@ -544,9 +457,35 @@ class OrphanFilesDialog(QDialog):
         self.table.setHorizontalHeaderLabels(["Track / Filename", "Video ID", "YouTube Link"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(2, 140)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(50)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: #0f172a;
+                border: 1px solid #1e293b;
+                border-radius: 8px;
+                color: #f1f5f9;
+                gridline-color: transparent;
+                outline: none;
+            }
+            QTableWidget::item {
+                padding: 0px 8px;
+                border-bottom: 1px solid #1e293b;
+            }
+            QHeaderView::section {
+                background-color: #1e293b;
+                color: #94a3b8;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 6px;
+                border: none;
+                border-bottom: 1px solid #334155;
+            }
+        """)
         self.table.setRowCount(len(orphan_items))
 
         for row, item in enumerate(orphan_items):
@@ -555,33 +494,48 @@ class OrphanFilesDialog(QDialog):
             url = item.get('url', '')
 
             item_fn = QTableWidgetItem(fn)
+            item_fn.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
             item_fn.setFlags(item_fn.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item_fn.setFlags(item_fn.flags() & ~Qt.ItemFlag.ItemIsEditable)
             item_fn.setCheckState(Qt.CheckState.Checked)
             self.table.setItem(row, 0, item_fn)
 
             item_vid = QTableWidgetItem(vid)
+            item_vid.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
             item_vid.setForeground(QColor("#38bdf8"))
+            item_vid.setFlags(item_vid.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, 1, item_vid)
 
             if url:
+                btn_widget = QWidget()
+                btn_widget.setStyleSheet("background: transparent;")
+                btn_layout = QHBoxLayout(btn_widget)
+                btn_layout.setContentsMargins(0, 0, 0, 0)
+                btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
                 btn_link = QPushButton("Open Link ↗")
                 btn_link.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_link.setFixedSize(110, 28)
                 btn_link.setStyleSheet("""
                     QPushButton {
-                        background: #1e293b;
-                        color: #38bdf8;
-                        border: 1px solid #334155;
-                        border-radius: 4px;
-                        padding: 2px 8px;
+                        background-color: #2563eb;
+                        color: #ffffff;
+                        border: none;
+                        border-radius: 5px;
+                        padding: 0px;
                         font-size: 11px;
+                        font-weight: bold;
                     }
                     QPushButton:hover {
-                        background: #0284c7;
-                        color: #ffffff;
+                        background-color: #1d4ed8;
+                    }
+                    QPushButton:pressed {
+                        background-color: #1e40af;
                     }
                 """)
                 btn_link.clicked.connect(lambda _, u=url: QDesktopServices.openUrl(QUrl(u)))
-                self.table.setCellWidget(row, 2, btn_link)
+                btn_layout.addWidget(btn_link)
+                self.table.setCellWidget(row, 2, btn_widget)
             else:
                 self.table.setItem(row, 2, QTableWidgetItem("-"))
 
@@ -701,7 +655,9 @@ class OnlineDuplicatesDialog(QDialog):
     def __init__(self, duplicate_items: list[dict], playlist_title: str = "Playlist", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Online Duplicates Detected")
+        self.setStyleSheet("QDialog { background-color: #0b0e14; }")
         self.setMinimumSize(840, 460)
+        self.resize(840, 460)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -723,16 +679,24 @@ class OnlineDuplicatesDialog(QDialog):
         self.table.setHorizontalHeaderLabels(["Original Track in Playlist", "Duplicate Track Found", "Action"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(2, 160)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(50)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setStyleSheet("""
             QTableWidget {
                 background-color: #0f172a;
                 border: 1px solid #1e293b;
                 border-radius: 8px;
                 color: #f1f5f9;
-                gridline-color: #1e293b;
+                gridline-color: transparent;
+                outline: none;
+            }
+            QTableWidget::item {
+                padding: 0px 8px;
+                border-bottom: 1px solid #1e293b;
             }
             QHeaderView::section {
                 background-color: #1e293b;
@@ -759,33 +723,47 @@ class OnlineDuplicatesDialog(QDialog):
             dupe_url = item.get('dupe_url', '') or item.get('orig_url', '')
 
             item_orig = QTableWidgetItem(orig_display)
+            item_orig.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
             item_orig.setForeground(QColor("#10b981"))
+            item_orig.setFlags(item_orig.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, 0, item_orig)
 
             item_dupe = QTableWidgetItem(dupe_display)
+            item_dupe.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
             item_dupe.setForeground(QColor("#38bdf8"))
+            item_dupe.setFlags(item_dupe.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, 1, item_dupe)
 
             if dupe_url:
+                btn_widget = QWidget()
+                btn_widget.setStyleSheet("background: transparent;")
+                btn_layout = QHBoxLayout(btn_widget)
+                btn_layout.setContentsMargins(0, 0, 0, 0)
+                btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
                 btn_link = QPushButton("Open Duplicate ↗")
                 btn_link.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_link.setFixedSize(135, 28)
                 btn_link.setStyleSheet("""
                     QPushButton {
-                        background: #1e293b;
-                        color: #38bdf8;
-                        border: 1px solid #334155;
-                        border-radius: 4px;
-                        padding: 4px 12px;
+                        background-color: #2563eb;
+                        color: #ffffff;
+                        border: none;
+                        border-radius: 5px;
+                        padding: 0px;
                         font-size: 11px;
                         font-weight: bold;
                     }
                     QPushButton:hover {
-                        background: #0284c7;
-                        color: #ffffff;
+                        background-color: #1d4ed8;
+                    }
+                    QPushButton:pressed {
+                        background-color: #1e40af;
                     }
                 """)
                 btn_link.clicked.connect(lambda _, u=dupe_url: QDesktopServices.openUrl(QUrl(u)))
-                self.table.setCellWidget(row, 2, btn_link)
+                btn_layout.addWidget(btn_link)
+                self.table.setCellWidget(row, 2, btn_widget)
 
         self.duplicate_items = duplicate_items
         layout.addWidget(self.table)
@@ -1171,13 +1149,14 @@ class DraggablePlaylistCard(QWidget):
     def dragEnterEvent(self, event):
         if event.mimeData().hasText() and event.mimeData().text().isdigit():
             event.acceptProposedAction()
-            self.setStyleSheet("border: 2px solid #38bdf8; background-color: #1e293b;")
+            self._saved_stylesheet = self.styleSheet()
+            self.setStyleSheet(self._saved_stylesheet + "border: 2px solid #38bdf8 !important;")
 
     def dragLeaveEvent(self, event):
-        self.setStyleSheet("")
+        self.setStyleSheet(getattr(self, '_saved_stylesheet', ""))
 
     def dropEvent(self, event):
-        self.setStyleSheet("")
+        self.setStyleSheet(getattr(self, '_saved_stylesheet', ""))
         if event.mimeData().hasText() and event.mimeData().text().isdigit():
             src_idx = int(event.mimeData().text())
             dst_idx = self.index
@@ -1217,6 +1196,8 @@ class MainWindow(QMainWindow):
         self.active_workers = {}  # widget -> WorkerThread
         self.widget_start_times = {} # widget -> timestamp
         self.is_downloading = False
+        self._pl_dirty = True  # Flag: playlists tab needs refresh
+        self._current_pl_sort = self.settings.get('playlist_sort_mode', 'custom')
 
         self.success_count = 0
         self.error_count = 0
@@ -1248,15 +1229,23 @@ class MainWindow(QMainWindow):
         # Startup playlists check for new tracks
         if self.settings.get('check_playlists_on_startup', False):
             self.startup_playlist_thread = StartupPlaylistCheckWorker(self.playlists_mgr, cookies=self.get_cookies_config())
-            self.startup_playlist_thread.finished_signal.connect(self.refresh_playlists_ui)
+            self.startup_playlist_thread.finished_signal.connect(lambda: self._mark_pl_dirty_and_refresh())
             self.startup_playlist_thread.start()
 
         # Loading overlay for smooth non-blocking operations
         self.loading_overlay = LoadingOverlay(self)
         self.loading_overlay.hide()
 
+    def _mark_pl_dirty_and_refresh(self):
+        """Mark playlists as dirty and refresh if currently on the playlists tab."""
+        self._pl_dirty = True
+        if self.tabs.currentIndex() == 1:
+            self._pl_dirty = False
+            self.refresh_playlists_ui()
+
     def _on_tab_changed(self, index: int):
-        if index == 1:
+        if index == 1 and self._pl_dirty:
+            self._pl_dirty = False
             self.refresh_playlists_ui()
 
     def resizeEvent(self, event):
@@ -1436,7 +1425,6 @@ class MainWindow(QMainWindow):
         # Top Bar
         top_bar = QHBoxLayout()
         btn_track_new = QPushButton("+ Track New Playlist")
-        btn_sync_all = QPushButton("Sync All Playlists")
         btn_compare = QPushButton("🔍 Compare Playlists")
         btn_compare.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_compare.setStyleSheet("""
@@ -1479,23 +1467,32 @@ class MainWindow(QMainWindow):
                 selection-color: #ffffff;
             }
         """)
+        self.combo_playlist_sort.blockSignals(True)
         self.combo_playlist_sort.addItem("Manual Order (Drag & Drop)", "custom")
         self.combo_playlist_sort.addItem("Name (A → Z)", "name_asc")
         self.combo_playlist_sort.addItem("Name (Z → A)", "name_desc")
         self.combo_playlist_sort.addItem("Tracks (Most → Fewest)", "tracks_desc")
         self.combo_playlist_sort.addItem("Tracks (Fewest → Most)", "tracks_asc")
         self.combo_playlist_sort.addItem("Last Synced (Newest)", "synced_desc")
+
+        saved_sort = self.settings.get('playlist_sort_mode', 'custom')
+        self._current_pl_sort = saved_sort
+        # Find and set the matching index
+        for i in range(self.combo_playlist_sort.count()):
+            if self.combo_playlist_sort.itemData(i) == saved_sort:
+                self.combo_playlist_sort.setCurrentIndex(i)
+                break
+        self.combo_playlist_sort.blockSignals(False)
+
         self.combo_playlist_sort.currentIndexChanged.connect(self._on_playlist_sort_changed)
 
         self.lbl_playlists_count = QLabel("Tracked Playlists: 0")
         self.lbl_playlists_count.setStyleSheet("font-size: 12px; color: #94a3b8;")
 
         btn_track_new.clicked.connect(self.track_new_playlist_dialog)
-        btn_sync_all.clicked.connect(self.sync_all_playlists)
         btn_compare.clicked.connect(self.open_playlist_comparison_dialog)
 
         top_bar.addWidget(btn_track_new)
-        top_bar.addWidget(btn_sync_all)
         top_bar.addWidget(btn_compare)
         top_bar.addWidget(lbl_sort)
         top_bar.addWidget(self.combo_playlist_sort)
@@ -1517,26 +1514,34 @@ class MainWindow(QMainWindow):
         self.playlists_scroll.setWidget(self.playlists_container)
         layout.addWidget(self.playlists_scroll)
 
+        self.lbl_pl_stats = QLabel("")
+        self.lbl_pl_stats.setStyleSheet("color: #475569; font-size: 11px; padding: 4px 8px;")
+        self.lbl_pl_stats.setAlignment(Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(self.lbl_pl_stats)
+
         self.refresh_playlists_ui()
         self.tabs.addTab(self.playlists_tab, "PLAYLISTS")
 
     def _on_playlist_sort_changed(self):
-        self._current_pl_sort = self.combo_playlist_sort.currentData()
-        self.refresh_playlists_ui()
+        val = self.combo_playlist_sort.currentData() or 'custom'
+        self.settings.set('playlist_sort_mode', val)
+        self._current_pl_sort = val
+        self._mark_pl_dirty_and_refresh()
 
     def _move_playlist_item(self, from_idx: int, to_idx: int):
         self.playlists_mgr.move_playlist(from_idx, to_idx)
         self._current_pl_sort = "custom"
+        self.settings.set('playlist_sort_mode', 'custom')
         if hasattr(self, 'combo_playlist_sort'):
             self.combo_playlist_sort.blockSignals(True)
             self.combo_playlist_sort.setCurrentIndex(0)
             self.combo_playlist_sort.blockSignals(False)
-        self.refresh_playlists_ui()
+        self._mark_pl_dirty_and_refresh()
 
     def open_playlist_comparison_dialog(self):
         dlg = CrossPlaylistComparisonDialog(self.playlists_mgr, default_target="Trash", parent=self)
         dlg.exec()
-        self.refresh_playlists_ui()
+        self._mark_pl_dirty_and_refresh()
 
     def refresh_playlists_ui(self):
         # Disconnect old thumbnail loaders
@@ -1667,7 +1672,6 @@ class MainWindow(QMainWindow):
                         self.url = url
                     def run(self):
                         try:
-                            import requests
                             resp = requests.get(self.url, timeout=5)
                             if resp.status_code == 200:
                                 pix = QPixmap()
@@ -1679,8 +1683,7 @@ class MainWindow(QMainWindow):
                 loader = PlaylistThumbLoader(thumb_url)
                 def _safe_set_pix(pix, target_lbl=thumb_lbl):
                     try:
-                        import sip
-                        if target_lbl and not sip.isdeleted(target_lbl):
+                        if target_lbl and sip and not sip.isdeleted(target_lbl):
                             target_lbl.setPixmap(pix.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
                     except Exception:
                         pass
@@ -1728,7 +1731,7 @@ class MainWindow(QMainWindow):
                     notes.append(f"{duplicates_count} duplicate{'s' if duplicates_count > 1 else ''}")
 
                 if notes:
-                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date — {', '.join(notes)})"
+                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date <span style='color: #94a3b8;'>— {', '.join(notes)}</span>)"
                 else:
                     count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date)"
                 status_color = "#10b981"
@@ -1748,7 +1751,8 @@ class MainWindow(QMainWindow):
 
             badge_html = f"  <span style='color: #38bdf8; font-weight: bold; background-color: #0f172a; padding: 2px 6px; border-radius: 4px; border: 1px solid #0284c7;'>+{new_cnt} new track{'s' if new_cnt > 1 else ''}</span>" if new_cnt > 0 else ""
             meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}  |  Last Synced: {p.get('last_synced', 'Never')}")
-            meta_lbl.setStyleSheet(f"font-size: 11px; color: {status_color}; font-weight: 500;")
+            meta_lbl.setTextFormat(Qt.TextFormat.RichText)
+            meta_lbl.setStyleSheet(f"font-size: 11px; color: {status_color}; font-weight: 500; background: transparent;")
 
             info_layout.addWidget(title_lbl)
             info_layout.addWidget(path_lbl)
@@ -1792,6 +1796,32 @@ class MainWindow(QMainWindow):
             card_layout.addLayout(btn_box)
 
             self.playlists_container_layout.addWidget(card)
+
+        # Update stats bar
+        if hasattr(self, 'lbl_pl_stats'):
+            total_pls = len(items)
+            total_tracks = sum(p.get('track_count', 0) for p in items)
+            # Count local files efficiently
+            total_files = 0
+            total_size_bytes = 0
+            for p in items:
+                folder = p.get('folder_path', '')
+                if folder and os.path.exists(folder):
+                    try:
+                        for f in Path(folder).iterdir():
+                            if f.is_file() and f.suffix.lower() in {'.mp3', '.flac', '.m4a', '.opus', '.ogg', '.wav', '.aac', '.alac', '.mp4', '.mkv', '.webm'}:
+                                sz = f.stat().st_size
+                                if sz >= 500 * 1024:
+                                    total_files += 1
+                                    total_size_bytes += sz
+                    except Exception:
+                        pass
+            # Format size
+            if total_size_bytes >= 1_073_741_824:
+                size_str = f"{total_size_bytes / 1_073_741_824:.1f} GB"
+            else:
+                size_str = f"{total_size_bytes / 1_048_576:.0f} MB"
+            self.lbl_pl_stats.setText(f"{total_pls} playlist{'s' if total_pls != 1 else ''} • {total_files} files • {size_str} on disk")
 
     def track_new_playlist_dialog(self):
         dialog = QDialog(self)
@@ -1980,6 +2010,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No Playlists", "No tracked playlists found to sync.")
             return
 
+        if hasattr(self, '_active_sync_urls') and self._active_sync_urls:
+            QMessageBox.information(self, "Sync in Progress", 
+                "A playlist sync is already in progress. Please wait for it to complete before syncing all.")
+            return
+
         for p in items:
             self.sync_tracked_playlist(p)
 
@@ -2016,6 +2051,7 @@ class MainWindow(QMainWindow):
         self.history_table.verticalHeader().setVisible(False)
         self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.history_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.history_table.setShowGrid(False)
         self.history_table.setAlternatingRowColors(True)
         self.history_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -2803,7 +2839,7 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #ffffff;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
-        version = QLabel("Version: 1.5.0")
+        version = QLabel(f"Version: {APP_VERSION}")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)
         btn_layout = QHBoxLayout()
@@ -3010,6 +3046,9 @@ class MainWindow(QMainWindow):
             item_plat = QTableWidgetItem(entry.get('platform', 'Unknown'))
             status = entry.get('status', 'Unknown')
             item_status = QTableWidgetItem(status)
+
+            for it in (item_date, item_author, item_title, item_plat, item_status):
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
             if status in ["Completed", "Success"]:
                 completed += 1

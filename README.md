@@ -3,92 +3,137 @@
 <p align="center">
   <img src="media/icon.ico" width="80" height="80" alt="Logovo Downloads Logo" />
   <br>
-  <b>A desktop audio & video downloader with smart playlist synchronization built with Python, PyQt6, and yt-dlp.</b>
+  <b>Desktop audio and video downloader with playlist synchronization and metadata embedding.</b>
+  <br>
+  <sub>Built with Python 3.10+, PyQt6, and yt-dlp.</sub>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/version-1.6.0-007acc.svg?style=flat-square" alt="Version 1.6.0" />
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52.svg?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
+  <img src="https://img.shields.io/badge/Core-yt--dlp-red.svg?style=flat-square" alt="yt-dlp" />
+  <img src="https://img.shields.io/badge/Audio-FFmpeg-007808.svg?style=flat-square&logo=ffmpeg&logoColor=white" alt="FFmpeg" />
+  <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License MIT" />
 </p>
 
 ---
 
-> [!NOTE]
-> **Disclaimer & AI Acknowledgement:**
-> This is a **fan-made, non-commercial open-source project created with AI assistance**. It is built strictly for personal educational purposes, offline media archiving, and backup of your own playlists.
-> The author is **not affiliated with, endorsed by, or connected to Google, YouTube, Spotify, SoundCloud, or any other media service**. The software is provided "as is", without warranty of any kind. Please respect copyright laws and the terms of service of the respective platforms.
+## Overview
+
+**Logovo Downloads** is a desktop tool for downloading media and keeping local audio folders synchronized with online playlists (YouTube, YouTube Music, and other services supported by `yt-dlp`).
+
+The application is built for managing large local music libraries: it syncs playlists, extracts clean metadata, detects duplicate tracks, and prevents redundant downloads.
 
 ---
 
-## What is Logovo Downloads?
+## Features
 
-Logovo Downloads is a simple yet powerful desktop program for Windows (and other platforms) that lets you download music and videos from YouTube, YouTube Music, SoundCloud, Twitch, and other sites supported by `yt-dlp`.
+### Media Downloads
+- **Formats:** Audio (MP3 up to 320 kbps, FLAC, M4A, Opus, Ogg, WAV, ALAC) and Video (up to 4K/8K 60fps, MP4/MKV).
+- **Concurrency:** Multi-threaded download queue with configurable thread count (up to 6 streams).
+- **Windows Integration:** Taskbar progress bar and system tray notifications.
+- **Bandwidth Control:** Optional global speed limits.
 
-It is especially tailored for people who maintain offline music libraries and want to keep their local folders in sync with their online playlists without duplicates, missing songs, or broken files.
+### Playlist Synchronization
+- **Fast Local Indexing:** Compares local folders against online playlists in seconds using cached metadata.
+- **Metadata Cleaning:** Automatically strips video labels, promo tags, and release years while preserving distinct version tags (`Remix`, `VIP`, `Extended`, `Acoustic`, `Instrumental`, `Live`).
+- **Artist Extraction:** Resolves artist and title from channel uploads and record label titles (e.g. `Hospital Records - Netsky - Secret Agent`).
+- **Online Duplicate Detection:** Identifies duplicate tracks within online playlists and provides direct links to manage them on YouTube Music.
+- **Unavailable Tracks Tracking:** Accounts for copyright claims and deleted tracks with neutral status markers.
 
----
+### Library Management
+- **Cross-Playlist Comparison:** Scans tracked playlists to find tracks that exist in multiple folders simultaneously.
+- **Track Breakdown Modal:** View full folder paths across all playlists with options to open files or copy details.
+- **Metadata Embedding:** Embeds ID3v2.3/ID3v2.4 tags into MP3 files, attaches 1000x1000 square cover art, and saves synchronized `.lrc` lyrics.
+- **Safe File Tagging:** Retry handlers to avoid issues with temporary Windows file locks.
 
-## Key Features
-
-- **Multi-threaded Downloads:** Download up to 6 tracks or videos simultaneously with live progress bars, speed metrics, and ETA.
-- **Windows Taskbar Progress:** Live progress bar indicator right on the Windows taskbar icon while downloads are running.
-- **Tracked Playlists Synchronization:**
-  - Save your favorite YouTube / YouTube Music playlists to your library and sync them with 1 click.
-  - **Online Duplicates Detection:** Scans your playlist for duplicate tracks added by mistake and provides direct links to open and remove them in YouTube Music.
-  - **Orphan File Detection:** When tracks are removed from an online playlist, the app asks whether you want to delete local copies or keep them on your drive.
-  - **Transliteration & Alias Matching:** Seamlessly matches songs between English and Russian / Ukrainian titles, handles remix tags, featured artist credits, and producer channel names.
-  - **DMCA / Ghost Filter:** Automatically suppresses dead placeholder entries from copyright takedowns so your sync status stays clean and accurate.
-- **Smart Fallback Search:** If a music track in your playlist is deleted, age-restricted, or geo-blocked, the app automatically searches for verified official alternative releases and downloads them seamlessly with real-time status.
-- **YouTube Authentication & Cookies Support:**
-  - Full support for importing `cookies.txt` (Netscape format) to download age-restricted (18+) content and high-bitrate YouTube Premium streams.
-  - Integrated with remote token decryption components.
-  - In-app step-by-step export guide.
-- **Audio & Tagging Features:**
-  - Customizable file naming templates: `{artist}`, `{title}`, `{index}`, `{album}`, `{year}`.
-  - Auto-crops artwork to 1000x1000 square covers and generates Windows folder `.ico` icons.
-  - Full ID3v2.3 / ID3v2.4 (MP3), FLAC, Opus, and M4A metadata embedding with Windows file-lock retry protections.
-  - Automatic synchronized `.lrc` Karaoke lyrics download and tagging.
-- **Video Features:**
-  - Downloads resolutions from 360p up to 4K UHD at 60fps.
-  - Choose preferred video codecs (H.264, HEVC, AV1, VP9) and container (MP4 / MKV).
-  - Embeds soft subtitles, chapter markers, and video descriptions.
-- **Built-in Tools:**
-  - In-app `yt-dlp` core updater.
-  - Post-download actions (sleep or shutdown PC after long queues finish).
-
----
-
-## Requirements & Setup
-
-### Requirements
-- **Python 3.10+** (64-bit)
-- **[FFmpeg](https://ffmpeg.org/download.html)** installed and added to your system `PATH`.
-
-### Installation
-
-```bash
-# 1. Clone this repository
-git clone https://github.com/Helvior-dev/Logovo-Downloads.git
-cd Logovo-Downloads
-
-# 2. Create and activate a virtual environment
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# 3. Install required packages
-pip install -r requirements.txt
-
-# 4. Run the program
-python main.py
-```
+### Maintenance & Security
+- **Authentication:** Netscape `cookies.txt` import for age-restricted and YouTube Premium content.
+- **Dual Log Viewer:** User-friendly event view and raw developer console with search and export.
+- **In-App Updater:** Check for and install `yt-dlp` core updates directly from the settings tab.
+- **Backup & Restore:** Export or import settings, history, and playlist configurations as a zip archive.
 
 ---
 
 ## Tech Stack
 
 - **GUI:** PyQt6
-- **Download Engine:** yt-dlp
-- **Metadata & Tags:** Mutagen
+- **Engine:** `yt-dlp` (with `curl-cffi` backend)
+- **Audio/Video Backend:** FFmpeg / FFprobe
+- **Metadata:** Mutagen
 - **Image Processing:** Pillow (PIL)
-- **Networking:** requests, curl-cffi
+- **Runtime:** Native Python 3.10+ (does not require Node.js or Deno)
+
+---
+
+## Project Structure
+
+```text
+Logovo-Downloads/
+├── core/                             # Backend logic and core modules
+│   ├── constants.py                  # App constants, versioning and format definitions
+│   ├── downloader.py                 # yt-dlp wrapper, tagger, cleaners and post-processors
+│   ├── preview.py                    # Metadata extraction and playlist previewer
+│   ├── playlists_manager.py          # Tracked playlists storage and state persistence
+│   ├── playlist_comparator.py        # Cross-playlist comparison and clustering engine
+│   ├── history.py                    # Download history manager
+│   ├── logger.py                     # File and UI logging dispatcher
+│   ├── settings.py                   # User preferences manager
+│   ├── taskbar.py                    # Windows Taskbar progress integration
+│   ├── updater.py                    # yt-dlp core auto-updater
+│   ├── backup.py                     # Backup and restore utilities
+│   └── utils.py                      # Filename sanitization and helpers
+│
+├── ui/                               # User interface (PyQt6)
+│   ├── main_window.py                # Main window coordinator and tabs
+│   ├── queue_item.py                 # Download queue item widget
+│   ├── playlist_comparison_dialog.py # Cross-playlist comparison modal
+│   ├── log_viewer_dialog.py          # Log viewer dialog (User & Developer tabs)
+│   └── styles.py                     # Dark theme stylesheets and styling tokens
+│
+├── bin/                              # Optional embedded binaries (FFmpeg / FFprobe)
+├── media/                            # Assets and application icons
+├── downloads/                        # Default download directory
+├── main.py                           # Application entrypoint
+├── requirements.txt                  # Python dependencies
+├── .gitignore                        # Git exclusion rules
+└── README.md                         # Project documentation
+```
+
+---
+
+## Installation & Setup
+
+### Prerequisites
+- **Python 3.10+** (64-bit)
+- **[FFmpeg](https://ffmpeg.org/download.html)** (in system `PATH` or placed inside `bin/`)
+
+### Setup
+
+```bash
+# 1. Clone repository
+git clone https://github.com/Helvior-dev/Logovo-Downloads.git
+cd Logovo-Downloads
+
+# 2. Create virtual environment
+# Windows:
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# Linux / macOS:
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Run application
+python main.py
+```
 
 ---
 
 ## License
 
-MIT License. Open source and free for personal and educational use.
+MIT License. Open-source and free for personal and educational use.
