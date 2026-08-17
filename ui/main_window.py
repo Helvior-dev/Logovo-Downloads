@@ -14,8 +14,8 @@ from PyQt6.QtWidgets import (
     QSystemTrayIcon, QMenu, QSpinBox, QSlider, QFrame, QGraphicsDropShadowEffect,
     QTextEdit
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QObject, QEvent
-from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon, QColor, QPainter, QPen
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QObject, QEvent, QMimeData
+from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon, QColor, QPainter, QPen, QDrag
 
 from core.preview import get_video_preview
 from core.downloader import (
@@ -57,6 +57,7 @@ from core.updater import (
 from ui.styles import get_stylesheet, get_resource_path
 from ui.queue_item import QueueItemWidget
 from ui.log_viewer_dialog import LogViewerDialog
+from ui.playlist_comparison_dialog import CrossPlaylistComparisonDialog
 
 
 def estimate_track_size_mb(item_data: dict) -> float:
@@ -1382,6 +1383,52 @@ class MainWindow(QMainWindow):
         layout.addLayout(bottom_actions)
         self.tabs.addTab(self.downloads_tab, "DOWNLOADS")
 
+class DraggablePlaylistCard(QWidget):
+    def __init__(self, index: int, parent_view, parent=None):
+        super().__init__(parent)
+        self.index = index
+        self.parent_view = parent_view
+        self.setObjectName("PlaylistCard")
+        self.setAcceptDrops(True)
+        self._drag_start_pos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if not self._drag_start_pos:
+            return
+        if (event.pos() - self._drag_start_pos).manhattanLength() < QApplication.startDragDistance():
+            return
+
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(str(self.index))
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasText() and event.mimeData().text().isdigit():
+            event.acceptProposedAction()
+            self.setStyleSheet("border: 2px solid #38bdf8; background-color: #1e293b;")
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet("")
+
+    def dropEvent(self, event):
+        self.setStyleSheet("")
+        if event.mimeData().hasText() and event.mimeData().text().isdigit():
+            src_idx = int(event.mimeData().text())
+            dst_idx = self.index
+            if src_idx != dst_idx:
+                self.parent_view._move_playlist_item(src_idx, dst_idx)
+            event.acceptProposedAction()
+
+
     # ─── TAB 2: PLAYLISTS ──────────────────────────────────────────────────────
 
     def setup_playlists_tab(self):
@@ -1392,14 +1439,68 @@ class MainWindow(QMainWindow):
         top_bar = QHBoxLayout()
         btn_track_new = QPushButton("+ Track New Playlist")
         btn_sync_all = QPushButton("Sync All Playlists")
+        btn_compare = QPushButton("🔍 Compare Playlists")
+        btn_compare.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_compare.setStyleSheet("""
+            QPushButton {
+                background-color: #1e293b;
+                color: #38bdf8;
+                border: 1px solid #0284c7;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #0369a1;
+                color: #ffffff;
+            }
+        """)
+
+        lbl_sort = QLabel("Sort:")
+        lbl_sort.setStyleSheet("font-size: 12px; color: #94a3b8; font-weight: bold; margin-left: 10px;")
+
+        self.combo_playlist_sort = QComboBox()
+        self.combo_playlist_sort.setStyleSheet("""
+            QComboBox {
+                background-color: #1e293b;
+                color: #f8fafc;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                padding: 5px 12px;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #0f172a;
+                color: #f8fafc;
+                selection-background-color: #3b82f6;
+                selection-color: #ffffff;
+            }
+        """)
+        self.combo_playlist_sort.addItem("Manual Order (Drag & Drop)", "custom")
+        self.combo_playlist_sort.addItem("Name (A → Z)", "name_asc")
+        self.combo_playlist_sort.addItem("Name (Z → A)", "name_desc")
+        self.combo_playlist_sort.addItem("Tracks (Most → Fewest)", "tracks_desc")
+        self.combo_playlist_sort.addItem("Tracks (Fewest → Most)", "tracks_asc")
+        self.combo_playlist_sort.addItem("Last Synced (Newest)", "synced_desc")
+        self.combo_playlist_sort.currentIndexChanged.connect(self._on_playlist_sort_changed)
+
         self.lbl_playlists_count = QLabel("Tracked Playlists: 0")
         self.lbl_playlists_count.setStyleSheet("font-size: 12px; color: #94a3b8;")
 
         btn_track_new.clicked.connect(self.track_new_playlist_dialog)
         btn_sync_all.clicked.connect(self.sync_all_playlists)
+        btn_compare.clicked.connect(self.open_playlist_comparison_dialog)
 
         top_bar.addWidget(btn_track_new)
         top_bar.addWidget(btn_sync_all)
+        top_bar.addWidget(btn_compare)
+        top_bar.addWidget(lbl_sort)
+        top_bar.addWidget(self.combo_playlist_sort)
         top_bar.addStretch()
         top_bar.addWidget(self.lbl_playlists_count)
         layout.addLayout(top_bar)
@@ -1421,6 +1522,24 @@ class MainWindow(QMainWindow):
         self.refresh_playlists_ui()
         self.tabs.addTab(self.playlists_tab, "PLAYLISTS")
 
+    def _on_playlist_sort_changed(self):
+        self._current_pl_sort = self.combo_playlist_sort.currentData()
+        self.refresh_playlists_ui()
+
+    def _move_playlist_item(self, from_idx: int, to_idx: int):
+        self.playlists_mgr.move_playlist(from_idx, to_idx)
+        self._current_pl_sort = "custom"
+        if hasattr(self, 'combo_playlist_sort'):
+            self.combo_playlist_sort.blockSignals(True)
+            self.combo_playlist_sort.setCurrentIndex(0)
+            self.combo_playlist_sort.blockSignals(False)
+        self.refresh_playlists_ui()
+
+    def open_playlist_comparison_dialog(self):
+        dlg = CrossPlaylistComparisonDialog(self.playlists_mgr, default_target="Trash", parent=self)
+        dlg.exec()
+        self.refresh_playlists_ui()
+
     def refresh_playlists_ui(self):
         # Disconnect old thumbnail loaders
         if hasattr(self, '_pl_loaders'):
@@ -1438,7 +1557,8 @@ class MainWindow(QMainWindow):
             if widget:
                 widget.deleteLater()
 
-        items = self.playlists_mgr.get_all()
+        sort_mode = getattr(self, '_current_pl_sort', 'custom')
+        items = self.playlists_mgr.get_sorted(sort_mode)
         self.lbl_playlists_count.setText(f"Tracked Playlists: {len(items)}")
 
         if not items:
@@ -1448,12 +1568,78 @@ class MainWindow(QMainWindow):
             self.playlists_container_layout.addWidget(empty_lbl)
             return
 
-        for p in items:
-            card = QWidget()
-            card.setObjectName("PlaylistCard")
+        for i, p in enumerate(items):
+            card = DraggablePlaylistCard(i, self)
             card_layout = QHBoxLayout(card)
-            card_layout.setContentsMargins(12, 10, 12, 10)
-            card_layout.setSpacing(15)
+            card_layout.setContentsMargins(10, 10, 12, 10)
+            card_layout.setSpacing(12)
+
+            # Reorder controls (Move Up / Move Down & Drag handle)
+            reorder_box = QVBoxLayout()
+            reorder_box.setSpacing(2)
+            reorder_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            btn_up = QPushButton("▲")
+            btn_up.setFixedSize(24, 20)
+            btn_up.setToolTip("Move playlist up")
+            btn_up.setEnabled(i > 0)
+            btn_up.setStyleSheet("""
+                QPushButton {
+                    background-color: #1e293b;
+                    color: #94a3b8;
+                    border: 1px solid #334155;
+                    border-radius: 4px;
+                    font-size: 10px;
+                    padding: 0px;
+                }
+                QPushButton:hover:enabled {
+                    background-color: #3b82f6;
+                    color: #ffffff;
+                    border-color: #3b82f6;
+                }
+                QPushButton:disabled {
+                    color: #475569;
+                    background-color: #0f172a;
+                    border-color: #1e293b;
+                }
+            """)
+            btn_up.clicked.connect(lambda _, idx=i: self._move_playlist_item(idx, idx - 1))
+
+            drag_hint = QLabel("☰")
+            drag_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            drag_hint.setToolTip("Drag & drop with mouse to reorder")
+            drag_hint.setStyleSheet("color: #64748b; font-size: 13px; font-weight: bold;")
+
+            btn_down = QPushButton("▼")
+            btn_down.setFixedSize(24, 20)
+            btn_down.setToolTip("Move playlist down")
+            btn_down.setEnabled(i < len(items) - 1)
+            btn_down.setStyleSheet("""
+                QPushButton {
+                    background-color: #1e293b;
+                    color: #94a3b8;
+                    border: 1px solid #334155;
+                    border-radius: 4px;
+                    font-size: 10px;
+                    padding: 0px;
+                }
+                QPushButton:hover:enabled {
+                    background-color: #3b82f6;
+                    color: #ffffff;
+                    border-color: #3b82f6;
+                }
+                QPushButton:disabled {
+                    color: #475569;
+                    background-color: #0f172a;
+                    border-color: #1e293b;
+                }
+            """)
+            btn_down.clicked.connect(lambda _, idx=i: self._move_playlist_item(idx, idx + 1))
+
+            reorder_box.addWidget(btn_up)
+            reorder_box.addWidget(drag_hint)
+            reorder_box.addWidget(btn_down)
+            card_layout.addLayout(reorder_box)
 
             # Thumbnail
             thumb_lbl = QLabel()

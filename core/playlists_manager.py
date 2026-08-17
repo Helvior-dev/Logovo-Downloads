@@ -101,3 +101,38 @@ class PlaylistsManager:
                     p['new_tracks_count'] = 0
                 break
         self.save()
+
+    def reorder_playlists(self, ordered_urls: list[str]) -> None:
+        url_map = {p.get('url'): p for p in self.playlists}
+        new_list = []
+        for u in ordered_urls:
+            if u in url_map:
+                new_list.append(url_map[u])
+        for p in self.playlists:
+            if p not in new_list:
+                new_list.append(p)
+        self.playlists = new_list
+        self.save()
+
+    def move_playlist(self, from_idx: int, to_idx: int) -> bool:
+        if 0 <= from_idx < len(self.playlists) and 0 <= to_idx < len(self.playlists):
+            item = self.playlists.pop(from_idx)
+            self.playlists.insert(to_idx, item)
+            self.save()
+            return True
+        return False
+
+    def get_sorted(self, sort_by: str = "custom") -> list[dict]:
+        items = list(self.playlists)
+        if sort_by == "name_asc":
+            items.sort(key=lambda x: (x.get('title') or '').lower())
+        elif sort_by == "name_desc":
+            items.sort(key=lambda x: (x.get('title') or '').lower(), reverse=True)
+        elif sort_by == "tracks_desc":
+            items.sort(key=lambda x: x.get('track_count', 0), reverse=True)
+        elif sort_by == "tracks_asc":
+            items.sort(key=lambda x: x.get('track_count', 0))
+        elif sort_by == "synced_desc":
+            items.sort(key=lambda x: x.get('last_synced') or '', reverse=True)
+        return items
+
