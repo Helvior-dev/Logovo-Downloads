@@ -763,6 +763,7 @@ class PlaylistUpToDateDialog(QDialog):
         super().__init__(parent)
         self.duplicates = duplicates or []
         self.playlist_title = title
+        self.local_files_count = local_files_count
         self.setWindowTitle("Sync Complete")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)

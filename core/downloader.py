@@ -629,13 +629,17 @@ def check_and_clean_archive_if_file_missing(output_dir: Path | str, vid: str, ti
             pass
 
 
-def is_file_already_downloaded(output_dir: Path | str, vid: str, title: Optional[str] = None, author: Optional[str] = None) -> bool:
+def is_file_already_downloaded(output_dir: Path | str, vid: str, title: Optional[str] = None, author: Optional[str] = None, is_audio: bool = True) -> bool:
     """Instant local disk check: returns True in ~0.0001s if valid media file (>=500KB) already exists on disk."""
     out = Path(output_dir)
     if not out.exists():
         return False
 
-    valid_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv", ".webm"}
+    if is_audio:
+        valid_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac"}
+    else:
+        valid_exts = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
+
     stem_map = read_stem_vid_map(out)
 
     # 1. Check via stem_map
@@ -664,7 +668,8 @@ def is_file_already_downloaded(output_dir: Path | str, vid: str, title: Optional
 
 
 def cleanup_orphan_files(output_dir: Path | str, is_audio_playlist: bool = True) -> int:
-    """Clean up orphan .webp, .png, .jpg thumbnails, .part, .ytdl, corrupted audio stubs (<500KB), and leftover .mp4/.webm in audio folders.
+    """Clean up orphan .webp, .png, .jpg thumbnails, .part, .ytdl, and corrupted media stubs (<500KB).
+    Only converts orphan raw containers if is_audio_playlist is explicitly True.
     Preserves playlist covers (cover.png, cover.jpg, cover.webp, folder.ico, desktop.ini) and service logs.
     """
     out = Path(output_dir)
@@ -682,7 +687,6 @@ def cleanup_orphan_files(output_dir: Path | str, is_audio_playlist: bool = True)
     cleaned_count = 0
     try:
         all_files = list(out.iterdir())
-        has_audio = any(f.suffix.lower() in audio_exts for f in all_files if f.is_file())
         audio_stems = {f.stem.lower() for f in all_files if f.is_file() and f.suffix.lower() in audio_exts}
 
         for f in all_files:
@@ -706,16 +710,16 @@ def cleanup_orphan_files(output_dir: Path | str, is_audio_playlist: bool = True)
                     cleaned_count += 1
                 except Exception:
                     pass
-            # 3. Corrupted / truncated audio stubs (<500 KB) that cannot be played
-            elif f.suffix.lower() in audio_exts:
+            # 3. Corrupted / truncated media stubs (<500 KB) that cannot be played
+            elif f.suffix.lower() in audio_exts or f.suffix.lower() in (".mp4", ".mkv", ".webm"):
                 try:
                     if f.stat().st_size < 500 * 1024:
                         f.unlink(missing_ok=True)
                         cleaned_count += 1
                 except Exception:
                     pass
-            # 4. Leftover .mp4 / .webm video containers in audio playlists
-            elif (has_audio or is_audio_playlist) and f.suffix.lower() in (".mp4", ".webm", ".mkv"):
+            # 4. Leftover .mp4 / .webm video containers ONLY in explicit audio playlists
+            elif is_audio_playlist and f.suffix.lower() in (".mp4", ".webm", ".mkv"):
                 # If an audio version already exists, delete the duplicate video container
                 if f.stem.lower() in audio_stems:
                     try:
@@ -724,7 +728,7 @@ def cleanup_orphan_files(output_dir: Path | str, is_audio_playlist: bool = True)
                     except Exception:
                         pass
                 else:
-                    # If only the .mp4 remains, convert to .mp3 and delete .mp4
+                    # If only the .mp4 remains in an audio playlist, convert to .mp3 and delete .mp4
                     try:
                         ensure_audio_format(f, ".mp3")
                         cleaned_count += 1
@@ -1846,24 +1850,32 @@ class MediaDownloader:
 
         # Client strategies for in-flight rotation
         if is_audio:
-          if cookies and cookies.get("use"):
-            client_rotations = [
-                ["mweb", "web"],
-                ["web", "ios"],
-                ["mweb"],
-            ]
-          else:
-            client_rotations = [
-                ["android", "web"],
-                ["web", "android"],
-            ]
+            if cookies and cookies.get("use"):
+                client_rotations = [
+                    ["mweb", "web"],
+                    ["web", "ios"],
+                    ["mweb"],
+                ]
+            else:
+                client_rotations = [
+                    ["android", "web"],
+                    ["web", "android"],
+                ]
         else:
-            client_rotations = [
-                ["android", "web"],
-                ["mweb", "web"],
-                ["web"],
-                ["android"],
-            ]
+            if cookies and cookies.get("use"):
+                client_rotations = [
+                    ["mweb", "web"],
+                    ["ios", "web"],
+                    ["web_creator", "web"],
+                    ["web"],
+                ]
+            else:
+                client_rotations = [
+                    ["mweb", "web"],
+                    ["ios", "web"],
+                    ["android", "web"],
+                    ["web"],
+                ]
 
         ydl_opts: dict[str, Any] = {
             "outtmpl": outtmpl,
@@ -1989,14 +2001,14 @@ class MediaDownloader:
             extracted_vid = clean_url.split("youtu.be/")[-1].split("?")[0]
 
         if should_track_playlist and extracted_vid:
-            if is_file_already_downloaded(self.output_dir, extracted_vid, title=title, author=author):
+            if is_file_already_downloaded(self.output_dir, extracted_vid, title=title, author=author, is_audio=is_audio):
                 self.was_skipped = True
                 if progress_callback:
                     try:
                         progress_callback({"status": "finished", "total_bytes": 1, "downloaded_bytes": 1, "_percent_str": "100%", "_speed_str": "0 MB/s", "_eta_str": "0s", "status_text": "Already downloaded (Skipped)"})
                     except Exception:
                         pass
-                cleanup_orphan_files(self.output_dir)
+                cleanup_orphan_files(self.output_dir, is_audio_playlist=is_audio)
                 return True, "", True
 
             check_and_clean_archive_if_file_missing(self.output_dir, extracted_vid, title=title, author=author)
@@ -2261,9 +2273,11 @@ class MediaDownloader:
             processed_files: list[Path] = []
             for fp in list(downloaded_files):
                 p = Path(fp)
-                target_paths = [p]
-                for ext in (".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv"):
-                    target_paths.append(p.with_suffix(ext))
+                if is_audio:
+                    exts = (".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac")
+                else:
+                    exts = (".mp4", ".mkv", ".webm", ".avi", ".mov")
+                target_paths = [p] + [p.with_suffix(ext) for ext in exts]
 
                 for candidate in target_paths:
                     if candidate.exists() and candidate.is_file() and candidate not in processed_files:
@@ -2365,10 +2379,10 @@ class MediaDownloader:
                     reason=self.last_error,
                 )
 
-            cleanup_orphan_files(self.output_dir)
+            cleanup_orphan_files(self.output_dir, is_audio_playlist=is_audio)
             return success, self.last_error, self.was_skipped
         except Exception as e:
-            cleanup_orphan_files(self.output_dir)
+            cleanup_orphan_files(self.output_dir, is_audio_playlist=is_audio)
             if success:
                 return True, "", self.was_skipped
             return False, str(e), False
