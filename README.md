@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52.svg?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
   <img src="https://img.shields.io/badge/Core-yt--dlp-red.svg?style=flat-square" alt="yt-dlp" />
   <img src="https://img.shields.io/badge/Audio-FFmpeg-007808.svg?style=flat-square&logo=ffmpeg&logoColor=white" alt="FFmpeg" />
-  <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License MIT" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License MIT" /></a>
 </p>
 
 ---
@@ -136,4 +136,4 @@ python main.py
 
 ## License
 
-MIT License. Open-source and free for personal and educational use.
+This project is licensed under the [MIT License](LICENSE). Open-source and free for personal and educational use.
