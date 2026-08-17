@@ -27,7 +27,12 @@ except ImportError:
     OggOpus = None
 
 ERROR_REASONS: list[tuple[str, str]] = [
+    ("rate-limited", "YouTube Rate Limit — try again later"),
+    ("try again later", "YouTube Rate Limit — try again later"),
+    ("HTTP Error 429", "YouTube Rate Limit (429) — try again later"),
     ("Sign in to confirm your age", "Age-restricted — cookies required"),
+    ("does not look like a netscape format", "Invalid cookies format (Netscape required)"),
+    ("failed to load cookies", "Failed to load cookies file"),
     ("Video unavailable", "Video unavailable"),
     ("copyright claim", "Blocked by copyright claim"),
     ("This video is not available", "Video not available in your region"),
@@ -52,11 +57,49 @@ def friendly_error(raw: str) -> str:
     return first[:100] if first else raw[:100]
 
 
-def is_platform_unavailable(raw: str) -> bool:
-    """Return True if video is deleted/unavailable on YouTube/platform (not a software bug or download failure)."""
+def is_rate_limited(raw: str) -> bool:
+    """Return True if the error indicates YouTube is rate-limiting the session."""
     if not raw:
         return False
     low = raw.lower()
+    return any(k in low for k in (
+        "rate-limited",
+        "rate limit",
+        "try again later",
+        "too many requests",
+        "http error 429",
+    ))
+
+
+def is_valid_netscape_cookies(cookie_file: str) -> bool:
+    """Validate that cookie_file exists, is non-empty, and conforms to Netscape cookie format."""
+    if not cookie_file or not os.path.exists(cookie_file):
+        return False
+    try:
+        if os.path.getsize(cookie_file) < 10:
+            return False
+        with open(cookie_file, 'r', encoding='utf-8', errors='ignore') as f:
+            for _ in range(25):
+                line = f.readline()
+                if not line:
+                    break
+                line_s = line.strip()
+                if "netscape" in line_s.lower() or "http cookie file" in line_s.lower():
+                    return True
+                if line_s and not line_s.startswith("#") and len(line_s.split('\t')) >= 6:
+                    return True
+            return False
+    except Exception:
+        return False
+
+
+def is_platform_unavailable(raw: str) -> bool:
+    """Return True if video is deleted/unavailable on YouTube/platform (not a rate-limit or cookie error)."""
+    if not raw:
+        return False
+    low = raw.lower()
+    if is_rate_limited(raw) or "does not look like a netscape format" in low or "failed to load cookies" in low:
+        return False
     return any(k in low for k in (
         "video unavailable",
         "this video is not available",
@@ -1955,8 +1998,10 @@ class MediaDownloader:
                     ydl_opts["cookiesfrombrowser"] = (browser,)
             elif cookies.get("source") == "file":
                 cookie_file = cookies.get("file")
-                if cookie_file and os.path.exists(cookie_file):
+                if cookie_file and is_valid_netscape_cookies(cookie_file):
                     ydl_opts["cookiefile"] = cookie_file
+                elif cookie_file and os.path.exists(cookie_file):
+                    print(f"[Cookies Warning] File '{cookie_file}' is not a valid Netscape cookie file. Skipping cookies.", file=sys.stderr)
 
         # Subtitles
         if subtitles and subtitles.get("download"):

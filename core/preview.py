@@ -1,6 +1,6 @@
 import os
 import yt_dlp
-from core.downloader import clean_media_url
+from core.downloader import clean_media_url, is_valid_netscape_cookies
 
 def get_video_preview(url: str, cookies: dict = None) -> dict:
     clean_url = clean_media_url(url, keep_list=True)
@@ -20,7 +20,7 @@ def get_video_preview(url: str, cookies: dict = None) -> dict:
             ydl_opts['cookiesfrombrowser'] = (cookies.get('browser'), None, None, None)
         elif cookies.get('source') == 'file' and cookies.get('file'):
             cookie_path = cookies.get('file')
-            if cookie_path and os.path.exists(cookie_path):
+            if cookie_path and is_valid_netscape_cookies(cookie_path):
                 ydl_opts['cookiefile'] = cookie_path
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

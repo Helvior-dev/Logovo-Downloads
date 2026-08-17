@@ -22,6 +22,7 @@ from core.downloader import (
     MediaDownloader,
     friendly_error,
     is_platform_unavailable,
+    is_rate_limited,
     set_folder_icon,
     save_playlist_cover_image,
     apply_playlist_cover_settings,
@@ -1002,6 +1003,84 @@ class UnavailableTracksDialog(QDialog):
         QMessageBox.information(self, "Copied", "Unavailable tracks list copied to clipboard!")
 
 
+class SafeModeDialog(QDialog):
+    def __init__(self, count: int, concurrency: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Large Queue Optimization")
+        self.setFixedWidth(480)
+        self.setStyleSheet("""
+            QDialog { background-color: #0b1120; color: #f8fafc; }
+            QPushButton { border-radius: 6px; padding: 9px 16px; font-weight: bold; font-size: 12px; }
+            QCheckBox { color: #94a3b8; font-size: 11px; }
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(14)
+
+        icon_lbl = QLabel("🛡️")
+        icon_lbl.setStyleSheet("font-size: 32px;")
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(icon_lbl)
+
+        title_lbl = QLabel(f"Large Download Queue ({count} tracks)")
+        title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #38bdf8;")
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_lbl)
+
+        desc_lbl = QLabel(
+            f"You have <b>{count}</b> tracks in queue with <b>{concurrency} concurrent threads</b>.<br><br>"
+            "Downloading huge playlists at maximum speed may trigger temporary <b>YouTube rate-limiting</b>.<br><br>"
+            "<b>Safe Mode</b> uses <b>3 threads</b> with smart pacing to ensure 100% reliable downloads without bans or interruptions."
+        )
+        desc_lbl.setWordWrap(True)
+        desc_lbl.setStyleSheet("font-size: 12px; color: #cbd5e1; line-height: 1.45;")
+        layout.addWidget(desc_lbl)
+
+        self.chk_remember = QCheckBox("Remember choice for this session")
+        layout.addWidget(self.chk_remember)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        self.btn_full = QPushButton(f"🚀 Full Speed ({concurrency} Threads)")
+        self.btn_full.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_full.setStyleSheet("""
+            QPushButton {
+                background-color: #334155;
+                color: #f1f5f9;
+                border: 1px solid #475569;
+            }
+            QPushButton:hover { background-color: #475569; }
+        """)
+        self.btn_full.clicked.connect(self._choose_full)
+
+        self.btn_safe = QPushButton("🛡️ Enable Safe Mode (Recommended)")
+        self.btn_safe.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_safe.setStyleSheet("""
+            QPushButton {
+                background-color: #10b981;
+                color: #ffffff;
+                border: none;
+            }
+            QPushButton:hover { background-color: #059669; }
+        """)
+        self.btn_safe.clicked.connect(self._choose_safe)
+
+        btn_layout.addWidget(self.btn_full)
+        btn_layout.addWidget(self.btn_safe)
+        layout.addLayout(btn_layout)
+
+        self.enable_safe_mode = True
+
+    def _choose_safe(self):
+        self.enable_safe_mode = True
+        self.accept()
+
+    def _choose_full(self):
+        self.enable_safe_mode = False
+        self.accept()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1409,7 +1488,12 @@ class MainWindow(QMainWindow):
             else:
                 count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks"
                 status_color = "#38bdf8"
-                new_cnt = p.get('new_tracks_count', 0)
+                raw_new = p.get('new_tracks_count', 0)
+                missing_upper_bound = max(0, available_track_count - downloaded_count)
+                new_cnt = min(raw_new, missing_upper_bound) if raw_new > 0 else 0
+                if p.get('new_tracks_count') != new_cnt:
+                    p['new_tracks_count'] = new_cnt
+                    self.playlists_mgr.save()
 
             badge_html = f"  <span style='color: #38bdf8; font-weight: bold; background-color: #0f172a; padding: 2px 6px; border-radius: 4px; border: 1px solid #0284c7;'>+{new_cnt} new track{'s' if new_cnt > 1 else ''}</span>" if new_cnt > 0 else ""
             meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}  |  Last Synced: {p.get('last_synced', 'Never')}")
@@ -3026,6 +3110,27 @@ class MainWindow(QMainWindow):
         if not self.download_queue or self.is_downloading:
             return
 
+        pending_count = sum(1 for w in self.download_queue if w.status_state == "Pending")
+        current_concurrency = max(1, int(self.settings.get('max_concurrent_downloads', 3)))
+
+        # Prompt for Safe Mode if queue is large (> 150 items) and concurrency > 3
+        if pending_count > 150 and current_concurrency > 3 and not getattr(self, '_safe_mode_choice_remembered', False):
+            dlg = SafeModeDialog(pending_count, current_concurrency, parent=self)
+            if dlg.exec():
+                if dlg.chk_remember.isChecked():
+                    self._safe_mode_choice_remembered = True
+                    self._safe_mode_enabled = dlg.enable_safe_mode
+                self._current_session_concurrency = 3 if dlg.enable_safe_mode else current_concurrency
+                self._current_session_delay = 1.0 if dlg.enable_safe_mode else 0.2
+            else:
+                return
+        elif getattr(self, '_safe_mode_choice_remembered', False) and getattr(self, '_safe_mode_enabled', False):
+            self._current_session_concurrency = 3
+            self._current_session_delay = 1.0
+        else:
+            self._current_session_concurrency = current_concurrency
+            self._current_session_delay = 0.2
+
         self.is_downloading = True
         self.success_count = 0
         self.error_count = 0
@@ -3059,7 +3164,7 @@ class MainWindow(QMainWindow):
             self.update_queue_ui()
             return
 
-        max_concurrency = max(1, int(self.settings.get('max_concurrent_downloads', 3)))
+        max_concurrency = getattr(self, '_current_session_concurrency', max(1, int(self.settings.get('max_concurrent_downloads', 3))))
 
         while len(self.active_workers) < max_concurrency:
             # Find next pending widget not currently being processed
@@ -3109,10 +3214,26 @@ class MainWindow(QMainWindow):
                     dirs_to_clean = set()
                     for w in self.download_queue:
                         p_dir = w.item_data.get('playlist_output_dir') or self.settings.get('download_path')
-                        if p_dir: dirs_to_clean.add(p_dir)
+                        if p_dir: dirs_to_clean.add(os.path.normpath(p_dir))
                     for d in dirs_to_clean:
                         cleanup_orphan_files(d)
                         clear_failed_log_if_clean(d)
+
+                    # Update playlists sync info if any playlist directory was downloaded
+                    for p in self.playlists_mgr.get_all():
+                        p_folder = p.get('folder_path')
+                        if p_folder and os.path.normpath(p_folder) in dirs_to_clean and os.path.exists(p_folder):
+                            media_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac", ".mp4", ".mkv", ".webm", ".avi", ".mov"}
+                            local_cnt = len([f for f in Path(p_folder).iterdir() if f.is_file() and f.suffix.lower() in media_exts and f.stat().st_size >= 500*1024])
+                            pl_track_count = p.get('track_count', 0)
+                            unavail_cnt = p.get('unavailable_count', 0)
+                            avail = max(0, pl_track_count - unavail_cnt)
+                            missing_left = max(0, avail - local_cnt)
+                            p['new_tracks_count'] = missing_left
+                            if missing_left == 0 and (avail > 0 or pl_track_count > 0):
+                                p['status'] = 'synced'
+                            p['last_synced'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    self.playlists_mgr.save()
 
                     self.update_queue_ui()
                     self.refresh_playlists_ui()
@@ -3127,7 +3248,8 @@ class MainWindow(QMainWindow):
 
             # Start worker for next_widget
             self.start_worker_for_widget(next_widget)
-            time.sleep(0.2) # Jitter delay between concurrent worker starts
+            jitter = getattr(self, '_current_session_delay', 0.2)
+            time.sleep(jitter)
 
     def start_worker_for_widget(self, widget: QueueItemWidget):
         item_data = widget.item_data
@@ -3270,7 +3392,11 @@ class MainWindow(QMainWindow):
                 status_text = "Completed"
         else:
             self.error_count += 1
-            if is_platform_unavailable(error_msg):
+            if is_rate_limited(error_msg):
+                widget.set_status("Rate-limited (YouTube)", "Error")
+                self.failed_queue.append((item_data, "YouTube Rate Limit — try again later"))
+                status_text = "Error: YouTube Rate Limit"
+            elif is_platform_unavailable(error_msg):
                 widget.set_status("Deleted from platform", "Unavailable")
                 status_text = "Deleted from platform"
                 self.unavailable_queue.append((item_data, error_msg))
