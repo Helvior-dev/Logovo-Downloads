@@ -242,9 +242,13 @@ class StartupPlaylistCheckWorker(QThread):
                     if not already:
                         missing_cnt += 1
 
+                local_cnt = len([f for f in Path(out_dir).iterdir() if f.is_file() and f.suffix.lower() in valid_media_exts and f.stat().st_size >= 500*1024])
                 unavail_cnt = sum(1 for entry in preview.get('entries', []) if entry.get('is_unavailable') or "unavailable / deleted" in str(entry.get('title', '')).lower())
+                total_cnt = preview.get('count', 0)
+                dupes_cnt = max(0, total_cnt - unavail_cnt - local_cnt - missing_cnt)
                 p['unavailable_count'] = unavail_cnt
-                p['track_count'] = preview.get('count', 0)
+                p['duplicates_count'] = dupes_cnt
+                p['track_count'] = total_cnt
                 p['new_tracks_count'] = missing_cnt
 
             self.playlists_mgr.save()
@@ -727,18 +731,36 @@ class OnlineDuplicatesDialog(QDialog):
                         color: #ffffff;
                     }
                 """)
-                btn_link.clicked.connect(lambda _, u=dupe_url: QDesktopServices.openUrl(QUrl(u)))
-                self.table.setCellWidget(row, 3, btn_link)
-
+        self.duplicate_items = duplicate_items
         layout.addWidget(self.table)
 
         btn_box = QHBoxLayout()
+        btn_copy = QPushButton("📋 Copy Duplicates List")
+        btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_copy.setStyleSheet("background-color: #3b82f6; color: white; border-radius: 6px; padding: 6px 14px; font-weight: bold; font-size: 12px;")
+        btn_copy.clicked.connect(self._copy_list)
+        btn_box.addWidget(btn_copy)
         btn_box.addStretch()
+
         btn_close = QPushButton("Close")
         btn_close.setFixedWidth(100)
+        btn_close.setStyleSheet("background-color: #334155; color: white; border-radius: 6px; padding: 6px 14px; font-weight: bold; font-size: 12px;")
         btn_close.clicked.connect(self.accept)
         btn_box.addWidget(btn_close)
         layout.addLayout(btn_box)
+
+    def _copy_list(self):
+        lines = []
+        for i, item in enumerate(self.duplicate_items, 1):
+            t = item.get('title', 'Unknown')
+            a = item.get('author', '')
+            display_name = f"{a} - {t}" if a else t
+            orig_idx = item.get('orig_index', '')
+            dupe_idx = item.get('dupe_index', '')
+            dupe_url = item.get('dupe_url', '') or item.get('orig_url', '')
+            lines.append(f"{i}. {display_name} (Duplicate #{dupe_idx}, Original #{orig_idx})\n   URL: {dupe_url}")
+        QApplication.clipboard().setText("\n\n".join(lines))
+        QMessageBox.information(self, "Copied", "Duplicates list copied to clipboard!")
 
 
 class PlaylistUpToDateDialog(QDialog):
@@ -787,11 +809,21 @@ class PlaylistUpToDateDialog(QDialog):
         h_lbl.setStyleSheet("font-size: 18px; font-weight: bold; color: #10b981; background: transparent;")
         h_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        dupes_cnt = len(self.duplicates) if self.duplicates else 0
+        unavail_cnt = len(self.unavailable) if self.unavailable else 0
+
+        details_parts = []
+        if unavail_cnt > 0:
+            details_parts.append(f"{unavail_cnt} removed on YouTube")
+        if dupes_cnt > 0:
+            details_parts.append(f"{dupes_cnt} internal duplicate{'s' if dupes_cnt > 1 else ''}")
+
+        details_str = f"<br><span style='font-size: 11px; color: #94a3b8;'>({', '.join(details_parts)})</span>" if details_parts else ""
+
         if self.local_files_count is not None and self.local_files_count < count:
-            unavail_cnt = count - self.local_files_count
-            desc_text = f"<b>{self.local_files_count}</b> of <b>{count}</b> tracks in playlist<br><span style='color: #e2e8f0; font-size: 14px;'>{title}</span><br>are downloaded ({unavail_cnt} unavailable/removed on YouTube)."
+            desc_text = f"<b>{self.local_files_count}</b> of <b>{count}</b> tracks in playlist<br><span style='color: #e2e8f0; font-size: 14px;'>{title}</span><br>are downloaded.{details_str}"
         else:
-            desc_text = f"All <b>{count}</b> tracks in playlist<br><span style='color: #e2e8f0; font-size: 14px;'>{title}</span><br>are already verified and downloaded."
+            desc_text = f"All <b>{count}</b> tracks in playlist<br><span style='color: #e2e8f0; font-size: 14px;'>{title}</span><br>are already verified and downloaded.{details_str}"
 
         desc_lbl = QLabel(desc_text)
         desc_lbl.setStyleSheet("font-size: 13px; color: #94a3b8; line-height: 1.4; background: transparent;")
@@ -803,7 +835,7 @@ class PlaylistUpToDateDialog(QDialog):
         layout.addWidget(desc_lbl)
 
         if self.duplicates:
-            btn_dupes = QPushButton(f"ℹ️ {len(self.duplicates)} Online Duplicate(s) Found — View List", card)
+            btn_dupes = QPushButton(f"📋 {len(self.duplicates)} Playlist Duplicate(s) — View List", card)
             btn_dupes.setCursor(Qt.CursorShape.PointingHandCursor)
             btn_dupes.setStyleSheet("""
                 QPushButton {
@@ -1441,11 +1473,18 @@ class MainWindow(QMainWindow):
 
             pl_track_count = p.get('track_count', 0)
             unavail_count = p.get('unavailable_count', 0)
-            available_track_count = max(0, pl_track_count - unavail_count)
+            duplicates_count = p.get('duplicates_count', 0)
+            available_track_count = max(0, pl_track_count - unavail_count - duplicates_count)
 
             if downloaded_count >= available_track_count and (available_track_count > 0 or pl_track_count > 0):
+                notes = []
                 if unavail_count > 0:
-                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date — {unavail_count} removed from platform)"
+                    notes.append(f"{unavail_count} removed")
+                if duplicates_count > 0:
+                    notes.append(f"{duplicates_count} duplicate{'s' if duplicates_count > 1 else ''}")
+
+                if notes:
+                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date — {', '.join(notes)})"
                 else:
                     count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date)"
                 status_color = "#10b981"
@@ -1658,14 +1697,16 @@ class MainWindow(QMainWindow):
             p_dict['thumbnail'] = preview.get('thumbnail')
         unavail_cnt = len(unavailable_entries) if unavailable_entries else 0
         p_dict['unavailable_count'] = unavail_cnt
+        dupes_cnt = len(online_duplicates) if online_duplicates else 0
+        p_dict['duplicates_count'] = dupes_cnt
         if not missing_entries:
-            self.playlists_mgr.update_sync_info(url, track_count=count, status='synced', unavailable_count=unavail_cnt)
+            self.playlists_mgr.update_sync_info(url, track_count=count, status='synced', unavailable_count=unavail_cnt, duplicates_count=dupes_cnt)
             self.refresh_playlists_ui()
-            self.status_label.setText(f"No new media to sync. All {count - unavail_cnt} available tracks in '{p_dict.get('title')}' are up to date.")
+            self.status_label.setText(f"No new media to sync. All {count - unavail_cnt - dupes_cnt} available tracks in '{p_dict.get('title')}' are up to date.")
             PlaylistUpToDateDialog(p_dict.get('title', 'Playlist'), count, local_files_count=local_cnt, duplicates=online_duplicates, unavailable=unavailable_entries, parent=self).exec()
             return
         else:
-            self.playlists_mgr.update_sync_info(url, track_count=count, status='pending', unavailable_count=unavail_cnt)
+            self.playlists_mgr.update_sync_info(url, track_count=count, status='pending', unavailable_count=unavail_cnt, duplicates_count=dupes_cnt)
 
         # Auto-clear previous completed/finished queue if not downloading
         if self.download_queue and not self.is_downloading:
