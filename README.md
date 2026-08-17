@@ -134,6 +134,12 @@ python main.py
 
 ---
 
+## Acknowledgements
+
+- Inspired by Magerko's [Universal Media Downloader](https://github.com/Magerko/universal-media-downloader).
+
+---
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE). Open-source and free for personal and educational use.
