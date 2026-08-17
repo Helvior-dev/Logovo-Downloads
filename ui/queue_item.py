@@ -283,6 +283,23 @@ class QueueItemWidget(QWidget):
     def _on_subs_changed(self, idx):
         self.item_data['specific_subs'] = self.subs_combo.currentData()
 
+    def set_media_category(self, new_category: str):
+        self.item_data['media_type_category'] = new_category
+        self.format_combo.blockSignals(True)
+        self.format_combo.clear()
+        if new_category == "Video":
+            items = ["Video (Best)", "Video (H.264)", "Video (H.265)"]
+            self.format_combo.addItems(items)
+            self.format_combo.setCurrentText("Video (Best)")
+            self.item_data['media_type'] = "Video (Best)"
+        else:
+            items = ["Audio (Best)", "Audio (MP3)", "Audio (FLAC)", "Audio (M4A)", "Audio (Opus)", "Audio (WAV)"]
+            self.format_combo.addItems(items)
+            self.format_combo.setCurrentText("Audio (Best)")
+            self.item_data['media_type'] = "Audio (Best)"
+        self.format_combo.blockSignals(False)
+        self._populate_subs_combo()
+
     def _on_format_changed(self, text):
         self.item_data['media_type'] = text
         if "video" in text.lower():

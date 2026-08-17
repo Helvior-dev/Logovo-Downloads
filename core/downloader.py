@@ -510,7 +510,7 @@ def translit_ru_to_en(text: str) -> str:
 
 
 def _author_and_title_match(stem: str, title: Optional[str], author: Optional[str]) -> bool:
-    """Strictly matches both track title AND artist name against file stem to avoid cross-artist collisions."""
+    """Strictly matches both track title AND artist name against file stem to avoid cross-artist collisions and false subset matches."""
     if not title or len(title.strip()) < 2:
         return False
 
@@ -518,6 +518,24 @@ def _author_and_title_match(stem: str, title: Optional[str], author: Optional[st
     clean_a = clean_artist_name(author or "")
 
     if not clean_t or len(clean_t) < 2:
+        return False
+
+    def _title_match(t1: str, t2: str) -> bool:
+        if t1 == t2:
+            return True
+        noise = {'official', 'audio', 'video', 'visualizer', 'version', 'music', 'track', 'full', 'hq', 'hd', '4k', 'lyrics'}
+        if t1 in t2:
+            rem = t2.replace(t1, '')
+            for w in noise:
+                rem = rem.replace(w, '')
+            if not rem:
+                return True
+        elif t2 in t1 and len(t2) >= 4:
+            rem = t1.replace(t2, '')
+            for w in noise:
+                rem = rem.replace(w, '')
+            if not rem:
+                return True
         return False
 
     def _author_match(target_auth: str) -> bool:
@@ -536,17 +554,17 @@ def _author_and_title_match(stem: str, title: Optional[str], author: Optional[st
         stem_a0 = clean_artist_name(parts[0])
         stem_t1 = clean_song_title(' - '.join(parts[1:]), stem_a0)
         if _author_match(stem_a0) or (clean_a and clean_a in stem_t1):
-            if clean_t == stem_t1 or clean_t in stem_t1 or (len(stem_t1) >= 4 and stem_t1 in clean_t):
+            if _title_match(clean_t, stem_t1):
                 return True
 
         stem_t0 = clean_song_title(parts[0], clean_artist_name(' - '.join(parts[1:])))
         stem_a1 = clean_artist_name(' - '.join(parts[1:]))
         if _author_match(stem_a1) or (clean_a and clean_a in stem_t0):
-            if clean_t == stem_t0 or clean_t in stem_t0 or (len(stem_t0) >= 4 and stem_t0 in clean_t):
+            if _title_match(clean_t, stem_t0):
                 return True
     else:
         stem_t = clean_song_title(stem, author or "")
-        if clean_t == stem_t or clean_t in stem_t or (len(stem_t) >= 4 and stem_t in clean_t):
+        if _title_match(clean_t, stem_t):
             return True
 
     # Transliteration match for EN <-> RU title/artist variations
@@ -1806,7 +1824,8 @@ class MediaDownloader:
             os.makedirs(self.output_dir, exist_ok=True)
 
         clean_url = clean_media_url(url)
-        is_audio = media_type.startswith("Audio") or quality in ("Audio only (MP3)", "Best Audio")
+        is_video = str(media_type).lower().startswith("video")
+        is_audio = not is_video and (str(media_type).lower().startswith("audio") or quality in ("Audio only (MP3)", "Best Audio"))
         outtmpl = os.path.join(self.output_dir, "%(title).120B - %(artist,uploader,creator,channel).60B.%(ext)s")
 
         codec = "mp3"

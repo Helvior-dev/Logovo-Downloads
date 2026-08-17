@@ -801,7 +801,13 @@ class PlaylistUpToDateDialog(QDialog):
         h_lbl.setStyleSheet("font-size: 18px; font-weight: bold; color: #10b981; background: transparent;")
         h_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        desc_lbl = QLabel(f"All <b>{count}</b> tracks in playlist<br><span style='color: #e2e8f0; font-size: 14px;'>{title}</span><br>are already verified and downloaded.")
+        if self.local_files_count is not None and self.local_files_count < count:
+            unavail_cnt = count - self.local_files_count
+            desc_text = f"<b>{self.local_files_count}</b> of <b>{count}</b> tracks in playlist<br><span style='color: #e2e8f0; font-size: 14px;'>{title}</span><br>are downloaded ({unavail_cnt} unavailable/removed on YouTube)."
+        else:
+            desc_text = f"All <b>{count}</b> tracks in playlist<br><span style='color: #e2e8f0; font-size: 14px;'>{title}</span><br>are already verified and downloaded."
+
+        desc_lbl = QLabel(desc_text)
         desc_lbl.setStyleSheet("font-size: 13px; color: #94a3b8; line-height: 1.4; background: transparent;")
         desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         desc_lbl.setWordWrap(True)
@@ -2549,11 +2555,8 @@ class MainWindow(QMainWindow):
         new_type = self.format_combo.currentText()
         if new_type in ("Audio", "Video"):
             for widget in self.download_queue:
-                if widget.status_state == "Pending":
-                    if new_type == "Audio":
-                        widget.format_combo.setCurrentText("Audio (Best)")
-                    else:
-                        widget.format_combo.setCurrentText("Video (Best)")
+                if widget.status_state == "Pending" and hasattr(widget, 'set_media_category'):
+                    widget.set_media_category(new_type)
 
     def update_main_subs_combo_state(self):
         current_type = self.format_combo.currentText()
@@ -3047,7 +3050,8 @@ class MainWindow(QMainWindow):
     def start_worker_for_widget(self, widget: QueueItemWidget):
         item_data = widget.item_data
         url = item_data['url']
-        media_type = item_data['media_type']
+        media_type = widget.format_combo.currentText() if hasattr(widget, 'format_combo') else item_data.get('media_type', 'Audio (Best)')
+        item_data['media_type'] = media_type
         output_dir = item_data.get('playlist_output_dir') or self.settings.get('download_path')
 
         platform = "YouTube"

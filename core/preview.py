@@ -37,8 +37,11 @@ def get_video_preview(url: str, cookies: dict = None) -> dict:
                 for entry in info.get('entries', []):
                     if entry:
                         e_title = entry.get('title')
+                        entry_id = entry.get('id') or (entry.get('url', '').split('v=')[-1].split('&')[0])
+                        is_unavail = False
                         if not e_title or str(e_title).strip() in ('', 'None', 'Unknown', '[Deleted video]', '[Private video]', 'Deleted video', 'Private video'):
-                            continue
+                            is_unavail = True
+                            e_title = f"[Unavailable / Deleted on YouTube]"
 
                         thumbnail_url = None
                         if entry.get('thumbnails'):
@@ -46,7 +49,6 @@ def get_video_preview(url: str, cookies: dict = None) -> dict:
                         elif entry.get('thumbnail'):
                             thumbnail_url = entry.get('thumbnail')
                         
-                        entry_id = entry.get('id') or (entry.get('url', '').split('v=')[-1].split('&')[0])
                         if not thumbnail_url and entry_id and len(entry_id) == 11:
                             thumbnail_url = f"https://i.ytimg.com/vi/{entry_id}/hqdefault.jpg"
 
@@ -60,8 +62,9 @@ def get_video_preview(url: str, cookies: dict = None) -> dict:
                             'url': track_url,
                             'duration': entry.get('duration'),
                             'thumbnail': thumbnail_url,
-                            'uploader': entry.get('uploader'),
-                            'channel': entry.get('channel')
+                            'uploader': entry.get('uploader') or ("YouTube" if is_unavail else ""),
+                            'channel': entry.get('channel'),
+                            'is_unavailable': is_unavail
                         })
 
                 if not playlist_thumb and entries and entries[0].get('thumbnail'):
