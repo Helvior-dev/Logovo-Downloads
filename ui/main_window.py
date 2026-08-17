@@ -1364,11 +1364,15 @@ class MainWindow(QMainWindow):
             if downloaded_count >= pl_track_count and pl_track_count > 0:
                 count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date)"
                 status_color = "#10b981"
+                new_cnt = 0
+                if p.get('new_tracks_count', 0) != 0:
+                    p['new_tracks_count'] = 0
+                    self.playlists_mgr.save()
             else:
                 count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks"
                 status_color = "#38bdf8"
+                new_cnt = p.get('new_tracks_count', 0)
 
-            new_cnt = p.get('new_tracks_count', 0)
             badge_html = f"  <span style='color: #38bdf8; font-weight: bold; background-color: #0f172a; padding: 2px 6px; border-radius: 4px; border: 1px solid #0284c7;'>+{new_cnt} new track{'s' if new_cnt > 1 else ''}</span>" if new_cnt > 0 else ""
             meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}  |  Last Synced: {p.get('last_synced', 'Never')}")
             meta_lbl.setStyleSheet(f"font-size: 11px; color: {status_color}; font-weight: 500;")
