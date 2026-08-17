@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, Optional
 
 from PIL import Image
 import yt_dlp
+from core.constants import AUDIO_EXTS, VIDEO_EXTS
 from core.settings import SettingsManager
 from core.utils import clean_filename_for_all_devices
 
@@ -1026,6 +1027,121 @@ def detect_online_playlist_duplicates(entries: list[dict]) -> list[dict]:
                     seen_by_title.setdefault(cand_t, []).append((i, u, t, a, cand_a, alb, cand_tags, dur))
 
     return online_duplicates
+
+
+def detect_orphan_files_in_folder(output_dir: Path | str, entries: list[dict], is_audio: bool = True) -> list[dict]:
+    """Identifies local audio/video files that were previously downloaded but are no longer present in the online playlist."""
+    out = Path(output_dir)
+    if not out.exists() or not out.is_dir():
+        return []
+
+    valid_exts = AUDIO_EXTS if is_audio else VIDEO_EXTS
+    combined_vid_set, title_index, valid_cnt = build_local_files_index(out, is_audio=is_audio)
+    if valid_cnt == 0:
+        return []
+
+    stem_map = read_stem_vid_map(out)
+    vid_to_stems = {}
+    for s, v in stem_map.items():
+        vid_to_stems.setdefault(v, []).append(s)
+
+    claimed_stems = set()
+    generic = {'topic', 'release', 'variousartists', 'soundtrack', 'records', 'music', 'official', ''}
+
+    for entry in entries:
+        t = entry.get('title') or ''
+        if not t or t in ('[Deleted video]', '[Private video]', 'None', 'Unknown') or entry.get('is_unavailable') or 'unavailable / deleted' in str(t).lower():
+            continue
+
+        vid = entry.get('id')
+        if not vid:
+            u = entry.get('url', '')
+            if 'v=' in u: vid = u.split('v=')[-1].split('&')[0]
+            elif 'youtu.be/' in u: vid = u.split('youtu.be/')[-1].split('?')[0]
+
+        if vid and vid in vid_to_stems:
+            for s in vid_to_stems[vid]:
+                claimed_stems.add(s)
+            continue
+
+        author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ''
+        tags_online = extract_significant_version_tags(t)
+
+        parts = [p.strip() for p in re.split(r'\s+[-–—]\s+', t) if p.strip()] if (' - ' in t or ' – ' in t or ' — ' in t) else [t]
+        candidates = []
+        if len(parts) == 1:
+            candidates.append((author, parts[0]))
+        elif len(parts) == 2:
+            candidates.append((parts[0], parts[1]))
+            candidates.append((parts[1], parts[0]))
+            candidates.append((author, t))
+        elif len(parts) >= 3:
+            candidates.append((parts[0], ' - '.join(parts[1:])))
+            candidates.append((parts[1], ' - '.join(parts[2:])))
+            candidates.append((' - '.join(parts[:-1]), parts[-1]))
+            candidates.append((parts[0] + ' ' + parts[1], ' - '.join(parts[2:])))
+            candidates.append((author, t))
+
+        entry_matched = False
+        for cand_a, cand_t in candidates:
+            if entry_matched:
+                break
+            online_a_vars = translit_both_ways(clean_artist_name(cand_a))
+            clean_t_vars = translit_both_ways(clean_song_title(cand_t, cand_a))
+            for ctv in clean_t_vars:
+                if entry_matched:
+                    break
+                if ctv in title_index:
+                    for file_tags, file_a_vars, raw_stem in title_index[ctv]:
+                        if tags_online and tags_online != file_tags:
+                            continue
+                        if file_tags and not tags_online:
+                            if any(tag in {'remix', 'vip', 'extended', 'acoustic', 'instrumental', 'orchestral', 'live', 'dub', 'cover'} for tag in file_tags):
+                                continue
+                        
+                        # Match condition:
+                        # 1. Author match or generic publisher
+                        if not cand_a or any(g in online_a_vars for g in generic) or (online_a_vars & file_a_vars):
+                            claimed_stems.add(raw_stem)
+                            entry_matched = True
+                            break
+                        
+                        # 2. Substring author match
+                        match_sub = False
+                        for ca in online_a_vars:
+                            for cda in file_a_vars:
+                                if ca and cda and (ca in cda or cda in ca):
+                                    claimed_stems.add(raw_stem)
+                                    entry_matched = True
+                                    match_sub = True
+                                    break
+                            if match_sub:
+                                break
+                        if entry_matched:
+                            break
+
+                        # 3. High confidence title match (length >= 8, or unique title)
+                        if len(ctv) >= 8 and len(title_index[ctv]) == 1:
+                            claimed_stems.add(raw_stem)
+                            entry_matched = True
+                            break
+
+    orphan_items = []
+    for f in out.iterdir():
+        if f.is_file() and f.suffix.lower() in valid_exts and f.stat().st_size >= 500 * 1024:
+            stem = f.stem
+            if stem not in claimed_stems:
+                vid = stem_map.get(stem)
+                url = f"https://www.youtube.com/watch?v={vid}" if vid else ""
+                orphan_items.append({
+                    'filename': f.name,
+                    'vid': vid or 'Local Copy',
+                    'url': url,
+                    'title': stem,
+                    'filepath': str(f)
+                })
+
+    return orphan_items
 
 
 def cleanup_orphan_files(output_dir: Path | str, is_audio_playlist: bool = True) -> int:

@@ -51,6 +51,7 @@ from core.downloader import (
     build_local_files_index,
     is_entry_in_index,
     detect_online_playlist_duplicates,
+    detect_orphan_files_in_folder,
 )
 from core.constants import APP_VERSION
 from core.utils import clean_filename_for_all_devices
@@ -259,7 +260,7 @@ class StartupPlaylistCheckWorker(QThread):
 
 
 class SyncPlaylistWorker(QThread):
-    finished_signal = pyqtSignal(dict, dict, list, int, list, list)
+    finished_signal = pyqtSignal(dict, dict, list, int, list, list, list)
     error_signal = pyqtSignal(str, dict)
 
     def __init__(self, p_dict: dict, settings, cookies=None):
@@ -328,7 +329,10 @@ class SyncPlaylistWorker(QThread):
             # Detect online duplicates in playlist
             online_duplicates = detect_online_playlist_duplicates(preview.get('entries', []))
 
-            self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates, unavailable_entries)
+            # Detect orphaned local files (removed from online playlist)
+            orphaned_files = detect_orphan_files_in_folder(out_dir, preview.get('entries', []), is_audio=is_audio)
+
+            self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates, unavailable_entries, orphaned_files)
         except Exception as e:
             self.error_signal.emit(str(e), self.p_dict)
 
@@ -1961,7 +1965,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Sync error for '{title}'.")
         QMessageBox.warning(self, "Sync Error", f"Could not fetch playlist metadata from YouTube:\n{err_msg}")
 
-    def _on_sync_playlist_finished(self, preview: dict, p_dict: dict, missing_entries: list, local_cnt: int, online_duplicates: list = None, unavailable_entries: list = None):
+    def _on_sync_playlist_finished(self, preview: dict, p_dict: dict, missing_entries: list, local_cnt: int, online_duplicates: list = None, unavailable_entries: list = None, orphaned_files: list = None):
         self.loading_overlay.hide_loading()
         url = p_dict.get('url')
         out_dir = p_dict.get('folder_path')
@@ -1973,6 +1977,21 @@ class MainWindow(QMainWindow):
         p_dict['unavailable_count'] = unavail_cnt
         dupes_cnt = len(online_duplicates) if online_duplicates else 0
         p_dict['duplicates_count'] = dupes_cnt
+
+        # Prompt user if files were removed from online playlist
+        if orphaned_files:
+            dlg = OrphanFilesDialog(orphaned_files, parent=self)
+            if dlg.exec() == QDialog.DialogCode.Accepted and dlg.deleted_files:
+                for fn in dlg.deleted_files:
+                    fp = os.path.join(out_dir, fn)
+                    try:
+                        if os.path.exists(fp):
+                            os.remove(fp)
+                            local_cnt = max(0, local_cnt - 1)
+                    except Exception:
+                        pass
+                self.refresh_playlists_ui()
+
         if not missing_entries:
             self.playlists_mgr.update_sync_info(url, track_count=count, status='synced', unavailable_count=unavail_cnt, duplicates_count=dupes_cnt)
             self.refresh_playlists_ui()
