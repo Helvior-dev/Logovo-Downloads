@@ -700,7 +700,7 @@ class OnlineDuplicatesDialog(QDialog):
     def __init__(self, duplicate_items: list[dict], playlist_title: str = "Playlist", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Online Duplicates Detected")
-        self.setMinimumSize(740, 440)
+        self.setMinimumSize(840, 460)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -718,37 +718,55 @@ class OnlineDuplicatesDialog(QDialog):
         layout.addWidget(desc)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Track / Artist", "Original Position", "Duplicate Position", "Action"])
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Original Track in Playlist", "Duplicate Track Found", "Action"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: #0f172a;
+                border: 1px solid #1e293b;
+                border-radius: 8px;
+                color: #f1f5f9;
+                gridline-color: #1e293b;
+            }
+            QHeaderView::section {
+                background-color: #1e293b;
+                color: #94a3b8;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 6px;
+                border: none;
+                border-bottom: 1px solid #334155;
+            }
+        """)
         self.table.setRowCount(len(duplicate_items))
 
         for row, item in enumerate(duplicate_items):
             title = item.get('title', 'Unknown')
             author = item.get('author', '')
-            display_name = f"{author} - {title}" if author else title
-            orig_idx = str(item.get('orig_index', ''))
-            dupe_idx = str(item.get('dupe_index', ''))
+            dupe_idx = item.get('dupe_index', '')
+            dupe_display = f"#{dupe_idx} • {author} - {title}" if author else f"#{dupe_idx} • {title}"
+
+            orig_t = item.get('orig_title') or title
+            orig_a = item.get('orig_author') or ''
+            orig_idx = item.get('orig_index', '')
+            orig_display = f"#{orig_idx} • {orig_a} - {orig_t}" if orig_a else f"#{orig_idx} • {orig_t}"
             dupe_url = item.get('dupe_url', '') or item.get('orig_url', '')
 
-            item_title = QTableWidgetItem(display_name)
-            self.table.setItem(row, 0, item_title)
-
-            item_orig = QTableWidgetItem(f"Track #{orig_idx}")
+            item_orig = QTableWidgetItem(orig_display)
             item_orig.setForeground(QColor("#10b981"))
-            self.table.setItem(row, 1, item_orig)
+            self.table.setItem(row, 0, item_orig)
 
-            item_dupe = QTableWidgetItem(f"Duplicate #{dupe_idx}")
+            item_dupe = QTableWidgetItem(dupe_display)
             item_dupe.setForeground(QColor("#38bdf8"))
-            self.table.setItem(row, 2, item_dupe)
+            self.table.setItem(row, 1, item_dupe)
 
             if dupe_url:
-                btn_link = QPushButton("Open in YouTube ↗")
+                btn_link = QPushButton("Open Duplicate ↗")
                 btn_link.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn_link.setStyleSheet("""
                     QPushButton {
@@ -756,15 +774,18 @@ class OnlineDuplicatesDialog(QDialog):
                         color: #38bdf8;
                         border: 1px solid #334155;
                         border-radius: 4px;
-                        padding: 3px 10px;
+                        padding: 4px 12px;
                         font-size: 11px;
-                        font-weight: 500;
+                        font-weight: bold;
                     }
                     QPushButton:hover {
                         background: #0284c7;
                         color: #ffffff;
                     }
                 """)
+                btn_link.clicked.connect(lambda _, u=dupe_url: QDesktopServices.openUrl(QUrl(u)))
+                self.table.setCellWidget(row, 2, btn_link)
+
         self.duplicate_items = duplicate_items
         layout.addWidget(self.table)
 
@@ -786,13 +807,18 @@ class OnlineDuplicatesDialog(QDialog):
     def _copy_list(self):
         lines = []
         for i, item in enumerate(self.duplicate_items, 1):
-            t = item.get('title', 'Unknown')
-            a = item.get('author', '')
-            display_name = f"{a} - {t}" if a else t
-            orig_idx = item.get('orig_index', '')
+            title = item.get('title', 'Unknown')
+            author = item.get('author', '')
             dupe_idx = item.get('dupe_index', '')
+            dupe_display = f"{author} - {title}" if author else title
+
+            orig_t = item.get('orig_title') or title
+            orig_a = item.get('orig_author') or ''
+            orig_idx = item.get('orig_index', '')
+            orig_display = f"{orig_a} - {orig_t}" if orig_a else orig_t
             dupe_url = item.get('dupe_url', '') or item.get('orig_url', '')
-            lines.append(f"{i}. {display_name} (Duplicate #{dupe_idx}, Original #{orig_idx})\n   URL: {dupe_url}")
+
+            lines.append(f"{i}. Duplicate #{dupe_idx}: {dupe_display}\n   Original  #{orig_idx}: {orig_display}\n   URL: {dupe_url}")
         QApplication.clipboard().setText("\n\n".join(lines))
         QMessageBox.information(self, "Copied", "Duplicates list copied to clipboard!")
 
