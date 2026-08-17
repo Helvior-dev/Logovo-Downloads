@@ -1140,6 +1140,50 @@ class SafeModeDialog(QDialog):
     def _choose_full(self):
         self.enable_safe_mode = False
         self.accept()
+class DraggablePlaylistCard(QWidget):
+    def __init__(self, index: int, parent_view, parent=None):
+        super().__init__(parent)
+        self.index = index
+        self.parent_view = parent_view
+        self.setObjectName("PlaylistCard")
+        self.setAcceptDrops(True)
+        self._drag_start_pos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if not self._drag_start_pos:
+            return
+        if (event.pos() - self._drag_start_pos).manhattanLength() < QApplication.startDragDistance():
+            return
+
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(str(self.index))
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasText() and event.mimeData().text().isdigit():
+            event.acceptProposedAction()
+            self.setStyleSheet("border: 2px solid #38bdf8; background-color: #1e293b;")
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet("")
+
+    def dropEvent(self, event):
+        self.setStyleSheet("")
+        if event.mimeData().hasText() and event.mimeData().text().isdigit():
+            src_idx = int(event.mimeData().text())
+            dst_idx = self.index
+            if src_idx != dst_idx:
+                self.parent_view._move_playlist_item(src_idx, dst_idx)
+            event.acceptProposedAction()
 
 
 class MainWindow(QMainWindow):
@@ -1382,52 +1426,6 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(bottom_actions)
         self.tabs.addTab(self.downloads_tab, "DOWNLOADS")
-
-class DraggablePlaylistCard(QWidget):
-    def __init__(self, index: int, parent_view, parent=None):
-        super().__init__(parent)
-        self.index = index
-        self.parent_view = parent_view
-        self.setObjectName("PlaylistCard")
-        self.setAcceptDrops(True)
-        self._drag_start_pos = None
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_start_pos = event.pos()
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if not (event.buttons() & Qt.MouseButton.LeftButton):
-            return
-        if not self._drag_start_pos:
-            return
-        if (event.pos() - self._drag_start_pos).manhattanLength() < QApplication.startDragDistance():
-            return
-
-        drag = QDrag(self)
-        mime = QMimeData()
-        mime.setText(str(self.index))
-        drag.setMimeData(mime)
-        drag.exec(Qt.DropAction.MoveAction)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasText() and event.mimeData().text().isdigit():
-            event.acceptProposedAction()
-            self.setStyleSheet("border: 2px solid #38bdf8; background-color: #1e293b;")
-
-    def dragLeaveEvent(self, event):
-        self.setStyleSheet("")
-
-    def dropEvent(self, event):
-        self.setStyleSheet("")
-        if event.mimeData().hasText() and event.mimeData().text().isdigit():
-            src_idx = int(event.mimeData().text())
-            dst_idx = self.index
-            if src_idx != dst_idx:
-                self.parent_view._move_playlist_item(src_idx, dst_idx)
-            event.acceptProposedAction()
-
 
     # ─── TAB 2: PLAYLISTS ──────────────────────────────────────────────────────
 
