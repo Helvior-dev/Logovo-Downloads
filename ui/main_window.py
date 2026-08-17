@@ -39,6 +39,7 @@ from core.downloader import (
     log_failed_download,
     clean_song_title,
     clean_artist_name,
+    translit_ru_to_en,
     _author_and_title_match,
 )
 from core.utils import clean_filename_for_all_devices
@@ -395,7 +396,9 @@ class SyncPlaylistWorker(QThread):
                 return False
 
             online_duplicates = []
-            seen_tracks = []
+            seen_by_vid = {}
+            seen_by_title = {}
+
             for i, entry in enumerate(preview.get('entries', [])):
                 t = entry.get('title')
                 a = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
@@ -403,12 +406,26 @@ class SyncPlaylistWorker(QThread):
                 if not t or t in ('[Deleted video]', '[Private video]', 'None', 'Unknown') or entry.get('is_unavailable'):
                     continue
                 e_vid = u.split('v=')[-1].split('&')[0]
+                b_t = _clean_base_title(t, a)
+                if not b_t or len(b_t) < 3:
+                    continue
 
                 found_orig = None
-                for orig_idx, orig_u, orig_t, orig_a, orig_vid in seen_tracks:
-                    if is_duplicate_playlist_entry(t, a, e_vid, orig_t, orig_a, orig_vid):
-                        found_orig = (orig_idx, orig_u, orig_t, orig_a)
-                        break
+                if e_vid and e_vid in seen_by_vid:
+                    found_orig = seen_by_vid[e_vid]
+                elif b_t in seen_by_title:
+                    ca = clean_artist_name(a)
+                    wa = _extract_artist_words(a)
+                    if ' - ' in t:
+                        wa.update(_extract_artist_words(t.split(' - ')[0]))
+
+                    for orig_idx, orig_u, orig_t, orig_a, orig_wa, orig_ca in seen_by_title[b_t]:
+                        if not ca or not orig_ca or ca in ('topic', 'release', 'variousartists') or orig_ca in ('topic', 'release', 'variousartists') or ca == orig_ca or ca in orig_ca or orig_ca in ca:
+                            found_orig = (orig_idx, orig_u, orig_t, orig_a)
+                            break
+                        if wa and orig_wa and any(w1 in orig_wa or any(w1 in w2 or w2 in w1 for w2 in orig_wa) for w1 in wa):
+                            found_orig = (orig_idx, orig_u, orig_t, orig_a)
+                            break
 
                 if found_orig:
                     orig_idx, orig_u, orig_t, orig_a = found_orig
@@ -423,7 +440,13 @@ class SyncPlaylistWorker(QThread):
                         'dupe_url': u
                     })
                 else:
-                    seen_tracks.append((i, u, t, a, e_vid))
+                    ca = clean_artist_name(a)
+                    wa = _extract_artist_words(a)
+                    if ' - ' in t:
+                        wa.update(_extract_artist_words(t.split(' - ')[0]))
+                    if e_vid:
+                        seen_by_vid[e_vid] = (i, u, t, a)
+                    seen_by_title.setdefault(b_t, []).append((i, u, t, a, wa, ca))
 
             self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates, unavailable_entries)
         except Exception as e:
