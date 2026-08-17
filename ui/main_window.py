@@ -367,37 +367,51 @@ class SyncPlaylistWorker(QThread):
                             res.add(w[2:])
                 return res
 
-            def _clean_base_title(t: str, a: str) -> str:
-                clean = re.sub(r'[\(\[\{][^\)\]\}]*[\)\]\}]', '', t or '')
-                clean = re.sub(r'\b(?:feat|ft|with)\.?\s+.*$', '', clean, flags=re.IGNORECASE)
-                return clean_song_title(clean, a)
+            def _extract_version_tag(title: str) -> str:
+                t = title.lower()
+                version_keywords = ['remix', 'bootleg', 'flip', 'vip', 'acoustic', 'unplugged', 'instrumental', 'orchestral', 'live', 'cover', 'extended mix', 'club mix', 'dub mix']
+                found = []
+                brackets = re.findall(r'[\(\[\{]([^\)\]\}]+)[\)\]\}]', t)
+                for b in brackets:
+                    b_clean = b.strip()
+                    if any(noise in b_clean for noise in ['official', 'video', 'audio', 'visualizer', '4k', 'hd', 'hq', 'lyrics', 'from the series', 'out on spotify']):
+                        continue
+                    if any(vk in b_clean for vk in version_keywords):
+                        found.append(re.sub(r'[\W_]+', '', b_clean))
+                if not found:
+                    m = re.search(r'\b([a-zA-Z0-9\s]+(?:remix|bootleg|flip|vip|acoustic|cover|instrumental))\b', t)
+                    if m and not any(w in m.group(1) for w in ['official', 'video', 'audio']):
+                        found.append(re.sub(r'[\W_]+', '', m.group(1)))
+                return '_'.join(found)
 
-            def is_duplicate_playlist_entry(t1, a1, vid1, t2, a2, vid2) -> bool:
-                if vid1 and vid2 and vid1 == vid2:
-                    return True
-                b1 = _clean_base_title(t1, a1)
-                b2 = _clean_base_title(t2, a2)
-                if not b1 or not b2 or b1 != b2 or len(b1) < 3:
-                    return False
-                ca1 = clean_artist_name(a1)
-                ca2 = clean_artist_name(a2)
-                if not ca1 or not ca2 or ca1 in ('topic', 'release', 'variousartists') or ca2 in ('topic', 'release', 'variousartists'):
-                    return True
-                if ca1 == ca2 or ca1 in ca2 or ca2 in ca1:
-                    return True
-                wa1 = _extract_artist_words(a1)
-                wa2 = _extract_artist_words(a2)
-                if ' - ' in t1:
-                    wa1.update(_extract_artist_words(t1.split(' - ')[0]))
-                if ' - ' in t2:
-                    wa2.update(_extract_artist_words(t2.split(' - ')[0]))
-                if wa1 and wa2 and any(w1 in wa2 or any(w1 in w2 or w2 in w1 for w2 in wa2) for w1 in wa1):
-                    return True
-                return False
+            def _clean_song_title_preserving_versions(title: str, author: str = '') -> str:
+                t = (title or '').strip()
+                t = re.sub(r'[\u200b\u200c\u200d\ufeff\u00a0]+', '', t)
+                noise_patterns = [
+                    r'[\(\[\{]\s*(?:official\s*(?:music\s*)?video|music\s*video|official\s*audio|official\s*visualizer|official\s*hd\s*music\s*video|official|video|audio|lyrics?|visualizer|4k(?:\s*upgrade)?|hd|hq|bonus\s*edition|bonus\s*track)\s*[\)\]\}]',
+                    r'\(from\s+the\s+series\s+Arcane\s+League\s+of\s+Legends\)',
+                    r'[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]',
+                ]
+                for pat in noise_patterns:
+                    t = re.sub(pat, '', t, flags=re.IGNORECASE)
+                t = re.sub(r'\b(?:feat|ft|with)\.?\s+[^-\(\[\{]+', '', t, flags=re.IGNORECASE)
+                if ' - ' in t:
+                    parts = [p.strip() for p in t.split(' - ') if p.strip()]
+                    a_clean = re.sub(r'[\W_]+', '', (author or '').lower())
+                    new_parts = []
+                    for p in parts:
+                        p_clean = re.sub(r'[\W_]+', '', p.lower())
+                        if a_clean and (p_clean == a_clean or p_clean.startswith(a_clean) or p_clean.endswith(a_clean)):
+                            continue
+                        new_parts.append(p)
+                    if new_parts:
+                        t = ' - '.join(new_parts)
+                clean = re.sub(r'[\(\[\{][^\)\]\}]*[\)\]\}]', '', t)
+                return re.sub(r'[\W_]+', '', clean.lower()).strip()
 
             online_duplicates = []
             seen_by_vid = {}
-            seen_by_title = {}
+            seen_by_title_version = {}
 
             for i, entry in enumerate(preview.get('entries', [])):
                 t = entry.get('title')
@@ -406,20 +420,21 @@ class SyncPlaylistWorker(QThread):
                 if not t or t in ('[Deleted video]', '[Private video]', 'None', 'Unknown') or entry.get('is_unavailable'):
                     continue
                 e_vid = u.split('v=')[-1].split('&')[0]
-                b_t = _clean_base_title(t, a)
+                b_t = _clean_song_title_preserving_versions(t, a)
+                v_tag = _extract_version_tag(t)
                 if not b_t or len(b_t) < 3:
                     continue
 
                 found_orig = None
                 if e_vid and e_vid in seen_by_vid:
                     found_orig = seen_by_vid[e_vid]
-                elif b_t in seen_by_title:
+                elif (b_t, v_tag) in seen_by_title_version:
                     ca = clean_artist_name(a)
                     wa = _extract_artist_words(a)
                     if ' - ' in t:
                         wa.update(_extract_artist_words(t.split(' - ')[0]))
 
-                    for orig_idx, orig_u, orig_t, orig_a, orig_wa, orig_ca in seen_by_title[b_t]:
+                    for orig_idx, orig_u, orig_t, orig_a, orig_wa, orig_ca in seen_by_title_version[(b_t, v_tag)]:
                         if not ca or not orig_ca or ca in ('topic', 'release', 'variousartists') or orig_ca in ('topic', 'release', 'variousartists') or ca == orig_ca or ca in orig_ca or orig_ca in ca:
                             found_orig = (orig_idx, orig_u, orig_t, orig_a)
                             break
@@ -446,7 +461,7 @@ class SyncPlaylistWorker(QThread):
                         wa.update(_extract_artist_words(t.split(' - ')[0]))
                     if e_vid:
                         seen_by_vid[e_vid] = (i, u, t, a)
-                    seen_by_title.setdefault(b_t, []).append((i, u, t, a, wa, ca))
+                    seen_by_title_version.setdefault((b_t, v_tag), []).append((i, u, t, a, wa, ca))
 
             self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates, unavailable_entries)
         except Exception as e:
