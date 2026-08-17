@@ -2267,21 +2267,21 @@ class MediaDownloader:
 
     def _map_quality(self, quality: str) -> str:
         if quality in ("Best video", "Best", "Source (Best)"):
-            return "bestvideo+bestaudio/best"
+            return "bestvideo+bestaudio/bestvideo+best/bestaudio/best"
         elif quality in ("Worst", "Worst Audio"):
             return "worst"
         elif quality in ("Audio only (MP3)", "Best Audio"):
             return "bestaudio/best"
         elif quality == "Video only (no audio)":
-            return "bestvideo"
+            return "bestvideo/best"
 
         import re
         match = re.search(r"(\d+)p", quality)
         if match:
             height = match.group(1)
-            return f"bestvideo[height<={height}]+bestaudio/best"
+            return f"bestvideo[height<={height}]+bestaudio/bestvideo[height<={height}]+best/bestvideo+bestaudio/best"
 
-        return "bestvideo+bestaudio/best"
+        return "bestvideo+bestaudio/bestvideo+best/bestaudio/best"
 
     def download(
         self,
@@ -2330,21 +2330,32 @@ class MediaDownloader:
             if cookies and cookies.get("use"):
                 client_rotations = [
                     ["mweb", "web"],
-                    ["web", "ios"],
+                    ["web", "default"],
+                    ["android", "web"],
                     ["mweb"],
                 ]
             else:
                 client_rotations = [
                     ["android", "web"],
                     ["web", "android"],
+                    ["android_vr", "web"],
+                    ["mweb", "web"],
                 ]
         else:
-            client_rotations = [
-                ["web_embedded", "web"],
-                ["android_vr", "web"],
-                ["web_embedded"],
-                ["mweb", "web"],
-            ]
+            if cookies and cookies.get("use"):
+                client_rotations = [
+                    ["web", "default"],
+                    ["android", "web"],
+                    ["android_vr", "web"],
+                    ["web_embedded", "web"],
+                ]
+            else:
+                client_rotations = [
+                    ["android_vr", "web"],
+                    ["android", "web"],
+                    ["web_embedded", "web"],
+                    ["web", "default"],
+                ]
 
         ydl_opts: dict[str, Any] = {
             "outtmpl": outtmpl,
@@ -2409,6 +2420,15 @@ class MediaDownloader:
                 import datetime
 
                 clean_msg = re.sub(r"\x1b\[[0-9;]*m", "", msg).strip()
+                lower_msg = clean_msg.lower()
+                # Ignore non-fatal intermediate warnings that yt-dlp automatically recovers from
+                if "some android client https formats have been skipped" in lower_msg:
+                    return
+                if "client https formats require a gvs po token" in lower_msg:
+                    return
+                if "drm protected" in lower_msg and "only images are available" in lower_msg:
+                    return
+
                 self.parent.last_error = clean_msg
                 try:
                     track_tag = f"[{self.parent.current_title}] " if getattr(self.parent, "current_title", "") else ""
@@ -2670,8 +2690,10 @@ class MediaDownloader:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     retcode = ydl.download([clean_url])
 
-                success = (retcode == 0) and not self.last_error
+                has_downloaded_media = any(os.path.exists(f) and os.path.getsize(f) > 50000 for f in downloaded_files)
+                success = (retcode == 0 or has_downloaded_media) and not (self.last_error and not has_downloaded_media)
                 if success or self.was_skipped:
+                    self.last_error = ""
                     break
 
                 if attempt < max_attempts - 1:
