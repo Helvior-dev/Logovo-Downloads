@@ -238,22 +238,7 @@ class StartupPlaylistCheckWorker(QThread):
                     author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
                     title = entry.get('title') or ""
 
-                    already = False
-                    if vid and vid in vid_set:
-                        already = True
-                    elif title:
-                        ct = clean_song_title(title, author)
-                        ca = clean_artist_name(author)
-                        if ct in stem_title_index:
-                            for stem_a, matched_stem in stem_title_index[ct]:
-                                if not ca or not stem_a or ca in stem_a or stem_a in ca or ca in ('release', 'topic', 'variousartists', 'music', 'soundtrack', 'official', 'vevo') or ca in ct or (stem_a and stem_a in ct):
-                                    already = True
-                                    break
-                        if not already:
-                            for f_stem in all_local_stems:
-                                if _author_and_title_match(f_stem, title, author):
-                                    already = True
-                                    break
+                    already = is_file_already_downloaded(out_dir, vid, title, author, is_audio=(p.get('media_type', 'Audio') == 'Audio'))
                     if not already:
                         missing_cnt += 1
 
@@ -347,24 +332,7 @@ class SyncPlaylistWorker(QThread):
                 author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
                 title = entry.get('title') or ""
 
-                already_downloaded = False
-                if vid and vid in vid_set:
-                    already_downloaded = True
-                elif title:
-                    ct = clean_song_title(title, author)
-                    ca = clean_artist_name(author)
-                    if ct in stem_title_index:
-                        for stem_a, matched_stem in stem_title_index[ct]:
-                            if not ca or not stem_a or ca in stem_a or stem_a in ca or ca in ('release', 'topic', 'variousartists', 'music', 'soundtrack', 'official', 'vevo') or ca in ct or (stem_a and stem_a in ct):
-                                update_stem_vid_map(out_dir, matched_stem, vid)
-                                already_downloaded = True
-                                break
-                    if not already_downloaded:
-                        for f_stem in all_local_stems:
-                            if _author_and_title_match(f_stem, title, author):
-                                update_stem_vid_map(out_dir, f_stem, vid)
-                                already_downloaded = True
-                                break
+                already_downloaded = is_file_already_downloaded(out_dir, vid, title, author, is_audio=(media_type_category == "Audio"))
 
                 if not already_downloaded:
                     if entry.get('is_unavailable') or "unavailable / deleted" in str(title).lower():

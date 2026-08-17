@@ -18,11 +18,13 @@ from core.utils import clean_filename_for_all_devices
 try:
     from mutagen.flac import FLAC, Picture
     from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1, TRCK, TDRC, TYER, USLT
+    from mutagen.easyid3 import EasyID3
     from mutagen.mp4 import MP4, MP4Cover
     from mutagen.oggopus import OggOpus
 except ImportError:
     FLAC, Picture = None, None
     ID3, APIC, TALB, TIT2, TPE1, TRCK, TDRC, TYER, USLT = None, None, None, None, None, None, None, None, None
+    EasyID3 = None
     MP4, MP4Cover = None, None
     OggOpus = None
 
@@ -553,72 +555,75 @@ def translit_ru_to_en(text: str) -> str:
 
 
 def _author_and_title_match(stem: str, title: Optional[str], author: Optional[str]) -> bool:
-    """Strictly matches both track title AND artist name against file stem to avoid cross-artist collisions and false subset matches."""
+    """Strictly matches track title AND artist against file stem, supporting transliteration, multi-part filenames, and CamelCase."""
     if not title or len(title.strip()) < 2:
         return False
 
+    def _split_camel_case(s: str) -> str:
+        return re.sub(r'([a-z])([A-Z])', r'\1 \2', s)
+
+    def _extract_words(text: str) -> set[str]:
+        clean = _split_camel_case(text or "")
+        clean = re.sub(r'[\(\[\{]\s*(?:from|official|video|audio|lyrics?|visualizer|read\s+desc|out\s+on\s+spotify)[^\)\]\}]*[\)\]\}]', '', clean, flags=re.IGNORECASE)
+        clean = re.sub(r'\b(?:Russia|VEVO|Topic|Official|Channel|Records|Music)\b', '', clean, flags=re.IGNORECASE)
+        words = set(re.findall(r'[a-zA-Z0-9\u0400-\u04FF]+', clean.lower()))
+        res = set()
+        for w in words:
+            if len(w) >= 2 and w not in ('from', 'the', 'series', 'official', 'video', 'audio', 'lyrics', 'visualizer', 'version', 'feat', 'ft', 'with', 'and', 'music', 'topic', 'release', 'channel', 'vevo', 'records'):
+                res.add(w)
+                tr = translit_ru_to_en(w)
+                if tr and tr != w:
+                    res.add(tr)
+                    res.add(tr.replace('iya', 'ia').replace('ya', 'ia').replace('y', 'i'))
+                if w.startswith('dj') and len(w) >= 5:
+                    res.add(w[2:])
+        return res
+
+    # 1. Exact cleaned check
     clean_t = clean_song_title(title, author or "")
     clean_a = clean_artist_name(author or "")
+    clean_s = clean_song_title(stem, author or "")
+    if clean_t and clean_t in clean_s and (not clean_a or clean_a in clean_s or any(u in clean_s for u in ('topic', 'release', 'variousartists', 'soundtrack'))):
+        return True
 
-    if not clean_t or len(clean_t) < 2:
+    # 2. Word-set intersection
+    words_t = _extract_words(title)
+    words_a = _extract_words(author or "")
+    words_s = _extract_words(stem)
+
+    if not words_t:
         return False
 
-    def _title_match(t1: str, t2: str) -> bool:
-        if t1 == t2:
-            return True
-        noise = {'official', 'audio', 'video', 'visualizer', 'version', 'music', 'track', 'full', 'hq', 'hd', '4k', 'lyrics'}
-        if t1 in t2:
-            rem = t2.replace(t1, '')
-            for w in noise:
-                rem = rem.replace(w, '')
-            if not rem:
-                return True
-        elif t2 in t1 and len(t2) >= 4:
-            rem = t1.replace(t2, '')
-            for w in noise:
-                rem = rem.replace(w, '')
-            if not rem:
-                return True
+    title_matches = all(wt in words_s or any(wt in ws or ws in wt for ws in words_s) for wt in words_t)
+    if not title_matches:
+        stem_tr = translit_ru_to_en(stem)
+        words_s_tr = _extract_words(stem_tr)
+        title_matches = all(wt in words_s_tr or any(wt in ws or ws in wt for ws in words_s_tr) for wt in words_t)
+
+    if not title_matches:
         return False
 
-    def _author_match(target_auth: str) -> bool:
-        if not clean_a or not target_auth:
-            return True
-        if clean_a in ('release', 'topic', 'variousartists', 'music', 'soundtrack', 'official', 'vevo'):
-            return True
-        if clean_a in target_auth or target_auth in clean_a:
-            return True
-        words_a = [w for w in re.findall(r'[a-zA-Z0-9\u0400-\u04FF]+', clean_a) if len(w) >= 3]
-        words_p = [w for w in re.findall(r'[a-zA-Z0-9\u0400-\u04FF]+', target_auth) if len(w) >= 3]
-        return any(wa in wp or wp in wa for wa in words_a for wp in words_p)
+    # Sequel check: ensure Roman numerals or part numbers aren't mismatched
+    stem_lower_words = set(stem.lower().split())
+    title_lower_words = set(title.lower().split())
+    for part in ('ii', 'iii', 'iv', '2', '3', '4', 'pt 2', 'part 2'):
+        if part in stem_lower_words and part not in title_lower_words:
+            return False
 
-    parts = stem.split(' - ')
-    if len(parts) >= 2:
-        stem_a0 = clean_artist_name(parts[0])
-        stem_t1 = clean_song_title(' - '.join(parts[1:]), stem_a0)
-        if _author_match(stem_a0) or (clean_a and clean_a in stem_t1):
-            if _title_match(clean_t, stem_t1):
-                return True
+    if not words_a:
+        return True
 
-        stem_t0 = clean_song_title(parts[0], clean_artist_name(' - '.join(parts[1:])))
-        stem_a1 = clean_artist_name(' - '.join(parts[1:]))
-        if _author_match(stem_a1) or (clean_a and clean_a in stem_t0):
-            if _title_match(clean_t, stem_t0):
-                return True
-    else:
-        stem_t = clean_song_title(stem, author or "")
-        if _title_match(clean_t, stem_t):
-            return True
+    artist_matches = any(wa in words_s or any(wa in ws or ws in wa for ws in words_s) for wa in words_a)
+    if not artist_matches:
+        stem_tr = translit_ru_to_en(stem)
+        words_s_tr = _extract_words(stem_tr)
+        artist_matches = any(wa in words_s_tr or any(wa in ws or ws in wa for ws in words_s_tr) for wa in words_a)
+    if not artist_matches:
+        stem_lower = stem.lower()
+        if any(lbl in stem_lower for lbl in ('riot games music', 'soundtrack', 'original soundtrack', 'ost', 'release - topic', 'vevo')):
+            artist_matches = True
 
-    # Transliteration match for EN <-> RU title/artist variations
-    s_tr = translit_ru_to_en(stem)
-    t_tr = translit_ru_to_en(title)
-    a_tr = translit_ru_to_en(author or "")
-    if len(t_tr) >= 3 and (t_tr in s_tr or s_tr in t_tr):
-        if not a_tr or a_tr in s_tr or any(part in s_tr for part in a_tr.split() if len(part) >= 3):
-            return True
-
-    return False
+    return artist_matches
 
 
 def match_search_candidate(cand_title: str, cand_uploader: str, orig_title: str, orig_artist: str) -> bool:
@@ -734,6 +739,22 @@ def is_file_already_downloaded(output_dir: Path | str, vid: str, title: Optional
                     if _author_and_title_match(f.stem, title, author):
                         update_stem_vid_map(out, f.stem, vid)
                         return True
+
+            # 3. Check via ID3 / audio tags if not matched by filename (e.g. truncated filename)
+            if is_audio and EasyID3:
+                for f in out.iterdir():
+                    if f.is_file() and f.suffix.lower() in (".mp3", ".flac", ".m4a") and f.stat().st_size >= 500 * 1024:
+                        try:
+                            tag_t, tag_a = "", ""
+                            if f.suffix.lower() == ".mp3":
+                                e = EasyID3(f)
+                                tag_t = (e.get('title') or [''])[0]
+                                tag_a = (e.get('artist') or [''])[0]
+                            if tag_t and _author_and_title_match(f"{tag_a} - {tag_t}", title, author):
+                                update_stem_vid_map(out, f.stem, vid)
+                                return True
+                        except Exception:
+                            pass
         except Exception:
             pass
 
