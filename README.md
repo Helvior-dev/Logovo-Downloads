@@ -64,7 +64,7 @@ The application is built for managing large local music libraries: it syncs play
 - **Audio/Video Backend:** FFmpeg / FFprobe
 - **Metadata:** Mutagen
 - **Image Processing:** Pillow (PIL)
-- **Runtime:** Native Python 3.10+ (does not require Node.js or Deno)
+- **JS Challenge Solver:** Deno (bundled) — used by `yt-dlp` to resolve YouTube's streaming challenges, enabling Full HD / 4K video downloads
 
 ---
 
