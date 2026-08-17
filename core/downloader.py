@@ -158,14 +158,19 @@ def get_ffmpeg_dir() -> Optional[Path]:
     # 1. PyInstaller _MEIPASS temp directory
     if hasattr(sys, "_MEIPASS"):
         meipass = Path(sys._MEIPASS)
-        candidates.extend([meipass / "bin", meipass])
+        candidates.extend([meipass / "bin", meipass / "_internal" / "bin", meipass])
     
     # 2. Application executable or project root directory
     base_dir = get_base_dir()
-    candidates.extend([base_dir / "bin", base_dir])
+    candidates.extend([
+        base_dir / "bin",
+        base_dir / "_internal" / "bin",
+        base_dir / "_internal",
+        base_dir
+    ])
 
     for c in candidates:
-        if (c / "ffmpeg.exe").exists():
+        if (c / "ffmpeg.exe").exists() or (c / "ffmpeg").exists():
             return c
     return None
 
@@ -2397,7 +2402,10 @@ class MediaDownloader:
         if speed_limit_bytes:
             ydl_opts["ratelimit"] = speed_limit_bytes
 
-        if FFMPEG_PATH:
+        f_dir = get_ffmpeg_dir()
+        if f_dir:
+            ydl_opts["ffmpeg_location"] = str(f_dir)
+        elif FFMPEG_PATH:
             ydl_opts["ffmpeg_location"] = FFMPEG_PATH
 
         class YtDlpLogger:
