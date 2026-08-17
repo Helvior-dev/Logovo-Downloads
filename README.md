@@ -50,7 +50,7 @@ The application is built for managing large local music libraries: it syncs play
 - **Safe File Tagging:** Retry handlers to avoid issues with temporary Windows file locks.
 
 ### Maintenance & Security
-- **Authentication:** Netscape `cookies.txt` import for age-restricted and YouTube Premium content.
+- **Authentication:** Supports importing Netscape-format `cookies.txt` for authenticated downloads where supported.
 - **Dual Log Viewer:** User-friendly event view and raw developer console with search and export.
 - **In-App Updater:** Check for and install `yt-dlp` core updates directly from the settings tab.
 - **Backup & Restore:** Export or import settings, history, and playlist configurations as a zip archive.
@@ -137,10 +137,10 @@ python main.py
 
 ## Acknowledgements
 
-- Inspired by Magerko's [Universal Media Downloader](https://github.com/Magerko/universal-media-downloader).
+This project was developed independently with the assistance of AI and was inspired by Magerko's [Universal Media Downloader](https://github.com/Magerko/universal-media-downloader).
 
 ---
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE). Open-source and free for personal and educational use.
+This project is licensed under the [MIT License](LICENSE).
