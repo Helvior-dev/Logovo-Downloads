@@ -351,6 +351,49 @@ class SyncPlaylistWorker(QThread):
                     unavailable_entries.append((entry, "Removed from YouTube / Copyright Claim"))
 
             # Detect online duplicates in playlist (exact matching title+artist or identical video ID)
+            def _extract_artist_words(text: str) -> set:
+                clean = re.sub(r'([a-z])([A-Z])', r'\1 \2', text or '')
+                clean = re.sub(r'[\(\[\{][^\)\]\}]*[\)\]\}]', '', clean)
+                words = set(re.findall(r'[a-zA-Z0-9\u0400-\u04FF]+', clean.lower()))
+                res = set()
+                for w in words:
+                    if len(w) >= 3 and w not in ('topic', 'release', 'variousartists', 'music', 'official', 'records', 'vevo', 'channel', 'soundtrack', 'feat', 'with'):
+                        res.add(w)
+                        tr = translit_ru_to_en(w)
+                        if tr and tr != w:
+                            res.add(tr)
+                        if w.startswith('dj') and len(w) >= 5:
+                            res.add(w[2:])
+                return res
+
+            def _clean_base_title(t: str, a: str) -> str:
+                clean = re.sub(r'[\(\[\{][^\)\]\}]*[\)\]\}]', '', t or '')
+                clean = re.sub(r'\b(?:feat|ft|with)\.?\s+.*$', '', clean, flags=re.IGNORECASE)
+                return clean_song_title(clean, a)
+
+            def is_duplicate_playlist_entry(t1, a1, vid1, t2, a2, vid2) -> bool:
+                if vid1 and vid2 and vid1 == vid2:
+                    return True
+                b1 = _clean_base_title(t1, a1)
+                b2 = _clean_base_title(t2, a2)
+                if not b1 or not b2 or b1 != b2 or len(b1) < 3:
+                    return False
+                ca1 = clean_artist_name(a1)
+                ca2 = clean_artist_name(a2)
+                if not ca1 or not ca2 or ca1 in ('topic', 'release', 'variousartists') or ca2 in ('topic', 'release', 'variousartists'):
+                    return True
+                if ca1 == ca2 or ca1 in ca2 or ca2 in ca1:
+                    return True
+                wa1 = _extract_artist_words(a1)
+                wa2 = _extract_artist_words(a2)
+                if ' - ' in t1:
+                    wa1.update(_extract_artist_words(t1.split(' - ')[0]))
+                if ' - ' in t2:
+                    wa2.update(_extract_artist_words(t2.split(' - ')[0]))
+                if wa1 and wa2 and any(w1 in wa2 or any(w1 in w2 or w2 in w1 for w2 in wa2) for w1 in wa1):
+                    return True
+                return False
+
             online_duplicates = []
             seen_tracks = []
             for i, entry in enumerate(preview.get('entries', [])):
@@ -360,12 +403,10 @@ class SyncPlaylistWorker(QThread):
                 if not t or t in ('[Deleted video]', '[Private video]', 'None', 'Unknown') or entry.get('is_unavailable'):
                     continue
                 e_vid = u.split('v=')[-1].split('&')[0]
-                e_ct = clean_song_title(t, a)
-                e_ca = clean_artist_name(a)
 
                 found_orig = None
-                for orig_idx, orig_u, orig_t, orig_a, orig_vid, orig_ct, orig_ca in seen_tracks:
-                    if (e_vid and orig_vid and e_vid == orig_vid) or (e_ct and orig_ct and e_ct == orig_ct and (e_ca == orig_ca or not e_ca or not orig_ca)):
+                for orig_idx, orig_u, orig_t, orig_a, orig_vid in seen_tracks:
+                    if is_duplicate_playlist_entry(t, a, e_vid, orig_t, orig_a, orig_vid):
                         found_orig = (orig_idx, orig_u, orig_t, orig_a)
                         break
 
@@ -374,13 +415,15 @@ class SyncPlaylistWorker(QThread):
                     online_duplicates.append({
                         'title': t,
                         'author': a,
+                        'orig_title': orig_t,
+                        'orig_author': orig_a,
                         'orig_index': orig_idx + 1,
                         'dupe_index': i + 1,
                         'orig_url': orig_u,
                         'dupe_url': u
                     })
                 else:
-                    seen_tracks.append((i, u, t, a, e_vid, e_ct, e_ca))
+                    seen_tracks.append((i, u, t, a, e_vid))
 
             self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates, unavailable_entries)
         except Exception as e:

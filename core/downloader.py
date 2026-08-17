@@ -506,8 +506,7 @@ def clean_song_title(title: str, author: str = "") -> str:
     # Remove invisible zero-width characters
     t = re.sub(r'[\u200b\u200c\u200d\ufeff\u00a0]+', '', t)
     noise_patterns = [
-        r'[\(\[\{]\s*(?:official\s*(?:music\s*)?video|music\s*video|official\s*audio|official|audio|hd|4k|4k\s*upgrade|remaster(?:ed)?(?:\s*\d+)?|video|clip|lyrics?|visualizer|bonus\s*edition)\s*[\)\]\}]',
-        r'\[Official\s+HD\s+Music\s+Video\]',
+        r'[\(\[\{]\s*(?:official\s*(?:music\s*)?video|music\s*video|official\s*audio|official\s*visualizer|official\s*hd\s*music\s*video|official|audio|hd|hq|4k|4k\s*upgrade|remaster(?:ed)?(?:\s*\d+)?|video|clip|lyrics?|visualizer|bonus\s*edition|bonus\s*track)\s*[\)\]\}]',
         r'\(from\s+the\s+series\s+Arcane\s+League\s+of\s+Legends\)',
         r'[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]',
     ]
@@ -520,7 +519,7 @@ def clean_song_title(title: str, author: str = "") -> str:
         new_parts = []
         for p in parts:
             p_clean = re.sub(r'[\W_]+', '', p.lower())
-            if a_clean and (p_clean == a_clean or a_clean in p_clean):
+            if a_clean and (p_clean == a_clean or p_clean.startswith(a_clean) or p_clean.endswith(a_clean)):
                 continue
             new_parts.append(p)
         if new_parts:
