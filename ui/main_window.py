@@ -231,6 +231,8 @@ class StartupPlaylistCheckWorker(QThread):
 
                 missing_cnt = 0
                 for entry in preview.get('entries', []):
+                    if entry.get('is_unavailable') or "unavailable / deleted" in str(entry.get('title', '')).lower():
+                        continue
                     vid = entry.get('url', '').split('v=')[-1].split('&')[0]
                     author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
                     title = entry.get('title') or ""
@@ -263,7 +265,7 @@ class StartupPlaylistCheckWorker(QThread):
 
 
 class SyncPlaylistWorker(QThread):
-    finished_signal = pyqtSignal(dict, dict, list, int, list)
+    finished_signal = pyqtSignal(dict, dict, list, int, list, list)
     error_signal = pyqtSignal(str, dict)
 
     def __init__(self, p_dict: dict, settings, cookies=None):
@@ -361,7 +363,16 @@ class SyncPlaylistWorker(QThread):
                                 break
 
                 if not already_downloaded:
-                    missing_entries.append(entry)
+                    if entry.get('is_unavailable') or "unavailable / deleted" in str(title).lower():
+                        pass
+                    else:
+                        missing_entries.append(entry)
+
+            # Collect unavailable entries for honest user notification
+            unavailable_entries = []
+            for i, entry in enumerate(preview.get('entries', [])):
+                if entry.get('is_unavailable') or "unavailable / deleted" in str(entry.get('title', '')).lower():
+                    unavailable_entries.append((entry, "Removed from YouTube / Copyright Claim"))
 
             # Detect online duplicates in playlist (exact matching title+artist or identical video ID)
             online_duplicates = []
@@ -370,7 +381,7 @@ class SyncPlaylistWorker(QThread):
                 t = entry.get('title')
                 a = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
                 u = entry.get('url', '')
-                if not t or t in ('[Deleted video]', '[Private video]', 'None', 'Unknown'):
+                if not t or t in ('[Deleted video]', '[Private video]', 'None', 'Unknown') or entry.get('is_unavailable'):
                     continue
                 e_vid = u.split('v=')[-1].split('&')[0]
                 e_ct = clean_song_title(t, a)
@@ -395,7 +406,7 @@ class SyncPlaylistWorker(QThread):
                 else:
                     seen_tracks.append((i, u, t, a, e_vid, e_ct, e_ca))
 
-            self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates)
+            self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates, unavailable_entries)
         except Exception as e:
             self.error_signal.emit(str(e), self.p_dict)
 
@@ -759,15 +770,17 @@ class OnlineDuplicatesDialog(QDialog):
 
 
 class PlaylistUpToDateDialog(QDialog):
-    def __init__(self, title: str, count: int, local_files_count: Optional[int] = None, duplicates: Optional[list] = None, parent=None):
+    def __init__(self, title: str, count: int, local_files_count: Optional[int] = None, duplicates: Optional[list] = None, unavailable: Optional[list] = None, parent=None):
         super().__init__(parent)
         self.duplicates = duplicates or []
+        self.unavailable = unavailable or []
         self.playlist_title = title
         self.local_files_count = local_files_count
         self.setWindowTitle("Sync Complete")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        h = 330 if self.duplicates else 280
+        extra_btns = (1 if self.duplicates else 0) + (1 if self.unavailable else 0)
+        h = 280 + extra_btns * 45
         self.setFixedSize(500, h)
 
         main_layout = QVBoxLayout(self)
@@ -838,6 +851,27 @@ class PlaylistUpToDateDialog(QDialog):
             btn_dupes.clicked.connect(self._show_duplicates)
             layout.addWidget(btn_dupes, 0, Qt.AlignmentFlag.AlignCenter)
 
+        if self.unavailable:
+            btn_unavail = QPushButton(f"⚠️ {len(self.unavailable)} Unavailable Track(s) — View List", card)
+            btn_unavail.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_unavail.setStyleSheet("""
+                QPushButton {
+                    background-color: #1e293b;
+                    color: #fbbf24;
+                    border: 1px solid #d97706;
+                    border-radius: 6px;
+                    font-weight: bold;
+                    font-size: 12px;
+                    padding: 6px 14px;
+                }
+                QPushButton:hover {
+                    background-color: #d97706;
+                    color: #ffffff;
+                }
+            """)
+            btn_unavail.clicked.connect(self._show_unavailable)
+            layout.addWidget(btn_unavail, 0, Qt.AlignmentFlag.AlignCenter)
+
         btn_ok = QPushButton("Awesome", card)
         btn_ok.setFixedSize(140, 36)
         btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -868,6 +902,9 @@ class PlaylistUpToDateDialog(QDialog):
 
     def _show_duplicates(self):
         OnlineDuplicatesDialog(self.duplicates, playlist_title=self.playlist_title, parent=self).exec()
+
+    def _show_unavailable(self):
+        UnavailableTracksDialog(self.unavailable, parent=self).exec()
 
 
 class UnavailableTracksDialog(QDialog):
@@ -1517,7 +1554,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Sync error for '{title}'.")
         QMessageBox.warning(self, "Sync Error", f"Could not fetch playlist metadata from YouTube:\n{err_msg}")
 
-    def _on_sync_playlist_finished(self, preview: dict, p_dict: dict, missing_entries: list, local_cnt: int, online_duplicates: list = None):
+    def _on_sync_playlist_finished(self, preview: dict, p_dict: dict, missing_entries: list, local_cnt: int, online_duplicates: list = None, unavailable_entries: list = None):
         self.loading_overlay.hide_loading()
         url = p_dict.get('url')
         out_dir = p_dict.get('folder_path')
@@ -1529,7 +1566,7 @@ class MainWindow(QMainWindow):
             self.playlists_mgr.update_sync_info(url, track_count=count, status='synced')
             self.refresh_playlists_ui()
             self.status_label.setText(f"No new media to sync. All {count} tracks in '{p_dict.get('title')}' are up to date.")
-            PlaylistUpToDateDialog(p_dict.get('title', 'Playlist'), count, local_files_count=local_cnt, duplicates=online_duplicates, parent=self).exec()
+            PlaylistUpToDateDialog(p_dict.get('title', 'Playlist'), count, local_files_count=local_cnt, duplicates=online_duplicates, unavailable=unavailable_entries, parent=self).exec()
             return
         else:
             self.playlists_mgr.update_sync_info(url, track_count=count, status='pending')

@@ -1862,20 +1862,12 @@ class MediaDownloader:
                     ["web", "android"],
                 ]
         else:
-            if cookies and cookies.get("use"):
-                client_rotations = [
-                    ["mweb", "web"],
-                    ["ios", "web"],
-                    ["web_creator", "web"],
-                    ["web"],
-                ]
-            else:
-                client_rotations = [
-                    ["mweb", "web"],
-                    ["ios", "web"],
-                    ["android", "web"],
-                    ["web"],
-                ]
+            client_rotations = [
+                ["web_embedded", "web"],
+                ["android_vr", "web"],
+                ["web_embedded"],
+                ["mweb", "web"],
+            ]
 
         ydl_opts: dict[str, Any] = {
             "outtmpl": outtmpl,
@@ -2218,10 +2210,17 @@ class MediaDownloader:
         # Strict Verified Fallback for Deleted / Re-uploaded official tracks:
         if not success and not self.was_skipped:
             err_l = (self.last_error or "").lower()
-            if any(k in err_l for k in ("video unavailable", "not available", "this video is not available", "unplayable")):
+            if any(k in err_l for k in ("video unavailable", "not available", "this video is not available", "unplayable", "removed following a copyright")):
                 t = (title or extracted_title or "").strip()
                 a = (author or extracted_artist or "").strip()
-                if t:
+                is_placeholder = (
+                    not t
+                    or t.startswith("[Unavailable")
+                    or t.startswith("[Deleted")
+                    or "unavailable / deleted" in t.lower()
+                    or t.lower() in ("deleted video", "private video", "unknown title", "video unavailable")
+                )
+                if not is_placeholder and t:
                     if progress_callback:
                         progress_callback({"status": "downloading", "msg": "Searching official release..."})
                     import re
@@ -2237,7 +2236,9 @@ class MediaDownloader:
                             cand_id = None
                             for entry in s_res.get("entries", []):
                                 e_id = entry.get("id")
-                                if e_id and e_id != extracted_vid:
+                                e_title = entry.get("title", "")
+                                e_uploader = entry.get("uploader", "")
+                                if e_id and e_id != extracted_vid and _author_and_title_match(f"{e_title} - {e_uploader}", t, a):
                                     cand_url = f"https://www.youtube.com/watch?v={e_id}"
                                     cand_id = e_id
                                     break
