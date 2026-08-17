@@ -2347,20 +2347,12 @@ class MediaDownloader:
                     ["mweb", "web"],
                 ]
         else:
-            if cookies and cookies.get("use"):
-                client_rotations = [
-                    ["web", "default"],
-                    ["android", "web"],
-                    ["android_vr", "web"],
-                    ["web_embedded", "web"],
-                ]
-            else:
-                client_rotations = [
-                    ["android_vr", "web"],
-                    ["android", "web"],
-                    ["web_embedded", "web"],
-                    ["web", "default"],
-                ]
+            client_rotations = [
+                ["web_embedded", "default"],
+                ["web_embedded"],
+                ["android_vr", "web_embedded"],
+                ["web", "default"],
+            ]
 
         ydl_opts: dict[str, Any] = {
             "outtmpl": outtmpl,
@@ -2716,8 +2708,8 @@ class MediaDownloader:
                     continue
                 break
 
-        # Strict Verified Fallback for Deleted / Re-uploaded official tracks:
-        if not success and not self.was_skipped:
+        # Strict Verified Fallback for Deleted / Re-uploaded official tracks (Audio only):
+        if not success and not self.was_skipped and is_audio:
             err_l = (self.last_error or "").lower()
             if any(k in err_l for k in ("video unavailable", "not available", "this video is not available", "unplayable", "removed following a copyright")):
                 t = (title or extracted_title or "").strip()
