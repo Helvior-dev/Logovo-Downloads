@@ -1747,14 +1747,14 @@ class MainWindow(QMainWindow):
             if downloaded_count >= available_track_count and (available_track_count > 0 or pl_track_count > 0):
                 notes = []
                 if unavail_count > 0:
-                    notes.append(f"{unavail_count} removed")
+                    notes.append(f"{unavail_count} unavailable online")
                 if duplicates_count > 0:
                     notes.append(f"{duplicates_count} duplicate{'s' if duplicates_count > 1 else ''}")
 
                 if notes:
-                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date <span style='color: #94a3b8;'>— {', '.join(notes)}</span>)"
+                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks <span style='color: #94a3b8;'>(Up to date — {', '.join(notes)})</span>"
                 else:
-                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks (Up to date)"
+                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks <span style='color: #94a3b8;'>(Up to date)</span>"
                 status_color = "#10b981"
                 new_cnt = 0
                 if p.get('new_tracks_count', 0) != 0:
@@ -1770,12 +1770,15 @@ class MainWindow(QMainWindow):
                     p['new_tracks_count'] = new_cnt
                     self.playlists_mgr.save()
 
-            badge_html = f"  <span style='color: #38bdf8; font-weight: bold; background-color: #0f172a; padding: 2px 6px; border-radius: 4px; border: 1px solid #0284c7;'>+{new_cnt} new track{'s' if new_cnt > 1 else ''}</span>" if new_cnt > 0 else ""
+            badge_html = f"  <span style='color: #38bdf8; font-weight: bold; background-color: #0f172a; padding: 2px 6px; border-radius: 4px; border: 1px solid #0284c7;'>+{new_cnt} new</span>" if new_cnt > 0 else ""
             raw_removed = p.get('removed_tracks_count', 0)
             badge_removed_html = f"  <span style='color: #f87171; font-weight: bold; background-color: #450a0a; padding: 2px 6px; border-radius: 4px; border: 1px solid #b91c1c;'>-{raw_removed} removed</span>" if raw_removed > 0 else ""
-            meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}{badge_removed_html}  |  Last Synced: {p.get('last_synced', 'Never')}")
+
+            last_sync_str = p.get('last_synced', 'Never')
+            meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}{badge_removed_html}  <span style='color: #475569;'>•</span>  <span style='color: #94a3b8;'>Synced: {last_sync_str}</span>")
             meta_lbl.setTextFormat(Qt.TextFormat.RichText)
             meta_lbl.setStyleSheet(f"font-size: 11px; color: {status_color}; font-weight: 500; background: transparent;")
+            meta_lbl.setWordWrap(True)
 
             info_layout.addWidget(title_lbl)
             info_layout.addWidget(path_lbl)

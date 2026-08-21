@@ -3,6 +3,11 @@ import os
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
+from core.updater import init_ytdlp_core
+
+# Initialize updated yt-dlp core from AppData if available
+init_ytdlp_core()
+
 from ui.main_window import MainWindow
 
 def get_resource_path(relative_path: str) -> Path:

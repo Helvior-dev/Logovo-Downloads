@@ -2,13 +2,31 @@ import os
 import json
 from pathlib import Path
 
-APP_NAME = "LogovoDownloads"
+APP_NAME = "Logovo-Downloads"
 
 def get_app_data_dir() -> Path:
     app_data = Path(os.getenv('APPDATA', Path.home() / '.config'))
-    app_dir = app_data / APP_NAME
-    app_dir.mkdir(parents=True, exist_ok=True)
-    return app_dir
+    new_dir = app_data / "Logovo-Dushnil" / "Logovo-Downloads"
+    new_dir.mkdir(parents=True, exist_ok=True)
+
+    # Seamlessly migrate existing data from old AppData directories if present
+    old_dirs = [
+        app_data / "LogovoDownloads",
+        app_data / "Logovo-Downloads",
+        app_data / "Logovo-Dushnil" / "LogovoDownloads"
+    ]
+    for old_dir in old_dirs:
+        if old_dir.exists() and old_dir.is_dir() and old_dir != new_dir:
+            for fname in ("settings.json", "playlists.json", "history.json", "app_logs.txt", "cookies.txt", "failed_downloads.txt", "downloaded_archive.txt"):
+                old_f = old_dir / fname
+                new_f = new_dir / fname
+                if old_f.exists() and not new_f.exists():
+                    try:
+                        import shutil
+                        shutil.copy2(old_f, new_f)
+                    except Exception:
+                        pass
+    return new_dir
 
 class SettingsManager:
     def __init__(self):
