@@ -244,10 +244,14 @@ class StartupPlaylistCheckWorker(QThread):
                 dupes_cnt = len(dupes)
                 unavail_cnt = sum(1 for entry in preview.get('entries', []) if entry.get('is_unavailable') or "unavailable / deleted" in str(entry.get('title', '')).lower())
                 total_cnt = preview.get('count', 0)
+                orphans = detect_orphan_files_in_folder(out_dir, preview.get('entries', []), is_audio=is_audio)
+                orphans_cnt = len(orphans)
+
                 p['unavailable_count'] = unavail_cnt
                 p['duplicates_count'] = dupes_cnt
                 p['track_count'] = total_cnt
                 p['new_tracks_count'] = missing_cnt
+                p['removed_tracks_count'] = orphans_cnt
 
             self.playlists_mgr.save()
             self.finished_signal.emit()
@@ -649,6 +653,19 @@ def detect_and_prompt_orphans(parent, out_dir: str, preview: dict) -> list[str]:
             try:
                 os.remove(os.path.join(out_dir, fn))
                 deleted.append(fn)
+                if hasattr(parent, 'history'):
+                    stem = Path(fn).stem
+                    parts = stem.split(" - ", 1)
+                    t_author = parts[1] if len(parts) > 1 else ""
+                    t_title = parts[0]
+                    parent.history.add_entry(
+                        t_title, 
+                        t_author, 
+                        platform="YouTube", 
+                        status="Deleted (Removed from playlist)", 
+                        url="", 
+                        media_type="Audio"
+                    )
             except Exception:
                 pass
         return deleted
@@ -1754,7 +1771,9 @@ class MainWindow(QMainWindow):
                     self.playlists_mgr.save()
 
             badge_html = f"  <span style='color: #38bdf8; font-weight: bold; background-color: #0f172a; padding: 2px 6px; border-radius: 4px; border: 1px solid #0284c7;'>+{new_cnt} new track{'s' if new_cnt > 1 else ''}</span>" if new_cnt > 0 else ""
-            meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}  |  Last Synced: {p.get('last_synced', 'Never')}")
+            raw_removed = p.get('removed_tracks_count', 0)
+            badge_removed_html = f"  <span style='color: #f87171; font-weight: bold; background-color: #450a0a; padding: 2px 6px; border-radius: 4px; border: 1px solid #b91c1c;'>-{raw_removed} removed</span>" if raw_removed > 0 else ""
+            meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}{badge_removed_html}  |  Last Synced: {p.get('last_synced', 'Never')}")
             meta_lbl.setTextFormat(Qt.TextFormat.RichText)
             meta_lbl.setStyleSheet(f"font-size: 11px; color: {status_color}; font-weight: 500; background: transparent;")
 
@@ -1979,6 +1998,7 @@ class MainWindow(QMainWindow):
         p_dict['duplicates_count'] = dupes_cnt
 
         # Prompt user if files were removed from online playlist
+        remaining_orphans = len(orphaned_files) if orphaned_files else 0
         if orphaned_files:
             dlg = OrphanFilesDialog(orphaned_files, parent=self)
             if dlg.exec() == QDialog.DialogCode.Accepted and dlg.deleted_files:
@@ -1988,18 +2008,34 @@ class MainWindow(QMainWindow):
                         if os.path.exists(fp):
                             os.remove(fp)
                             local_cnt = max(0, local_cnt - 1)
+                            # Log deleted file to history and app logs
+                            stem = Path(fn).stem
+                            parts = stem.split(" - ", 1)
+                            t_author = parts[1] if len(parts) > 1 else ""
+                            t_title = parts[0]
+                            self.history.add_entry(
+                                t_title, 
+                                t_author, 
+                                platform="YouTube", 
+                                status="Deleted (Removed from playlist)", 
+                                url=url, 
+                                media_type=p_dict.get('media_type', 'Audio')
+                            )
                     except Exception:
                         pass
+                remaining_orphans = max(0, remaining_orphans - len(dlg.deleted_files))
                 self.refresh_playlists_ui()
 
+        p_dict['removed_tracks_count'] = remaining_orphans
+
         if not missing_entries:
-            self.playlists_mgr.update_sync_info(url, track_count=count, status='synced', unavailable_count=unavail_cnt, duplicates_count=dupes_cnt)
+            self.playlists_mgr.update_sync_info(url, track_count=count, status='synced', unavailable_count=unavail_cnt, duplicates_count=dupes_cnt, removed_tracks_count=remaining_orphans)
             self.refresh_playlists_ui()
             self.status_label.setText(f"No new media to sync. All {count - unavail_cnt - dupes_cnt} available tracks in '{p_dict.get('title')}' are up to date.")
             PlaylistUpToDateDialog(p_dict.get('title', 'Playlist'), count, local_files_count=local_cnt, duplicates=online_duplicates, unavailable=unavailable_entries, parent=self).exec()
             return
         else:
-            self.playlists_mgr.update_sync_info(url, track_count=count, status='pending', unavailable_count=unavail_cnt, duplicates_count=dupes_cnt)
+            self.playlists_mgr.update_sync_info(url, track_count=count, status='pending', unavailable_count=unavail_cnt, duplicates_count=dupes_cnt, removed_tracks_count=remaining_orphans)
 
         # Auto-clear previous completed/finished queue if not downloading
         if self.download_queue and not self.is_downloading:

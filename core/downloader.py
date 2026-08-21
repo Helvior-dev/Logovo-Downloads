@@ -2153,15 +2153,33 @@ def fix_video_tags(
     title: Optional[str] = None,
     year: Optional[str] = None,
     settings: Optional[Any] = None,
+    thumbnail_url: Optional[str] = None,
 ) -> None:
-    """Normalize video metadata tags (especially fixing 4-digit Year for Windows Explorer)."""
+    """Normalize video metadata tags and embed square/16:9 thumbnail cover into MP4."""
     if MP4 is None or path.suffix.lower() != ".mp4":
         return
     try:
         video = MP4(path)
         changed = False
 
-        # Fix Year: Windows Explorer parses the MP4 \xa9day atom as a 16-bit int.
+        # 1. Embed video cover if requested or missing
+        embed_all_v = True
+        v_tags = {}
+        if settings:
+            embed_all_v = settings.get('embed_all_video_metadata', True)
+            v_tags = settings.get('video_metadata_tags', {})
+
+        if embed_all_v or v_tags.get('thumbnail', True):
+            if not video.get("covr"):
+                img_bytes = fetch_and_crop_cover_jpeg(path, thumbnail_url=thumbnail_url, artist=artist, title=title)
+                if img_bytes:
+                    try:
+                        video["covr"] = [MP4Cover(img_bytes, imageformat=MP4Cover.FORMAT_JPEG)]
+                        changed = True
+                    except Exception:
+                        pass
+
+        # 2. Fix Year: Windows Explorer parses the MP4 \xa9day atom as a 16-bit int.
         # If yt-dlp/ffmpeg writes an 8-digit date string like '20241125', it overflows 16-bit int to 56037.
         # We ensure \xa9day is strictly a clean 4-digit year '2024'.
         current_day = video.get("\xa9day")
@@ -2204,13 +2222,14 @@ def postprocess_video_file(
     year: Optional[str] = None,
     naming_pattern: Optional[str] = None,
     settings: Optional[Any] = None,
+    thumbnail_url: Optional[str] = None,
 ) -> Path:
-    """Apply custom naming pattern, video metadata tag normalization, and timestamps to a downloaded video file."""
+    """Apply custom naming pattern, video metadata tag normalization, cover embedding, and timestamps to a downloaded video file."""
     path = Path(file_path)
     if not path.exists():
         return path
 
-    fix_video_tags(path, artist=artist, title=title, year=year, settings=settings)
+    fix_video_tags(path, artist=artist, title=title, year=year, settings=settings, thumbnail_url=thumbnail_url)
 
     mode = "windows"
     if settings:
@@ -2810,6 +2829,7 @@ class MediaDownloader:
                                 year=extracted_year,
                                 naming_pattern=v_pat,
                                 settings=self.settings,
+                                thumbnail_url=extracted_thumb or thumbnail,
                             )
                         processed_files.append(candidate)
                         if should_track_playlist:
@@ -2853,6 +2873,7 @@ class MediaDownloader:
                                 year=extracted_year,
                                 naming_pattern=v_pat,
                                 settings=self.settings,
+                                thumbnail_url=extracted_thumb or thumbnail,
                             )
                         processed_files.append(f)
                         if should_track_playlist:
