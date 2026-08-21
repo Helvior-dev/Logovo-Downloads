@@ -1413,9 +1413,26 @@ def fetch_and_crop_cover_jpeg(
     path: Path,
     thumbnail_url: Optional[str] = None,
     artist: Optional[str] = None,
-    title: Optional[str] = None
+    title: Optional[str] = None,
+    square: bool = True,
 ) -> Optional[bytes]:
-    """Search for downloaded thumbnail, or download thumbnail_url / YouTube / iTunes cover, crop to 1000x1000 square, and return JPEG bytes."""
+    """Search for downloaded thumbnail, or download thumbnail_url / YouTube / iTunes cover.
+    If square=True (Audio), crops to 1000x1000 square for ID3/album art.
+    If square=False (Video), preserves native widescreen aspect ratio (16:9).
+    Returns JPEG bytes.
+    """
+    def _prepare_img(img: Image.Image) -> bytes:
+        if square:
+            target_img = crop_to_square(img)
+        else:
+            if img.mode in ("RGBA", "P"):
+                target_img = img.convert("RGB")
+            else:
+                target_img = img
+        buf = io.BytesIO()
+        target_img.save(buf, format="JPEG", quality=95)
+        return buf.getvalue()
+
     # 1. Search local thumbnail files in path.parent
     try:
         parent = path.parent
@@ -1425,22 +1442,18 @@ def fetch_and_crop_cover_jpeg(
             if cand.exists() and cand.is_file():
                 try:
                     img = Image.open(cand)
-                    sq = crop_to_square(img)
-                    buf = io.BytesIO()
-                    sq.save(buf, format="JPEG", quality=95)
+                    res_bytes = _prepare_img(img)
                     cand.unlink(missing_ok=True)
-                    return buf.getvalue()
+                    return res_bytes
                 except Exception:
                     pass
         for f in parent.glob(f"{stem[:25]}*.*"):
             if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".webp", ".png") and not f.name.startswith("cover."):
                 try:
                     img = Image.open(f)
-                    sq = crop_to_square(img)
-                    buf = io.BytesIO()
-                    sq.save(buf, format="JPEG", quality=95)
+                    res_bytes = _prepare_img(img)
                     f.unlink(missing_ok=True)
-                    return buf.getvalue()
+                    return res_bytes
                 except Exception:
                     pass
     except Exception:
@@ -1453,10 +1466,7 @@ def fetch_and_crop_cover_jpeg(
             with urllib.request.urlopen(req, timeout=8) as resp:
                 data = resp.read()
             img = Image.open(io.BytesIO(data))
-            sq = crop_to_square(img)
-            buf = io.BytesIO()
-            sq.save(buf, format="JPEG", quality=95)
-            return buf.getvalue()
+            return _prepare_img(img)
         except Exception:
             pass
 
@@ -1472,17 +1482,14 @@ def fetch_and_crop_cover_jpeg(
                         if resp.status == 200:
                             data = resp.read()
                             img = Image.open(io.BytesIO(data))
-                            sq = crop_to_square(img)
-                            buf = io.BytesIO()
-                            sq.save(buf, format="JPEG", quality=95)
-                            return buf.getvalue()
+                            return _prepare_img(img)
                 except Exception:
                     pass
     except Exception:
         pass
 
-    # 4. Search iTunes API for original high-resolution square cover
-    if (artist and title) or path.stem:
+    # 4. Search iTunes API for original high-resolution square cover (Audio only)
+    if square and ((artist and title) or path.stem):
         try:
             query = f"{artist} {title}".strip() if (artist and title) else path.stem
             query_clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', query).strip()
@@ -1503,10 +1510,7 @@ def fetch_and_crop_cover_jpeg(
                                 with urllib.request.urlopen(req_img, timeout=6) as r_img:
                                     if r_img.status == 200:
                                         img = Image.open(io.BytesIO(r_img.read()))
-                                        sq = crop_to_square(img)
-                                        buf = io.BytesIO()
-                                        sq.save(buf, format="JPEG", quality=95)
-                                        return buf.getvalue()
+                                        return _prepare_img(img)
         except Exception:
             pass
 
@@ -2171,7 +2175,7 @@ def fix_video_tags(
 
         if embed_all_v or v_tags.get('thumbnail', True):
             if not video.get("covr"):
-                img_bytes = fetch_and_crop_cover_jpeg(path, thumbnail_url=thumbnail_url, artist=artist, title=title)
+                img_bytes = fetch_and_crop_cover_jpeg(path, thumbnail_url=thumbnail_url, artist=artist, title=title, square=False)
                 if img_bytes:
                     try:
                         video["covr"] = [MP4Cover(img_bytes, imageformat=MP4Cover.FORMAT_JPEG)]
