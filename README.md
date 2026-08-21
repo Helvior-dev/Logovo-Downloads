@@ -31,28 +31,31 @@ The application is built for managing large local music libraries: it syncs play
 
 ### Media Downloads
 - **Formats:** Audio (MP3 up to 320 kbps, FLAC, M4A, Opus, Ogg, WAV, ALAC) and Video (up to 4K/8K 60fps, MP4/MKV).
+- **Video Covers:** Native 16:9 widescreen thumbnails embedded into MP4/MKV video files; 1:1 square cropped artwork for audio tracks.
 - **Concurrency:** Multi-threaded download queue with configurable thread count (up to 6 streams).
-- **Windows Integration:** Taskbar progress bar and system tray notifications.
+- **Windows Integration:** Taskbar progress bar, tray notifications, and native sound alerts.
 - **Bandwidth Control:** Optional global speed limits.
 
 ### Playlist Synchronization
 - **Fast Local Indexing:** Compares local folders against online playlists in seconds using cached metadata.
-- **Removed Tracks Detection & Cleanup:** Automatically detects tracks removed from online playlists and prompts an interactive dialog to review and delete local copies if desired.
+- **Removed & Orphaned Tracks Tracking:** Detects deleted tracks with neutral status badges (`-N removed`) and prompts review to delete local copies.
 - **Metadata Cleaning:** Automatically strips video labels, promo tags, and release years while preserving distinct version tags (`Remix`, `VIP`, `Extended`, `Acoustic`, `Instrumental`, `Live`).
 - **Artist Extraction:** Resolves artist and title from channel uploads and record label titles (e.g. `Hospital Records - Netsky - Secret Agent`).
 - **Online Duplicate Detection:** Identifies duplicate tracks within online playlists and provides direct links to manage them on YouTube Music.
 - **Unavailable Tracks Tracking:** Accounts for copyright claims and deleted tracks with neutral status markers.
 
-### Library Management
+### Library Management & Notifications
 - **Cross-Playlist Comparison:** Scans tracked playlists to find tracks that exist in multiple folders simultaneously.
 - **Track Breakdown Modal:** View full folder paths across all playlists with options to open files or copy details.
+- **Smart Toast Notifications:** Sleek side alert toasts with countdown progress lines (KDE Plasma style) and Windows audio chimes.
 - **Metadata Embedding:** Embeds ID3v2.3/ID3v2.4 tags into MP3 files, attaches 1000x1000 square cover art, and saves synchronized `.lrc` lyrics.
 - **Safe File Tagging:** Retry handlers to avoid issues with temporary Windows file locks.
 
-### Maintenance & Security
-- **Authentication:** Supports importing Netscape-format `cookies.txt` for authenticated downloads where supported.
+### Maintenance & Core Updater
+- **In-App `yt-dlp` Core Self-Updater:** Automatically downloads and applies pure-Python core packages directly inside the app without needing `pip` or external installers.
+- **Custom AppData Hierarchy:** Data and configurations stored cleanly in `AppData/Roaming/Logovo-Dushnil/Logovo-Downloads` with automated migration.
+- **Authentication:** Supports importing Netscape-format `cookies.txt` for authenticated downloads.
 - **Dual Log Viewer:** User-friendly event view and raw developer console with search and export.
-- **In-App Updater:** Check for and install `yt-dlp` core updates directly from the settings tab.
 - **Backup & Restore:** Export or import settings, history, and playlist configurations as a zip archive.
 
 ---

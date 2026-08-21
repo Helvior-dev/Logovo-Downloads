@@ -20,8 +20,8 @@ from PyQt6.QtWidgets import (
     QSystemTrayIcon, QMenu, QSpinBox, QSlider, QFrame, QGraphicsDropShadowEffect,
     QTextEdit
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QObject, QEvent, QMimeData
-from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon, QColor, QPainter, QPen, QDrag
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QObject, QEvent, QMimeData, QPropertyAnimation, QPoint, QEasingCurve
+from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon, QColor, QPainter, QPen, QDrag, QPainterPath
 
 from core.preview import get_video_preview
 from core.downloader import (
@@ -1186,6 +1186,184 @@ class DraggablePlaylistCard(QWidget):
             event.acceptProposedAction()
 
 
+class SideNotificationToast(QFrame):
+    def __init__(self, title: str, message: str, level: str = "warning", action_text: str = None, action_callback=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SideNotificationToast")
+        self.setFixedWidth(330)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
+        self._accent_color = "#38bdf8" if level != "error" else "#ef4444"
+
+        # Match app's dark slate card theme perfectly
+        self.setStyleSheet("""
+            QFrame#SideNotificationToast {
+                background-color: #1e293b;
+                border: 1px solid #334155;
+                border-radius: 8px;
+            }
+        """)
+
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(20)
+        shadow.setColor(QColor(0, 0, 0, 180))
+        shadow.setOffset(0, 4)
+        self.setGraphicsEffect(shadow)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+
+        # Header Row
+        h_row = QHBoxLayout()
+        h_row.setSpacing(8)
+
+        icon_char = "🍪" if "cookie" in title.lower() else ("⚠️" if level == "warning" else ("❌" if level == "error" else "ℹ️"))
+        icon_lbl = QLabel(icon_char)
+        icon_lbl.setStyleSheet("font-size: 15px; background: transparent;")
+        h_row.addWidget(icon_lbl)
+
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet("font-size: 13px; font-weight: bold; color: #f8fafc; background: transparent;")
+        h_row.addWidget(title_lbl, 1)
+
+        btn_close = QPushButton("✕")
+        btn_close.setFixedSize(18, 18)
+        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #64748b;
+                border: none;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                color: #ffffff;
+            }
+        """)
+        btn_close.clicked.connect(self.close_animated)
+        h_row.addWidget(btn_close)
+        layout.addLayout(h_row)
+
+        # Message
+        msg_lbl = QLabel(message)
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setStyleSheet("font-size: 11px; color: #94a3b8; background: transparent; line-height: 1.35;")
+        layout.addWidget(msg_lbl)
+
+        # Action Buttons Row
+        if action_text and action_callback:
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+
+            btn_action = QPushButton(action_text)
+            btn_action.setFixedHeight(26)
+            btn_action.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_action.setStyleSheet("""
+                QPushButton {
+                    background-color: #0284c7;
+                    color: #ffffff;
+                    border: 1px solid #38bdf8;
+                    border-radius: 6px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    padding: 2px 12px;
+                }
+                QPushButton:hover {
+                    background-color: #0369a1;
+                    border-color: #7dd3fc;
+                }
+            """)
+            def _on_action():
+                self.close_animated()
+                action_callback()
+            btn_action.clicked.connect(_on_action)
+            btn_row.addWidget(btn_action)
+            layout.addLayout(btn_row)
+
+        # KDE Plasma style smooth countdown timer (line recedes from left to right)
+        self._total_duration_ms = 7000
+        self._remaining_ms = 7000
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(25)
+        self._timer.timeout.connect(self._on_tick)
+        self._timer.start()
+
+        # Play pleasant Windows notification sound
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:
+            pass
+
+    def _on_tick(self):
+        self._remaining_ms -= 25
+        self.update()
+        if self._remaining_ms <= 0:
+            self._timer.stop()
+            self.close_animated()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        # Draw KDE Plasma countdown bar at the top edge, perfectly clipped to 8px rounded corners
+        if self._total_duration_ms > 0 and self._remaining_ms > 0:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            clip_path = QPainterPath()
+            clip_path.addRoundedRect(0.0, 0.0, float(self.width()), float(self.height()), 8.0, 8.0)
+            painter.setClipPath(clip_path)
+
+            progress = max(0.0, min(1.0, self._remaining_ms / self._total_duration_ms))
+            x_start = int(self.width() * (1.0 - progress))
+            bar_w = self.width() - x_start
+            if bar_w > 0:
+                painter.fillRect(x_start, 0, bar_w, 3, QColor(self._accent_color))
+            painter.end()
+
+    def reposition(self):
+        if self.parent():
+            pw = self.parent().width()
+            ph = self.parent().height()
+            self.move(pw - self.width() - 20, ph - self.height() - 28)
+
+    def show_animated(self):
+        self.adjustSize()
+        self.reposition()
+        self.show()
+        self.raise_()
+
+        self._anim = QPropertyAnimation(self, b"pos")
+        self._anim.setDuration(220)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+        end_pos = self.pos()
+        start_pos = QPoint(end_pos.x() + 50, end_pos.y())
+        self._anim.setStartValue(start_pos)
+        self._anim.setEndValue(end_pos)
+        self._anim.start()
+
+    def close_animated(self):
+        if getattr(self, '_is_closing', False):
+            return
+        self._is_closing = True
+        if hasattr(self, '_timer') and self._timer.isActive():
+            self._timer.stop()
+
+        # Smooth slide-out to the right on close
+        self._close_anim = QPropertyAnimation(self, b"pos")
+        self._close_anim.setDuration(200)
+        self._close_anim.setEasingCurve(QEasingCurve.Type.InQuad)
+        start_pos = self.pos()
+        end_pos = QPoint(start_pos.x() + 60, start_pos.y())
+        self._close_anim.setStartValue(start_pos)
+        self._close_anim.setEndValue(end_pos)
+        self._close_anim.finished.connect(self.close)
+        self._close_anim.start()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1257,6 +1435,59 @@ class MainWindow(QMainWindow):
         self.loading_overlay = LoadingOverlay(self)
         self.loading_overlay.hide()
 
+        # Check cookies configuration on startup
+        QTimer.singleShot(700, self.check_cookies_file_validity)
+
+    def show_side_notification(self, title: str, message: str, level: str = "warning", action_text: str = None, action_callback = None):
+        now = time.time()
+        if not hasattr(self, '_last_toast_times'):
+            self._last_toast_times = {}
+        last_time = self._last_toast_times.get(title, 0)
+        if now - last_time < 3.0:
+            return  # Debounce duplicate popups within 3 seconds
+        self._last_toast_times[title] = now
+
+        if hasattr(self, '_active_toast') and self._active_toast:
+            try:
+                self._active_toast.close()
+            except Exception:
+                pass
+        self._active_toast = SideNotificationToast(
+            title=title,
+            message=message,
+            level=level,
+            action_text=action_text,
+            action_callback=action_callback,
+            parent=self
+        )
+        self._active_toast.show_animated()
+
+    def check_cookies_file_validity(self) -> bool:
+        # Do not show toast if user is already on the SETTINGS tab
+        if hasattr(self, 'tabs') and self.tabs.currentIndex() == 3:
+            return True
+        cookies_source = self.settings.get('cookies_source', 'none')
+        if cookies_source == 'file':
+            c_file = self.settings.get('cookies_file', '')
+            if not c_file or not os.path.exists(c_file) or not os.path.isfile(c_file):
+                disp_path = c_file if c_file else "(No file path specified)"
+                self.show_side_notification(
+                    title="Cookies File Not Found",
+                    message=f"The cookies file specified in Settings does not exist:\n{disp_path}\nAuthenticated downloads might fail.",
+                    level="warning",
+                    action_text="Open Settings",
+                    action_callback=self._go_to_cookies_settings
+                )
+                return False
+        return True
+
+    def _go_to_cookies_settings(self):
+        self.tabs.setCurrentIndex(3)  # SETTINGS tab
+        if hasattr(self, 'cookies_file_input'):
+            self.cookies_file_input.setFocus()
+            self.cookies_file_input.setStyleSheet("border: 2px solid #f59e0b; background-color: #1e293b;")
+            QTimer.singleShot(2500, lambda: self.cookies_file_input.setStyleSheet("") if hasattr(self, 'cookies_file_input') else None)
+
     def _mark_pl_dirty_and_refresh(self):
         """Mark playlists as dirty and refresh if currently on the playlists tab."""
         self._pl_dirty = True
@@ -1273,6 +1504,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, 'loading_overlay') and self.loading_overlay:
             self.loading_overlay.resize(self.size())
+        if hasattr(self, '_active_toast') and self._active_toast and self._active_toast.isVisible():
+            self._active_toast.reposition()
 
     def setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -2894,16 +3127,38 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.about_tab)
         layout.addStretch()
         title = QLabel("Logovo Downloads")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #ffffff;")
+        title.setStyleSheet("font-size: 26px; font-weight: bold; color: #ffffff;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
-        version = QLabel(f"Version: {APP_VERSION}")
+
+        version = QLabel(f"Version {APP_VERSION}")
+        version.setStyleSheet("font-size: 13px; color: #38bdf8; font-weight: 600; margin-top: 2px; margin-bottom: 8px;")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)
+
+        desc = QLabel("Modern, High-Speed Media Downloader & Playlist Sync for Windows")
+        desc.setStyleSheet("font-size: 12px; color: #94a3b8; margin-bottom: 20px;")
+        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(desc)
+
         btn_layout = QHBoxLayout()
         github = QPushButton("GitHub Repository")
         github.setMinimumWidth(200)
         github.setMaximumWidth(250)
+        github.setStyleSheet("""
+            QPushButton {
+                background-color: #1e293b;
+                color: #f8fafc;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+                border-color: #38bdf8;
+            }
+        """)
         github.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/Helvior-dev/Logovo-Downloads")))
         btn_layout.addStretch()
         btn_layout.addWidget(github)
