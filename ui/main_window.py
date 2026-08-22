@@ -1522,6 +1522,14 @@ class SideNotificationToast(QFrame):
         self._close_anim.finished.connect(self.close)
         self._close_anim.start()
 
+    def closeEvent(self, event):
+        try:
+            if self.parent() and getattr(self.parent(), '_active_toast', None) is self:
+                self.parent()._active_toast = None
+        except Exception:
+            pass
+        super().closeEvent(event)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -1616,12 +1624,15 @@ class MainWindow(QMainWindow):
             return  # Debounce duplicate popups within 3 seconds
         self._last_toast_times[title] = now
 
-        if hasattr(self, '_active_toast') and self._active_toast:
+        old_toast = getattr(self, '_active_toast', None)
+        if old_toast:
             try:
-                self._active_toast.close()
+                old_toast.close()
             except Exception:
                 pass
-        self._active_toast = SideNotificationToast(
+            self._active_toast = None
+
+        toast = SideNotificationToast(
             title=title,
             message=message,
             level=level,
@@ -1629,7 +1640,9 @@ class MainWindow(QMainWindow):
             action_callback=action_callback,
             parent=self
         )
-        self._active_toast.show_animated()
+        toast.destroyed.connect(lambda: setattr(self, '_active_toast', None))
+        self._active_toast = toast
+        toast.show_animated()
 
     def check_cookies_file_validity(self) -> bool:
         # Do not show toast if user is already on the SETTINGS tab
@@ -1697,8 +1710,13 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, 'loading_overlay') and self.loading_overlay:
             self.loading_overlay.resize(self.size())
-        if hasattr(self, '_active_toast') and self._active_toast and self._active_toast.isVisible():
-            self._active_toast.reposition()
+        toast = getattr(self, '_active_toast', None)
+        if toast:
+            try:
+                if toast.isVisible():
+                    toast.reposition()
+            except (RuntimeError, Exception):
+                self._active_toast = None
 
     def setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
