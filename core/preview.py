@@ -1,8 +1,112 @@
 import os
+import json
+import re
+import requests
 import yt_dlp
-from core.downloader import clean_media_url, is_valid_netscape_cookies
+from core.downloader import clean_media_url, is_valid_netscape_cookies, detect_platform_name
+
+
+def fetch_spotify_metadata(url: str) -> dict | None:
+    """Fetch Spotify track, album, or playlist metadata using Spotify's public embed API."""
+    clean_u = url.split("?")[0].strip()
+    match = re.search(r"spotify\.com/(track|playlist|album|artist)/([a-zA-Z0-9]+)", clean_u)
+    if not match:
+        return None
+
+    media_type, media_id = match.groups()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    embed_url = f"https://open.spotify.com/embed/{media_type}/{media_id}"
+    try:
+        r = requests.get(embed_url, headers=headers, timeout=12)
+        if r.status_code != 200:
+            return None
+
+        match_data = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>', r.text)
+        if not match_data:
+            return None
+
+        data = json.loads(match_data.group(1))
+        entity = data.get("props", {}).get("pageProps", {}).get("state", {}).get("data", {}).get("entity", {})
+        if not entity:
+            return None
+
+        title = entity.get("title") or entity.get("name") or "Spotify Media"
+        thumb = None
+        if entity.get("coverArt", {}).get("sources"):
+            thumb = entity["coverArt"]["sources"][0].get("url")
+        elif entity.get("visualIdentity", {}).get("image"):
+            thumb = entity["visualIdentity"]["image"][0].get("url")
+
+        track_list = entity.get("trackList", [])
+
+        if media_type == "track":
+            artist = entity.get("subtitle") or ""
+            if not artist and entity.get("artists"):
+                artist = entity["artists"][0].get("name", "")
+            duration_ms = entity.get("duration", 0)
+            track_title = entity.get("title") or entity.get("name") or title
+            query = f"{artist} - {track_title}".strip(" - ")
+            search_target = f"ytsearch1:{query}"
+
+            return {
+                "is_playlist": False,
+                "title": f"{artist} - {track_title}" if artist and artist not in track_title else track_title,
+                "thumbnail": thumb,
+                "duration": duration_ms // 1000 if duration_ms else None,
+                "uploader": artist,
+                "channel": artist,
+                "artist": artist,
+                "subtitles_available": [],
+                "formats_available": ["Audio (Best)", "Audio (MP3)", "Audio (FLAC)", "Audio (M4A)", "Audio (Opus)", "Audio (WAV)"],
+                "url": search_target,
+                "original_url": url,
+                "platform": "Spotify"
+            }
+        else:
+            entries = []
+            for t in track_list:
+                t_title = t.get("title", "")
+                t_artist = t.get("subtitle", "")
+                t_dur = (t.get("duration", 0) or 0) // 1000
+                q = f"{t_artist} - {t_title}".strip(" - ")
+                entries.append({
+                    "title": f"{t_artist} - {t_title}" if t_artist and t_artist not in t_title else t_title,
+                    "url": f"ytsearch1:{q}",
+                    "duration": t_dur if t_dur > 0 else None,
+                    "thumbnail": thumb,
+                    "uploader": t_artist or "Spotify",
+                    "channel": t_artist or "Spotify",
+                    "is_unavailable": False,
+                    "spotify_uri": t.get("uri")
+                })
+
+            return {
+                "is_playlist": True,
+                "title": title,
+                "thumbnail": thumb,
+                "count": len(entries),
+                "entries": entries,
+                "platform": "Spotify"
+            }
+    except Exception as e:
+        print(f"Error fetching Spotify metadata: {e}")
+        return None
+
 
 def get_video_preview(url: str, cookies: dict = None) -> dict:
+    if not url:
+        return None
+    url = url.strip()
+
+    # Special handling for Spotify links
+    if "spotify.com" in url:
+        sp_res = fetch_spotify_metadata(url)
+        if sp_res:
+            return sp_res
+
     clean_url = clean_media_url(url, keep_list=True)
     ydl_opts = {
         'quiet': True,
@@ -41,7 +145,7 @@ def get_video_preview(url: str, cookies: dict = None) -> dict:
                         is_unavail = False
                         if not e_title or str(e_title).strip() in ('', 'None', 'Unknown', '[Deleted video]', '[Private video]', 'Deleted video', 'Private video'):
                             is_unavail = True
-                            e_title = f"[Unavailable / Deleted on YouTube]"
+                            e_title = f"[Unavailable / Deleted]"
 
                         thumbnail_url = None
                         if entry.get('thumbnails'):

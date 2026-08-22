@@ -21,6 +21,70 @@ class ThumbnailFetcher(QThread):
         except:
             pass
 
+
+class QueueMetadataEnricher(QThread):
+    metadata_ready = pyqtSignal(dict)
+
+    def __init__(self, url: str):
+        super().__init__()
+        self.url = url
+
+    def run(self):
+        try:
+            from core.downloader import clean_media_url, detect_platform_name
+            import requests
+            u = clean_media_url(str(self.url).strip())
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            
+            # 1. Spotify
+            if "spotify.com" in u:
+                from core.preview import fetch_spotify_metadata
+                sp = fetch_spotify_metadata(u)
+                if sp:
+                    self.metadata_ready.emit(sp)
+                    return
+
+            # 2. YouTube
+            if "youtube.com" in u or "youtu.be" in u:
+                try:
+                    r = requests.get(f"https://www.youtube.com/oembed?url={u}&format=json", headers=headers, timeout=4)
+                    if r.status_code == 200:
+                        d = r.json()
+                        self.metadata_ready.emit({
+                            'title': d.get('title'),
+                            'uploader': d.get('author_name'),
+                            'thumbnail': d.get('thumbnail_url'),
+                            'platform': 'YouTube'
+                        })
+                        return
+                except Exception:
+                    pass
+
+            # 3. SoundCloud
+            if "soundcloud.com" in u:
+                try:
+                    r = requests.get(f"https://soundcloud.com/oembed?url={u}&format=json", headers=headers, timeout=4)
+                    if r.status_code == 200:
+                        d = r.json()
+                        self.metadata_ready.emit({
+                            'title': d.get('title'),
+                            'uploader': d.get('author_name'),
+                            'thumbnail': d.get('thumbnail_url'),
+                            'platform': 'SoundCloud'
+                        })
+                        return
+                except Exception:
+                    pass
+
+            # 4. Universal preview fallback
+            from core.preview import get_video_preview
+            info = get_video_preview(u)
+            if info:
+                self.metadata_ready.emit(info)
+        except Exception:
+            pass
+
+
 class QueueItemWidget(QWidget):
     remove_requested = pyqtSignal(object)  # Emits self when X is clicked
 
@@ -35,6 +99,7 @@ class QueueItemWidget(QWidget):
         self.status_state = "Pending"
         self.is_retry = False
         self.fetcher = None
+        self.enricher = None
         
         self.setObjectName("QueueItemCard")
         self.setMinimumHeight(92)
@@ -85,9 +150,11 @@ class QueueItemWidget(QWidget):
         self.title_label.setMinimumWidth(50)
         self.title_label.setWordWrap(False)
         
-        platform = "YouTube"
-        if "twitch.tv" in item_data.get('url', ''): platform = "Twitch"
-        elif "soundcloud" in item_data.get('url', ''): platform = "SoundCloud"
+        platform = item_data.get('platform')
+        if not platform:
+            from core.downloader import detect_platform_name
+            orig_u = item_data.get('original_url') or item_data.get('url', '')
+            platform = detect_platform_name(orig_u)
         
         duration = item_data.get('duration')
         dur_str = ""
@@ -218,6 +285,69 @@ class QueueItemWidget(QWidget):
         
         main_layout.addLayout(controls_layout)
 
+        # Automatic thumbnail load if URL has thumbnail
+        thumb_url = item_data.get('thumbnail')
+        if not thumb_url:
+            raw_u = item_data.get('url', '')
+            if 'youtube.com' in raw_u or 'youtu.be' in raw_u:
+                match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11})', raw_u)
+                if match:
+                    thumb_url = f"https://img.youtube.com/vi/{match.group(1)}/mqdefault.jpg"
+                    item_data['thumbnail'] = thumb_url
+        if thumb_url:
+            self._load_thumbnail(thumb_url)
+
+        # Automatic background metadata resolution if title/artist is missing or raw URL
+        cur_t = str(item_data.get('title', '')).strip()
+        needs_enrich = (
+            not cur_t
+            or cur_t.startswith("http://")
+            or cur_t.startswith("https://")
+            or "Fetching" in cur_t
+            or cur_t in ("Unknown Title", "None")
+        )
+        if needs_enrich:
+            self.enricher = QueueMetadataEnricher(item_data.get('url', ''))
+            self.enricher.metadata_ready.connect(self._on_metadata_enriched)
+            self.enricher.start()
+
+    def _on_metadata_enriched(self, data: dict):
+        if not data:
+            return
+        t = data.get('title')
+        if t and not str(t).startswith('http'):
+            self.item_data['title'] = t
+            self.title_label.setText(t)
+        
+        uploader = data.get('uploader') or data.get('channel') or data.get('artist')
+        if uploader:
+            self.item_data['uploader'] = uploader
+        
+        dur = data.get('duration')
+        if dur:
+            self.item_data['duration'] = dur
+        
+        from core.downloader import detect_platform_name
+        p = data.get('platform') or detect_platform_name(self.item_data.get('original_url') or self.item_data.get('url', ''))
+        dur_val = self.item_data.get('duration')
+        dur_str = ""
+        if dur_val:
+            try:
+                s = int(dur_val)
+                if s >= 3600:
+                    dur_str = f" • {s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+                else:
+                    dur_str = f" • {s // 60}:{s % 60:02d}"
+            except Exception:
+                pass
+        auth = self.item_data.get('uploader') or self.item_data.get('channel') or self.item_data.get('artist') or "Unknown Author"
+        self.subtitle_label.setText(f"{p}{dur_str} • {auth}")
+
+        thumb = data.get('thumbnail')
+        if thumb and not getattr(self, '_thumb_loaded', False):
+            self.item_data['thumbnail'] = thumb
+            self._load_thumbnail(thumb)
+
     def _populate_subs_combo(self):
         cur_fmt = self.format_combo.currentText() if hasattr(self, 'format_combo') else str(self.item_data.get('media_type', ''))
         media_category = self.item_data.get('media_type_category')
@@ -332,6 +462,7 @@ class QueueItemWidget(QWidget):
 
     def set_thumbnail(self, pixmap):
         if not pixmap.isNull():
+            self._thumb_loaded = True
             scaled = pixmap.scaled(
                 self.thumbnail_label.width(), 
                 self.thumbnail_label.height(), 
@@ -339,6 +470,7 @@ class QueueItemWidget(QWidget):
                 Qt.TransformationMode.SmoothTransformation
             )
             self.thumbnail_label.setPixmap(scaled)
+            self.btn_load_preview.hide()
 
     def _on_remove(self):
         if self.status_state not in ["Downloading", "Retrying"]:

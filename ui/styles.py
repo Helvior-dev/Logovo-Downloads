@@ -16,12 +16,25 @@ def get_stylesheet():
         color: #e2e8f0;
         font-family: "Segoe UI", "Inter", sans-serif;
     }
-    QTabWidget::pane {
-        border: 0px;
+    QTabWidget {
+        border: none;
         background: transparent;
+    }
+    QTabWidget::pane {
+        border: none;
+        background: transparent;
+        top: 0px;
     }
     QTabWidget::tab-bar {
         alignment: center;
+        border: none;
+        background: transparent;
+    }
+    QTabBar, CustomTabBar {
+        qproperty-drawBase: 0;
+        background: transparent;
+        border: none;
+        outline: none;
     }
     QTabBar::tab {
         background-color: transparent;

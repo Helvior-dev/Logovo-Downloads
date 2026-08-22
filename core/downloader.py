@@ -117,11 +117,56 @@ def is_platform_unavailable(raw: str) -> bool:
     ))
 
 
+def detect_platform_name(url: str) -> str:
+    """Detect human-readable service platform name from URL."""
+    if not url:
+        return "Media Service"
+    u = str(url).lower()
+    if "soundcloud.com" in u:
+        return "SoundCloud"
+    elif "spotify.com" in u:
+        return "Spotify"
+    elif "music.youtube.com" in u:
+        return "YouTube Music"
+    elif "youtube.com" in u or "youtu.be" in u:
+        return "YouTube"
+    elif "bandcamp.com" in u:
+        return "Bandcamp"
+    elif "tiktok.com" in u:
+        return "TikTok"
+    elif "twitch.tv" in u:
+        return "Twitch"
+    elif "vimeo.com" in u:
+        return "Vimeo"
+    elif "vk.com" in u or "vkvideo.ru" in u:
+        return "VK Video"
+    elif "bilibili.com" in u:
+        return "Bilibili"
+    elif "mixcloud.com" in u:
+        return "Mixcloud"
+    elif "deezer.com" in u:
+        return "Deezer"
+    elif "apple.com" in u or "music.apple.com" in u:
+        return "Apple Music"
+    elif "twitter.com" in u or "x.com" in u:
+        return "X (Twitter)"
+    elif "instagram.com" in u:
+        return "Instagram"
+    elif "reddit.com" in u:
+        return "Reddit"
+    elif "ytsearch" in u:
+        return "YouTube Search"
+    else:
+        return "Media Service"
+
+
 def clean_media_url(url: str, keep_list: bool = False) -> str:
-    """Clean tracking params and normalize music.youtube.com to youtube.com to prevent 403 Forbidden and album licensing restrictions."""
+    """Clean tracking params and normalize media URLs to prevent 403 Forbidden and album licensing restrictions."""
     if not url:
         return url
     url = url.strip()
+    if url.startswith("ytsearch"):
+        return url
     if "youtube.com" in url or "youtu.be" in url:
         url = url.replace("music.youtube.com", "www.youtube.com")
         try:
@@ -139,6 +184,15 @@ def clean_media_url(url: str, keep_list: bool = False) -> str:
             if clean_params:
                 new_query = urllib.parse.urlencode(clean_params, doseq=True)
                 return urllib.parse.urlunparse(parsed._replace(query=new_query))
+        except Exception:
+            pass
+    elif "soundcloud.com" in url or "spotify.com" in url or "bandcamp.com" in url:
+        try:
+            parsed = urllib.parse.urlparse(url)
+            params = urllib.parse.parse_qs(parsed.query)
+            clean_params = {k: v for k, v in params.items() if not k.startswith("utm_") and k != "si"}
+            new_query = urllib.parse.urlencode(clean_params, doseq=True) if clean_params else ""
+            return urllib.parse.urlunparse(parsed._replace(query=new_query))
         except Exception:
             pass
     return url
@@ -2333,6 +2387,19 @@ class MediaDownloader:
             os.makedirs(self.output_dir, exist_ok=True)
 
         clean_url = clean_media_url(url)
+        if "spotify.com" in clean_url:
+            query = f"{author} - {title}".strip(" - ") if (author or title) else ""
+            if not query:
+                try:
+                    from core.preview import fetch_spotify_metadata
+                    sp_info = fetch_spotify_metadata(clean_url)
+                    if sp_info:
+                        query = sp_info.get('title', '')
+                except Exception:
+                    pass
+            if query:
+                clean_url = f"ytsearch1:{query}"
+
         is_video = str(media_type).lower().startswith("video")
         is_audio = not is_video and (str(media_type).lower().startswith("audio") or quality in ("Audio only (MP3)", "Best Audio"))
         outtmpl = os.path.join(self.output_dir, "%(title).120B - %(artist,uploader,creator,channel).60B.%(ext)s")

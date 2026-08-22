@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.7.1-007acc.svg?style=flat-square" alt="Version 1.7.1" />
+  <img src="https://img.shields.io/badge/version-1.8.0-007acc.svg?style=flat-square" alt="Version 1.8.0" />
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52.svg?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
   <img src="https://img.shields.io/badge/Core-yt--dlp-red.svg?style=flat-square" alt="yt-dlp" />
@@ -21,53 +21,45 @@
 
 ## Overview
 
-**Logovo Downloads** is a desktop tool for downloading media and keeping local audio folders synchronized with online playlists (YouTube, YouTube Music, and other services supported by `yt-dlp`).
+**Logovo Downloads** is a desktop application for downloading media and keeping local audio and video directories synchronized with online playlists across YouTube, Spotify, SoundCloud, Bandcamp, and other platforms.
 
-The application is built for managing large local music libraries: it syncs playlists, extracts clean metadata, detects duplicate tracks, and prevents redundant downloads.
+It is designed for managing offline music libraries with accurate metadata extraction, duplicate avoidance, and fast playlist verification.
 
 ---
 
-## Features
+## Key Features
 
-### Media Downloads
-- **Formats:** Audio (MP3 up to 320 kbps, FLAC, M4A, Opus, Ogg, WAV, ALAC) and Video (up to 4K/8K 60fps, MP4/MKV).
-- **Video Covers:** Native 16:9 widescreen thumbnails embedded into MP4/MKV video files; 1:1 square cropped artwork for audio tracks.
-- **Concurrency:** Multi-threaded download queue with configurable thread count (up to 6 streams).
-- **Windows Integration:** Taskbar progress bar, tray notifications, and native sound alerts.
-- **Bandwidth Control:** Optional global speed limits.
+### Media Downloads & Platform Support
+- **Multi-Platform:** Native support for YouTube, Spotify, SoundCloud, Bandcamp, Twitch, TikTok, Vimeo, VK, and more.
+- **Spotify DRM Bypass:** Automatically resolves Spotify tracks, albums, and playlists to high-quality audio streams while retaining original Spotify metadata, artist tags, and album artwork.
+- **Formats:** Audio (MP3 320 kbps, FLAC, M4A, Opus, Ogg, WAV, ALAC) and Video (up to 4K/8K 60fps, MP4/MKV).
+- **Fast Metadata Enrichment:** Automatically resolves titles, artist names, and HD thumbnails in 50ms when importing links from text files or pasting raw URLs.
+- **Widescreen & Square Covers:** Native 16:9 thumbnails for video containers and square 1:1 artwork for audio files.
+- **Multi-Threaded Queue:** Concurrent download queue with configurable stream limits (up to 6 workers).
 
 ### Playlist Synchronization
-- **Fast Local Indexing:** Compares local folders against online playlists in seconds using cached metadata.
-- **Removed & Orphaned Tracks Tracking:** Detects deleted tracks with neutral status badges (`-N removed`) and prompts review to delete local copies.
-- **Metadata Cleaning:** Automatically strips video labels, promo tags, and release years while preserving distinct version tags (`Remix`, `VIP`, `Extended`, `Acoustic`, `Instrumental`, `Live`).
-- **Artist Extraction:** Resolves artist and title from channel uploads and record label titles (e.g. `Hospital Records - Netsky - Secret Agent`).
-- **Online Duplicate Detection:** Identifies duplicate tracks within online playlists and provides direct links to manage them on YouTube Music.
-- **Unavailable Tracks Tracking:** Accounts for copyright claims and deleted tracks with neutral status markers.
+- **Fast Local Indexing:** Compares local folders against online playlists in seconds using cached file stems.
+- **Removed Track Detection:** Identifies tracks removed or unlisted from playlists and displays neutral `-N removed` markers.
+- **Zero-Lag Reordering:** Drag-and-drop playlist cards or use arrow buttons with instantaneous in-place reordering.
+- **Title Cleaning:** Automatically strips junk video labels and promotional clutter while preserving genuine version suffixes (`Remix`, `VIP`, `Extended`, `Acoustic`, `Instrumental`, `Live`).
+- **Duplicate Detection:** Identifies duplicate tracks within online playlists and provides direct links to manage them.
 
-### Library Management & Notifications
-- **Cross-Playlist Comparison:** Scans tracked playlists to find tracks that exist in multiple folders simultaneously.
-- **Track Breakdown Modal:** View full folder paths across all playlists with options to open files or copy details.
-- **Smart Toast Notifications:** Sleek side alert toasts with countdown progress lines (KDE Plasma style) and Windows audio chimes.
-- **Metadata Embedding:** Embeds ID3v2.3/ID3v2.4 tags into MP3 files, attaches 1000x1000 square cover art, and saves synchronized `.lrc` lyrics.
-- **Safe File Tagging:** Retry handlers to avoid issues with temporary Windows file locks.
-
-### Maintenance & Core Updater
-- **In-App `yt-dlp` Core Self-Updater:** Automatically downloads and applies pure-Python core packages directly inside the app without needing `pip` or external installers.
-- **Custom AppData Hierarchy:** Data and configurations stored cleanly in `AppData/Roaming/Logovo-Dushnil/Logovo-Downloads` with automated migration.
-- **Authentication:** Supports importing Netscape-format `cookies.txt` for authenticated downloads.
-- **Dual Log Viewer:** User-friendly event view and raw developer console with search and export.
-- **Backup & Restore:** Export or import settings, history, and playlist configurations as a zip archive.
+### App Updates & Maintenance
+- **GitHub Release Checker:** Background check for new app versions on GitHub with non-intrusive KDE Plasma style toasts.
+- **In-App `yt-dlp` Updater:** Upgrades the underlying downloader core directly within the UI without external package managers.
+- **Clean AppData Hierarchy:** Settings and logs stored in `AppData/Roaming/Logovo-Dushnil/Logovo-Downloads`.
+- **Backup & Restore:** Full backup and restore of playlists, settings, and history via zip archive.
 
 ---
 
 ## Tech Stack
 
 - **GUI:** PyQt6
-- **Engine:** `yt-dlp` (with `curl-cffi` backend)
-- **Audio/Video Backend:** FFmpeg / FFprobe
-- **Metadata:** Mutagen
+- **Download Engine:** `yt-dlp` (with `curl-cffi`)
+- **Media Backend:** FFmpeg / FFprobe
+- **Audio Tagging:** Mutagen
 - **Image Processing:** Pillow (PIL)
-- **JS Challenge Solver:** Deno (bundled) — used by `yt-dlp` to resolve YouTube's streaming challenges, enabling Full HD / 4K video downloads
+- **JS Challenge Solver:** Deno (bundled)
 
 ---
 
@@ -75,43 +67,40 @@ The application is built for managing large local music libraries: it syncs play
 
 ```text
 Logovo-Downloads/
-├── core/                             # Backend logic and core modules
-│   ├── constants.py                  # App constants, versioning and format definitions
-│   ├── downloader.py                 # yt-dlp wrapper, tagger, cleaners and post-processors
-│   ├── preview.py                    # Metadata extraction and playlist previewer
-│   ├── playlists_manager.py          # Tracked playlists storage and state persistence
-│   ├── playlist_comparator.py        # Cross-playlist comparison and clustering engine
-│   ├── history.py                    # Download history manager
-│   ├── logger.py                     # File and UI logging dispatcher
-│   ├── settings.py                   # User preferences manager
+├── core/                             # Core services and business logic
+│   ├── constants.py                  # App constants and format definitions
+│   ├── downloader.py                 # Download engine, tagger, and URL sanitizers
+│   ├── preview.py                    # Metadata parser (YouTube, Spotify, SoundCloud)
+│   ├── playlists_manager.py          # Tracked playlists storage and persistence
+│   ├── playlist_comparator.py        # Cross-playlist duplicate analysis
+│   ├── history.py                    # Download history persistence
+│   ├── logger.py                     # Centralized logging setup
+│   ├── settings.py                   # App configuration manager
 │   ├── taskbar.py                    # Windows Taskbar progress integration
-│   ├── updater.py                    # yt-dlp core auto-updater
-│   ├── backup.py                     # Backup and restore utilities
-│   └── utils.py                      # Filename sanitization and helpers
+│   └── updater.py                    # yt-dlp core auto-updater
 │
-├── ui/                               # User interface (PyQt6)
-│   ├── main_window.py                # Main window coordinator and tabs
-│   ├── queue_item.py                 # Download queue item widget
-│   ├── playlist_comparison_dialog.py # Cross-playlist comparison modal
-│   ├── log_viewer_dialog.py          # Log viewer dialog (User & Developer tabs)
-│   └── styles.py                     # Dark theme stylesheets and styling tokens
+├── ui/                               # GUI components (PyQt6)
+│   ├── main_window.py                # Main window layout and tab controllers
+│   ├── queue_item.py                 # Queue card widget and background enricher
+│   ├── playlist_comparison_dialog.py # Duplicate analysis dialog
+│   ├── log_viewer_dialog.py          # Dual log viewer modal
+│   └── styles.py                     # Dark theme stylesheet
 │
-├── bin/                              # Optional embedded binaries (FFmpeg / FFprobe)
-├── media/                            # Assets and application icons
-├── downloads/                        # Default download directory
+├── bin/                              # Bundled binaries (FFmpeg / FFprobe / Deno)
+├── media/                            # App icons and graphics
+├── downloads/                        # Default download output directory
 ├── main.py                           # Application entrypoint
 ├── requirements.txt                  # Python dependencies
-├── .gitignore                        # Git exclusion rules
-└── README.md                         # Project documentation
+└── README.md                         # Documentation
 ```
 
 ---
 
-## Installation & Setup
+## Installation & Running from Source
 
 ### Prerequisites
 - **Python 3.10+** (64-bit)
-- **[FFmpeg](https://ffmpeg.org/download.html)** (in system `PATH` or placed inside `bin/`)
+- **FFmpeg** (in system `PATH` or placed inside `bin/`)
 
 ### Setup
 
@@ -121,13 +110,8 @@ git clone https://github.com/Helvior-dev/Logovo-Downloads.git
 cd Logovo-Downloads
 
 # 2. Create virtual environment
-# Windows:
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-
-# Linux / macOS:
-python3 -m venv .venv
-source .venv/bin/activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
@@ -140,7 +124,7 @@ python main.py
 
 ## Acknowledgements
 
-This project was developed independently with the assistance of AI and was inspired by Magerko's [Universal Media Downloader](https://github.com/Magerko/universal-media-downloader).
+Developed independently with the assistance of AI, inspired by Magerko's [Universal Media Downloader](https://github.com/Magerko/universal-media-downloader).
 
 ---
 

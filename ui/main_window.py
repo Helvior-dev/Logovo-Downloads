@@ -18,10 +18,10 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QCheckBox, QFileDialog, QFormLayout,
     QApplication, QRadioButton, QButtonGroup, QGroupBox, QScrollArea, QDialog,
     QSystemTrayIcon, QMenu, QSpinBox, QSlider, QFrame, QGraphicsDropShadowEffect,
-    QTextEdit
+    QTextEdit, QGraphicsBlurEffect, QTabBar
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QObject, QEvent, QMimeData, QPropertyAnimation, QPoint, QEasingCurve
-from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon, QColor, QPainter, QPen, QDrag, QPainterPath
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QObject, QEvent, QMimeData, QPropertyAnimation, QPoint, QEasingCurve, QRectF
+from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon, QColor, QPainter, QPen, QDrag, QPainterPath, QFont
 
 from core.preview import get_video_preview
 from core.downloader import (
@@ -29,6 +29,7 @@ from core.downloader import (
     friendly_error,
     is_platform_unavailable,
     is_rate_limited,
+    detect_platform_name,
     set_folder_icon,
     save_playlist_cover_image,
     apply_playlist_cover_settings,
@@ -196,9 +197,48 @@ class FetchPreviewWorker(QThread):
             if preview:
                 self.finished_signal.emit(preview, self.context)
             else:
-                self.error_signal.emit("Could not fetch media metadata from YouTube.", self.context)
+                platform = detect_platform_name(self.url)
+                self.error_signal.emit(f"Could not fetch media metadata from {platform}.", self.context)
         except Exception as e:
             self.error_signal.emit(str(e), self.context)
+
+
+class CheckAppUpdateWorker(QThread):
+    finished_signal = pyqtSignal(bool, str, str, str)  # has_update, latest_ver, release_url, release_notes
+
+    def __init__(self, current_ver: str, repo: str = "Helvior-dev/Logovo-Downloads"):
+        super().__init__()
+        self.current_ver = current_ver
+        self.repo = repo
+
+    def run(self):
+        import requests
+        import re
+        try:
+            headers = {
+                "User-Agent": f"Logovo-Downloads/{self.current_ver}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            url = f"https://api.github.com/repos/{self.repo}/releases/latest"
+            r = requests.get(url, headers=headers, timeout=6)
+            if r.status_code == 200:
+                data = r.json()
+                tag = data.get("tag_name", "")
+                rel_url = data.get("html_url", f"https://github.com/{self.repo}/releases/latest")
+                body = data.get("body", "") or ""
+
+                def parse_v(v_str):
+                    clean = str(v_str).lstrip("v").strip()
+                    parts = [int(p) for p in re.findall(r"\d+", clean)]
+                    return parts or [0]
+
+                has_update = parse_v(tag) > parse_v(self.current_ver)
+                clean_tag = tag.lstrip("v")
+                self.finished_signal.emit(has_update, clean_tag, rel_url, body)
+            else:
+                self.finished_signal.emit(False, "", "", "")
+        except Exception:
+            self.finished_signal.emit(False, "", "", "")
 
 
 class StartupPlaylistCheckWorker(QThread):
@@ -281,7 +321,8 @@ class SyncPlaylistWorker(QThread):
 
             preview = get_video_preview(url, cookies=self.cookies)
             if not preview or not preview.get('is_playlist'):
-                self.error_signal.emit("Invalid playlist response from YouTube.", self.p_dict)
+                platform = detect_platform_name(url)
+                self.error_signal.emit(f"Invalid playlist response from {platform}.", self.p_dict)
                 return
 
             count = preview.get('count', 0)
@@ -292,15 +333,20 @@ class SyncPlaylistWorker(QThread):
             cleanup_orphan_files(out_dir, is_audio_playlist=(media_type_category == "Audio"))
 
             cover_mode = self.settings.get('playlist_cover_mode', 'both') if self.settings else 'both'
-            pl_thumb = preview.get('thumbnail') or (preview.get('entries', [{}])[0].get('thumbnail') if preview.get('entries') else None)
-            if pl_thumb and cover_mode != 'none':
-                apply_playlist_cover_settings(out_dir, pl_thumb, mode=cover_mode)
+            if preview.get('thumbnail') and cover_mode != 'none':
+                apply_playlist_cover_settings(out_dir, preview.get('thumbnail'), mode=cover_mode)
 
-            # Build in-memory index of existing local files for instant O(1) comparison
-            is_audio = (media_type_category == "Audio")
-            combined_vid_set, title_index, local_cnt = build_local_files_index(out_dir, is_audio=is_audio)
+            # Restore dates from .playlist_order.json if needed
+            restore_dates_from_order(out_dir)
 
+            # 1. Build local index
+            combined_vid_set, title_index, local_cnt = build_local_files_index(
+                out_dir, is_audio=(media_type_category == "Audio")
+            )
+
+            # 2. Check each online entry
             missing_entries = []
+            unavailable_entries = []
             for i, entry in enumerate(preview.get('entries', [])):
                 entry['playlist_output_dir'] = out_dir
                 entry['playlist_index'] = count - i
@@ -312,31 +358,33 @@ class SyncPlaylistWorker(QThread):
                 author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
                 title = entry.get('title') or ""
 
-                already_downloaded = is_entry_in_index(
-                    vid, title, author,
-                    combined_vid_set,
-                    title_index
-                )
+                if entry.get('is_unavailable') or "unavailable / deleted" in str(title).lower():
+                    unavailable_entries.append((entry, "Removed from online platform / Copyright Claim"))
+                    continue
 
-                if not already_downloaded:
-                    if entry.get('is_unavailable') or "unavailable / deleted" in str(title).lower():
-                        pass
-                    else:
-                        missing_entries.append(entry)
+                already = is_entry_in_index(vid, title, author, combined_vid_set, title_index)
+                if not already:
+                    missing_entries.append(entry)
 
-            # Collect unavailable entries for honest user notification
-            unavailable_entries = []
-            for i, entry in enumerate(preview.get('entries', [])):
-                if entry.get('is_unavailable') or "unavailable / deleted" in str(entry.get('title', '')).lower():
-                    unavailable_entries.append((entry, "Removed from YouTube / Copyright Claim"))
-
-            # Detect online duplicates in playlist
+            # 3. Duplicate detection in online playlist
             online_duplicates = detect_online_playlist_duplicates(preview.get('entries', []))
 
-            # Detect orphaned local files (removed from online playlist)
-            orphaned_files = detect_orphan_files_in_folder(out_dir, preview.get('entries', []), is_audio=is_audio)
+            # 4. Check for orphan/removed files in local folder
+            orphaned_files = detect_orphan_files_in_folder(
+                out_dir,
+                preview.get('entries', []),
+                is_audio=(media_type_category == "Audio")
+            )
 
-            self.finished_signal.emit(preview, self.p_dict, missing_entries, local_cnt, online_duplicates, unavailable_entries, orphaned_files)
+            self.finished_signal.emit(
+                preview,
+                self.p_dict,
+                missing_entries,
+                local_cnt,
+                online_duplicates,
+                unavailable_entries,
+                orphaned_files
+            )
         except Exception as e:
             self.error_signal.emit(str(e), self.p_dict)
 
@@ -344,31 +392,24 @@ class SyncPlaylistWorker(QThread):
 class SpinnerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(54, 54)
-        self._angle = 0
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._rotate)
-        self._timer.start(25)
+        self.setFixedSize(40, 40)
+        self.angle = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.rotate)
+        self.timer.start(30)
 
-    def _rotate(self):
-        self._angle = (self._angle + 12) % 360
+    def rotate(self):
+        self.angle = (self.angle + 15) % 360
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = self.rect().adjusted(6, 6, -6, -6)
-
-        # Background circle track
-        pen_bg = QPen(QColor(51, 65, 85, 140), 4)
-        painter.setPen(pen_bg)
-        painter.drawArc(rect, 0, 360 * 16)
-
-        # Animated highlight arc
-        pen_fg = QPen(QColor(56, 189, 248), 4)
-        pen_fg.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen_fg)
-        painter.drawArc(rect, -self._angle * 16, 95 * 16)
+        painter.translate(self.width() / 2, self.height() / 2)
+        painter.rotate(self.angle)
+        pen = QPen(QColor("#38bdf8"), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawArc(-15, -15, 30, 30, 0, 270 * 16)
         painter.end()
 
 
@@ -402,12 +443,12 @@ class LoadingOverlay(QWidget):
         self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #f8fafc;")
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.msg_label = QLabel("Connecting to YouTube...")
+        self.msg_label = QLabel("Connecting to service...")
         self.msg_label.setStyleSheet("font-size: 12px; color: #94a3b8;")
         self.msg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.msg_label.setWordWrap(True)
 
-        self.sub_label = QLabel("Syncing in progress... The application might freeze, this is normal.")
+        self.sub_label = QLabel("Fetching media information in the background...")
         self.sub_label.setStyleSheet("font-size: 11px; color: #64748b; font-style: italic;")
         self.sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sub_label.setWordWrap(True)
@@ -424,7 +465,7 @@ class LoadingOverlay(QWidget):
         painter.fillRect(self.rect(), QColor(15, 23, 42, 200))
         painter.end()
 
-    def show_loading(self, title="Syncing Playlist...", message="Connecting to YouTube..."):
+    def show_loading(self, title="Loading Media...", message="Connecting to service..."):
         self.title_label.setText(title)
         self.msg_label.setText(message)
         if self.parent():
@@ -1165,25 +1206,143 @@ class DraggablePlaylistCard(QWidget):
         mime = QMimeData()
         mime.setText(str(self.index))
         drag.setMimeData(mime)
+
+        # Smooth, lightweight card preview during drag
+        try:
+            pix = self.grab()
+            if pix.width() > 460:
+                pix = pix.scaledToWidth(460, Qt.TransformationMode.SmoothTransformation)
+            drag_pix = QPixmap(pix.size())
+            drag_pix.fill(Qt.GlobalColor.transparent)
+            p = QPainter(drag_pix)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setOpacity(0.85)
+            p.drawPixmap(0, 0, pix)
+            p.end()
+            drag.setPixmap(drag_pix)
+            drag.setHotSpot(QPoint(min(pix.width() // 2, event.pos().x()), min(pix.height() // 2, event.pos().y())))
+        except Exception:
+            pass
+
         drag.exec(Qt.DropAction.MoveAction)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasText() and event.mimeData().text().isdigit():
             event.acceptProposedAction()
-            self._saved_stylesheet = self.styleSheet()
-            self.setStyleSheet(self._saved_stylesheet + "border: 2px solid #38bdf8 !important;")
+            # Apply border strictly to the outer PlaylistCard container only
+            self.setStyleSheet("QWidget#PlaylistCard { border: 2px solid #38bdf8 !important; background-color: #273549; }")
 
     def dragLeaveEvent(self, event):
-        self.setStyleSheet(getattr(self, '_saved_stylesheet', ""))
+        self.setStyleSheet("")
 
     def dropEvent(self, event):
-        self.setStyleSheet(getattr(self, '_saved_stylesheet', ""))
+        self.setStyleSheet("")
         if event.mimeData().hasText() and event.mimeData().text().isdigit():
             src_idx = int(event.mimeData().text())
             dst_idx = self.index
-            if src_idx != dst_idx:
-                self.parent_view._move_playlist_item(src_idx, dst_idx)
             event.acceptProposedAction()
+            if src_idx != dst_idx:
+                # Defer the card reorder asynchronously so the drag release finishes immediately without stutter
+                QTimer.singleShot(0, lambda s=src_idx, d=dst_idx: self.parent_view._move_playlist_item(s, d))
+
+
+class CustomTabBar(QTabBar):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setDrawBase(False)
+        self.pl_syncing = False
+        self.pl_has_new = False
+        self.pl_has_removed = False
+        self.spinner_angle = 0
+
+        self._spinner_timer = QTimer(self)
+        self._spinner_timer.setInterval(30)
+        self._spinner_timer.timeout.connect(self._on_spinner_tick)
+
+    def set_pl_syncing(self, syncing: bool):
+        self.pl_syncing = syncing
+        if syncing:
+            if not self._spinner_timer.isActive():
+                self._spinner_timer.start()
+        else:
+            if self._spinner_timer.isActive():
+                self._spinner_timer.stop()
+        self.update()
+
+    def set_pl_badges(self, has_new: bool, has_removed: bool):
+        self.pl_syncing = False
+        if self._spinner_timer.isActive():
+            self._spinner_timer.stop()
+        self.pl_has_new = has_new
+        self.pl_has_removed = has_removed
+        self.update()
+
+    def _on_spinner_tick(self):
+        self.spinner_angle = (self.spinner_angle + 16) % 360
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        # Custom centered spinner & badge overlays for PLAYLISTS tab (tab index 1)
+        if self.count() > 1:
+            rect = self.tabRect(1)
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            if self.pl_syncing:
+                # Soft blurred & dimmed overlay strictly centered over PLAYLISTS tab
+                overlay_rect = rect.adjusted(4, 4, -4, -4)
+                p.setPen(Qt.PenStyle.NoPen)
+                if self.currentIndex() == 1:
+                    p.setBrush(QColor(30, 41, 59, 235))
+                else:
+                    p.setBrush(QColor(11, 14, 20, 210))
+                p.drawRoundedRect(QRectF(overlay_rect), 6, 6)
+
+                # Centered spinning loader circle directly in the middle of the tab
+                cx = rect.center().x()
+                cy = rect.center().y()
+                p.save()
+                p.translate(cx, cy)
+                p.rotate(self.spinner_angle)
+                pen = QPen(QColor("#38bdf8"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                p.drawArc(QRectF(-7, -7, 14, 14), 0, 270 * 16)
+                p.restore()
+            elif self.pl_has_new or self.pl_has_removed:
+                # Clean badges in the upper right corner of the tab pill
+                by = rect.top() + 5
+                if self.pl_has_new and self.pl_has_removed:
+                    bw = 25
+                    bx = rect.right() - bw - 4
+                    p.setPen(QPen(QColor("#0284c7"), 1))
+                    p.setBrush(QColor("#0f172a"))
+                    p.drawRoundedRect(QRectF(bx, by, bw, 14), 3, 3)
+                    p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+                    p.setPen(QColor("#10b981"))
+                    p.drawText(QRectF(bx + 1, by, 11, 14), Qt.AlignmentFlag.AlignCenter, "+")
+                    p.setPen(QColor("#f87171"))
+                    p.drawText(QRectF(bx + 12, by, 11, 14), Qt.AlignmentFlag.AlignCenter, "-")
+                elif self.pl_has_new:
+                    bw = 14
+                    bx = rect.right() - bw - 5
+                    p.setPen(QPen(QColor("#10b981"), 1))
+                    p.setBrush(QColor("#064e3b"))
+                    p.drawRoundedRect(QRectF(bx, by, bw, 14), 3, 3)
+                    p.setPen(QColor("#10b981"))
+                    p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+                    p.drawText(QRectF(bx, by, bw, 14), Qt.AlignmentFlag.AlignCenter, "+")
+                elif self.pl_has_removed:
+                    bw = 14
+                    bx = rect.right() - bw - 5
+                    p.setPen(QPen(QColor("#f87171"), 1))
+                    p.setBrush(QColor("#450a0a"))
+                    p.drawRoundedRect(QRectF(bx, by, bw, 14), 3, 3)
+                    p.setPen(QColor("#f87171"))
+                    p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+                    p.drawText(QRectF(bx, by, bw, 14), Qt.AlignmentFlag.AlignCenter, "-")
+            p.end()
 
 
 class SideNotificationToast(QFrame):
@@ -1218,7 +1377,7 @@ class SideNotificationToast(QFrame):
         h_row = QHBoxLayout()
         h_row.setSpacing(8)
 
-        icon_char = "🍪" if "cookie" in title.lower() else ("⚠️" if level == "warning" else ("❌" if level == "error" else "ℹ️"))
+        icon_char = "🍪" if "cookie" in title.lower() else ("🚀" if "update" in title.lower() or "version" in title.lower() else ("⚠️" if level == "warning" else ("❌" if level == "error" else "ℹ️")))
         icon_lbl = QLabel(icon_char)
         icon_lbl.setStyleSheet("font-size: 15px; background: transparent;")
         h_row.addWidget(icon_lbl)
@@ -1409,6 +1568,9 @@ class MainWindow(QMainWindow):
         self.layout = QVBoxLayout(self.central_widget)
 
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.custom_tab_bar = CustomTabBar(self.tabs)
+        self.tabs.setTabBar(self.custom_tab_bar)
         self.layout.addWidget(self.tabs)
 
         self.setup_downloads_tab()
@@ -1427,9 +1589,12 @@ class MainWindow(QMainWindow):
 
         # Startup playlists check for new tracks
         if self.settings.get('check_playlists_on_startup', False):
+            self.custom_tab_bar.set_pl_syncing(True)
             self.startup_playlist_thread = StartupPlaylistCheckWorker(self.playlists_mgr, cookies=self.get_cookies_config())
-            self.startup_playlist_thread.finished_signal.connect(lambda: self._mark_pl_dirty_and_refresh())
+            self.startup_playlist_thread.finished_signal.connect(self._on_startup_playlists_check_finished)
             self.startup_playlist_thread.start()
+        else:
+            self.update_playlists_tab_badge()
 
         # Loading overlay for smooth non-blocking operations
         self.loading_overlay = LoadingOverlay(self)
@@ -1437,6 +1602,10 @@ class MainWindow(QMainWindow):
 
         # Check cookies configuration on startup
         QTimer.singleShot(700, self.check_cookies_file_validity)
+
+        # Check Logovo Downloads app updates on startup
+        if self.settings.get('check_app_updates_on_startup', True):
+            QTimer.singleShot(1800, self.check_app_update_background)
 
     def show_side_notification(self, title: str, message: str, level: str = "warning", action_text: str = None, action_callback = None):
         now = time.time()
@@ -1488,17 +1657,41 @@ class MainWindow(QMainWindow):
             self.cookies_file_input.setStyleSheet("border: 2px solid #f59e0b; background-color: #1e293b;")
             QTimer.singleShot(2500, lambda: self.cookies_file_input.setStyleSheet("") if hasattr(self, 'cookies_file_input') else None)
 
+    def _on_startup_playlists_check_finished(self):
+        if hasattr(self, 'custom_tab_bar'):
+            self.custom_tab_bar.set_pl_syncing(False)
+        self._mark_pl_dirty_and_refresh()
+        self.update_playlists_tab_badge()
+
+    def update_playlists_tab_badge(self):
+        if not hasattr(self, 'custom_tab_bar'):
+            return
+        # If background startup check is currently running, keep the syncing spinner active!
+        if hasattr(self, 'startup_playlist_thread') and self.startup_playlist_thread and self.startup_playlist_thread.isRunning():
+            self.custom_tab_bar.set_pl_syncing(True)
+            return
+
+        total_new = sum(p.get('new_tracks_count', 0) for p in self.playlists_mgr.get_all())
+        total_removed = sum(p.get('removed_tracks_count', 0) for p in self.playlists_mgr.get_all())
+        has_new = (total_new > 0)
+        has_removed = (total_removed > 0)
+        self.custom_tab_bar.set_pl_badges(has_new, has_removed)
+
     def _mark_pl_dirty_and_refresh(self):
         """Mark playlists as dirty and refresh if currently on the playlists tab."""
         self._pl_dirty = True
         if self.tabs.currentIndex() == 1:
             self._pl_dirty = False
             self.refresh_playlists_ui()
+        else:
+            self.update_playlists_tab_badge()
 
     def _on_tab_changed(self, index: int):
         if index == 1 and self._pl_dirty:
-            self._pl_dirty = False
-            self.refresh_playlists_ui()
+            # If background sync is running, do not prematurely refresh or cancel spinner
+            if not (hasattr(self, 'startup_playlist_thread') and self.startup_playlist_thread and self.startup_playlist_thread.isRunning()):
+                self._pl_dirty = False
+                self.refresh_playlists_ui()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1560,7 +1753,7 @@ class MainWindow(QMainWindow):
         # URL Input
         url_layout = QHBoxLayout()
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Enter YouTube or YouTube Music URL...")
+        self.url_input.setPlaceholderText("Enter YouTube, Spotify, SoundCloud, Bandcamp, or any media URL...")
         url_layout.addWidget(self.url_input)
 
         # Visual Queue Scroll Area
@@ -1783,6 +1976,11 @@ class MainWindow(QMainWindow):
         self._mark_pl_dirty_and_refresh()
 
     def _move_playlist_item(self, from_idx: int, to_idx: int):
+        if from_idx < 0 or to_idx < 0:
+            return
+        items = self.playlists_mgr.get_all()
+        if from_idx >= len(items) or to_idx >= len(items) or from_idx == to_idx:
+            return
         self.playlists_mgr.move_playlist(from_idx, to_idx)
         self._current_pl_sort = "custom"
         self.settings.set('playlist_sort_mode', 'custom')
@@ -1790,14 +1988,31 @@ class MainWindow(QMainWindow):
             self.combo_playlist_sort.blockSignals(True)
             self.combo_playlist_sort.setCurrentIndex(0)
             self.combo_playlist_sort.blockSignals(False)
-        self._mark_pl_dirty_and_refresh()
+
+        # Instant in-place layout reordering with zero delay (0 ms)
+        try:
+            item = self.playlists_container_layout.takeAt(from_idx)
+            if item and item.widget():
+                self.playlists_container_layout.insertWidget(to_idx, item.widget())
+
+            cnt = self.playlists_container_layout.count()
+            for i in range(cnt):
+                w = self.playlists_container_layout.itemAt(i).widget()
+                if isinstance(w, DraggablePlaylistCard):
+                    w.index = i
+                    if hasattr(w, 'btn_up') and w.btn_up:
+                        w.btn_up.setEnabled(i > 0)
+                    if hasattr(w, 'btn_down') and w.btn_down:
+                        w.btn_down.setEnabled(i < cnt - 1)
+        except Exception:
+            self.refresh_playlists_ui(rescan_disk_stats=False)
 
     def open_playlist_comparison_dialog(self):
         dlg = CrossPlaylistComparisonDialog(self.playlists_mgr, default_target="Trash", parent=self)
         dlg.exec()
         self._mark_pl_dirty_and_refresh()
 
-    def refresh_playlists_ui(self):
+    def refresh_playlists_ui(self, rescan_disk_stats: bool = False):
         # Disconnect old thumbnail loaders
         if hasattr(self, '_pl_loaders'):
             for l in self._pl_loaders:
@@ -1860,7 +2075,8 @@ class MainWindow(QMainWindow):
                     border-color: #1e293b;
                 }
             """)
-            btn_up.clicked.connect(lambda _, idx=i: self._move_playlist_item(idx, idx - 1))
+            card.btn_up = btn_up
+            btn_up.clicked.connect(lambda _, c=card: self._move_playlist_item(c.index, c.index - 1))
 
             drag_hint = QLabel("☰")
             drag_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1891,7 +2107,8 @@ class MainWindow(QMainWindow):
                     border-color: #1e293b;
                 }
             """)
-            btn_down.clicked.connect(lambda _, idx=i: self._move_playlist_item(idx, idx + 1))
+            card.btn_down = btn_down
+            btn_down.clicked.connect(lambda _, c=card: self._move_playlist_item(c.index, c.index + 1))
 
             reorder_box.addWidget(btn_up)
             reorder_box.addWidget(drag_hint)
@@ -2059,28 +2276,30 @@ class MainWindow(QMainWindow):
         # Update stats bar
         if hasattr(self, 'lbl_pl_stats'):
             total_pls = len(items)
-            total_tracks = sum(p.get('track_count', 0) for p in items)
-            # Count local files efficiently
-            total_files = 0
-            total_size_bytes = 0
-            for p in items:
-                folder = p.get('folder_path', '')
-                if folder and os.path.exists(folder):
-                    try:
-                        for f in Path(folder).iterdir():
-                            if f.is_file() and f.suffix.lower() in {'.mp3', '.flac', '.m4a', '.opus', '.ogg', '.wav', '.aac', '.alac', '.mp4', '.mkv', '.webm'}:
-                                sz = f.stat().st_size
-                                if sz >= 500 * 1024:
-                                    total_files += 1
-                                    total_size_bytes += sz
-                    except Exception:
-                        pass
-            # Format size
-            if total_size_bytes >= 1_073_741_824:
-                size_str = f"{total_size_bytes / 1_073_741_824:.1f} GB"
-            else:
-                size_str = f"{total_size_bytes / 1_048_576:.0f} MB"
-            self.lbl_pl_stats.setText(f"{total_pls} playlist{'s' if total_pls != 1 else ''} • {total_files} files • {size_str} on disk")
+            if rescan_disk_stats or not hasattr(self, '_cached_pl_stats_str') or not self._cached_pl_stats_str:
+                total_files = 0
+                total_size_bytes = 0
+                for p in items:
+                    folder = p.get('folder_path', '')
+                    if folder and os.path.exists(folder):
+                        try:
+                            for f in Path(folder).iterdir():
+                                if f.is_file() and f.suffix.lower() in {'.mp3', '.flac', '.m4a', '.opus', '.ogg', '.wav', '.aac', '.alac', '.mp4', '.mkv', '.webm'}:
+                                    sz = f.stat().st_size
+                                    if sz >= 500 * 1024:
+                                        total_files += 1
+                                        total_size_bytes += sz
+                        except Exception:
+                            pass
+                if total_size_bytes >= 1_073_741_824:
+                    size_str = f"{total_size_bytes / 1_073_741_824:.1f} GB"
+                else:
+                    size_str = f"{total_size_bytes / 1_048_576:.0f} MB"
+                self._cached_pl_stats_str = f"{total_pls} playlist{'s' if total_pls != 1 else ''} • {total_files} files • {size_str} on disk"
+            self.lbl_pl_stats.setText(self._cached_pl_stats_str)
+
+        # Update tab header badge (+ / - / +-)
+        self.update_playlists_tab_badge()
 
     def track_new_playlist_dialog(self):
         dialog = QDialog(self)
@@ -2195,8 +2414,9 @@ class MainWindow(QMainWindow):
         self._active_sync_urls.add(url)
 
         title = p_dict.get('title', 'Playlist')
+        platform = detect_platform_name(url)
         self.status_label.setText(f"Syncing playlist '{title}' in background...")
-        self.loading_overlay.show_loading(f"Syncing '{title}'...", "Connecting to YouTube and comparing tracks...")
+        self.loading_overlay.show_loading(f"Syncing '{title}'...", f"Connecting to {platform} and comparing tracks...")
 
         worker = SyncPlaylistWorker(p_dict, self.settings, cookies=self.get_cookies_config())
         worker.finished_signal.connect(self._on_sync_playlist_finished)
@@ -2217,8 +2437,9 @@ class MainWindow(QMainWindow):
     def _on_sync_playlist_error(self, err_msg: str, p_dict: dict):
         self.loading_overlay.hide_loading()
         title = p_dict.get('title', 'Playlist') if p_dict else 'Playlist'
+        platform = detect_platform_name(p_dict.get('url') if p_dict else '')
         self.status_label.setText(f"Sync error for '{title}'.")
-        QMessageBox.warning(self, "Sync Error", f"Could not fetch playlist metadata from YouTube:\n{err_msg}")
+        QMessageBox.warning(self, "Sync Error", f"Could not fetch playlist metadata from {platform}:\n{err_msg}")
 
     def _on_sync_playlist_finished(self, preview: dict, p_dict: dict, missing_entries: list, local_cnt: int, online_duplicates: list = None, unavailable_entries: list = None, orphaned_files: list = None):
         self.loading_overlay.hide_loading()
@@ -2760,10 +2981,27 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(video_group)
 
-        # 5. Core Engine & Updates
-        lbl_core = QLabel("Core Engine")
+        # 5. Application & Core Engine Updates
+        lbl_core = QLabel("Updates & Maintenance")
         lbl_core.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 8px; margin-bottom: 2px;")
         layout.addWidget(lbl_core)
+
+        # App updates row
+        app_upd_layout = QHBoxLayout()
+        btn_check_app = QPushButton("Check App Updates")
+        btn_check_app.clicked.connect(self.manual_check_app_update)
+
+        self.chk_auto_app_update = QCheckBox("Check Logovo Downloads updates on startup")
+        self.chk_auto_app_update.setChecked(self.settings.get('check_app_updates_on_startup', True))
+        self.chk_auto_app_update.toggled.connect(lambda c: self.settings.set('check_app_updates_on_startup', c))
+
+        app_upd_layout.addWidget(btn_check_app)
+        app_upd_layout.addSpacing(20)
+        app_upd_layout.addWidget(self.chk_auto_app_update)
+        app_upd_layout.addStretch()
+        layout.addLayout(app_upd_layout)
+
+        # yt-dlp core row
         core_layout = QHBoxLayout()
         btn_check_update = QPushButton("Check for yt-dlp Updates")
         btn_check_update.clicked.connect(self.manual_check_ytdlp_update)
@@ -3216,6 +3454,46 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Upgrade Failed", f"Failed to upgrade yt-dlp core:\n\n{msg}")
             self.status_label.setText("Core upgrade failed.")
 
+    # ─── LOGOVO DOWNLOADS APP UPDATER (GITHUB RELEASES) ─────────────────────────
+
+    def check_app_update_background(self):
+        if not self.settings.get('check_app_updates_on_startup', True):
+            return
+        self._app_update_worker = CheckAppUpdateWorker(APP_VERSION)
+        self._app_update_worker.finished_signal.connect(self._on_app_update_check_finished)
+        self._app_update_worker.start()
+
+    def _on_app_update_check_finished(self, has_update: bool, latest_ver: str, release_url: str, release_notes: str):
+        if has_update:
+            self.show_app_update_notification(latest_ver, release_url, release_notes)
+
+    def manual_check_app_update(self):
+        self.status_label.setText("Checking for Logovo Downloads updates on GitHub...")
+        self._manual_app_update_worker = CheckAppUpdateWorker(APP_VERSION)
+        def _on_manual_finished(has_update: bool, latest_ver: str, release_url: str, release_notes: str):
+            if has_update:
+                self.status_label.setText(f"New version v{latest_ver} available on GitHub!")
+                self.show_app_update_notification(latest_ver, release_url, release_notes)
+            else:
+                self.status_label.setText(f"Latest version installed (v{APP_VERSION}).")
+                self.show_side_notification(
+                    title="Latest Version Installed",
+                    message=f"You are using the latest version of Logovo Downloads (v{APP_VERSION}).",
+                    level="info"
+                )
+        self._manual_app_update_worker.finished_signal.connect(_on_manual_finished)
+        self._manual_app_update_worker.start()
+
+    def show_app_update_notification(self, latest_ver: str, release_url: str, release_notes: str = ""):
+        msg = f"A new version (v{latest_ver}) of Logovo Downloads is available on GitHub!\n(Current: v{APP_VERSION})\nClick below to view the release and download."
+        self.show_side_notification(
+            title=f"New Version Available: v{latest_ver}",
+            message=msg,
+            level="info",
+            action_text="View Release",
+            action_callback=lambda: QDesktopServices.openUrl(QUrl(release_url))
+        )
+
     # ─── ACTIONS & QUEUE ENGINE ────────────────────────────────────────────────
 
     def paste_from_clipboard(self):
@@ -3239,16 +3517,25 @@ class MainWindow(QMainWindow):
                 with open(file, 'r', encoding='utf-8') as f:
                     links = [line.strip() for line in f.readlines() if line.strip()]
 
+                self.queue_container.setUpdatesEnabled(False)
+                added_count = 0
                 for link in links:
                     if link:
+                        platform = detect_platform_name(link)
                         self._add_single_item_to_queue({
                             'url': link,
-                            'title': link, 
+                            'title': "Fetching media info...", 
+                            'uploader': "Loading artist...",
+                            'platform': platform,
                             'media_type_category': selected_type,
                             'media_type': "Audio (Best)" if selected_type == "Audio" else "Video (Best)"
-                        })
-                self.status_label.setText("Added links from file.")
+                        }, batch=True)
+                        added_count += 1
+                self.queue_container.setUpdatesEnabled(True)
+                self.update_queue_ui()
+                self.status_label.setText(f"Added {added_count} links from file.")
             except Exception as e:
+                self.queue_container.setUpdatesEnabled(True)
                 QMessageBox.warning(self, "Error", f"Failed to read file: {e}")
 
     def clear_queue(self):
@@ -3453,9 +3740,10 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self.status_label.setText("Fetching info in background...")
+        platform = detect_platform_name(url)
+        self.status_label.setText(f"Fetching info from {platform} in background...")
         self.btn_add_queue.setEnabled(False)
-        self.loading_overlay.show_loading("Fetching Media Info...", "Connecting to YouTube...")
+        self.loading_overlay.show_loading("Fetching Media Info...", f"Connecting to {platform}...")
 
         worker = FetchPreviewWorker(url, context={'url': url, 'selected_type': selected_type}, cookies=self.get_cookies_config())
         worker.finished_signal.connect(self._on_queue_preview_ready)
@@ -3584,7 +3872,12 @@ class MainWindow(QMainWindow):
                 self.update_queue_ui()
                 self.status_label.setText(f"Added {added_count} tracks from playlist.")
             else:
-                preview['url'] = url
+                search_u = preview.get('url')
+                if search_u and str(search_u).startswith('ytsearch'):
+                    preview['url'] = search_u
+                    preview['original_url'] = url
+                else:
+                    preview['url'] = url
                 preview['media_type_category'] = selected_type
                 preview['media_type'] = "Audio (Best)" if selected_type == "Audio" else "Video (Best)"
                 self._add_single_item_to_queue(preview)
@@ -3859,19 +4152,19 @@ class MainWindow(QMainWindow):
     def start_worker_for_widget(self, widget: QueueItemWidget):
         item_data = widget.item_data
         url = item_data['url']
+        if "spotify.com" in str(url):
+            title = item_data.get('title', '')
+            author = item_data.get('uploader') or item_data.get('channel') or item_data.get('artist') or ''
+            query = f"{author} - {title}".strip(" - ") if (author or title) else title
+            if query:
+                url = f"ytsearch1:{query}"
+                item_data['url'] = url
+
         media_type = widget.format_combo.currentText() if hasattr(widget, 'format_combo') else item_data.get('media_type', 'Audio (Best)')
         item_data['media_type'] = media_type
         output_dir = item_data.get('playlist_output_dir') or self.settings.get('download_path')
 
-        platform = "YouTube"
-        if "twitch.tv" in url: platform = "Twitch"
-        elif "soundcloud.com" in url: platform = "SoundCloud"
-        elif "spotify.com" in url: platform = "Spotify"
-        elif "facebook.com" in url or "fb.watch" in url: platform = "Facebook"
-        elif "instagram.com" in url: platform = "Instagram"
-        elif "twitter.com" in url or "x.com" in url: platform = "Twitter (X)"
-        elif "tiktok.com" in url: platform = "TikTok"
-
+        platform = detect_platform_name(url)
         quality = self.settings.get_quality(platform)
         
         is_audio = media_type.startswith("Audio")
@@ -3979,10 +4272,7 @@ class MainWindow(QMainWindow):
         title = item_data.get('title', 'Unknown')
         author = item_data.get('uploader') or item_data.get('channel') or item_data.get('artist') or 'Unknown'
         url = item_data.get('url', '')
-        platform = "YouTube"
-        if "twitch.tv" in url: platform = "Twitch"
-        elif "soundcloud.com" in url: platform = "SoundCloud"
-        elif "spotify.com" in url: platform = "Spotify"
+        platform = detect_platform_name(url)
 
         if success:
             widget.is_retry = False
