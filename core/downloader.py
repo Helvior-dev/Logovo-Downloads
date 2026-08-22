@@ -287,6 +287,94 @@ def unhide_file(path: Path | str) -> None:
             pass
 
 
+def is_pillarboxed(img: Image.Image) -> bool:
+    """
+    Check if a widescreen (e.g. 16:9) image has black/dark or uniform pillarbox bars on the left and right sides.
+    Returns True if the image is already square/vertical OR has dark/solid sidebars that can safely be cropped to 1:1.
+    Returns False if the image is full-frame widescreen with active content/faces/text extending to the edges.
+    """
+    try:
+        w, h = img.size
+        # If already square or taller than wide, it's 1:1
+        if w <= h or (w / max(h, 1)) < 1.18:
+            return True
+
+        bar_width = int((w - h) / 2)
+        if bar_width <= 6:
+            return True
+
+        from PIL import ImageStat
+        margin = max(1, int(bar_width * 0.12))
+        sample_w = bar_width - margin * 2
+        if sample_w <= 2:
+            sample_w = bar_width
+            margin = 0
+
+        left_bar = img.crop((margin, margin, margin + sample_w, h - margin)).convert("L")
+        right_bar = img.crop((w - bar_width + margin, margin, w - margin, h - margin)).convert("L")
+
+        stat_l = ImageStat.Stat(left_bar)
+        stat_r = ImageStat.Stat(right_bar)
+
+        mean_l, std_l = stat_l.mean[0], stat_l.stddev[0]
+        mean_r, std_r = stat_r.mean[0], stat_r.stddev[0]
+
+        # Black or very dark pillarbox bands (e.g. YouTube auto-generated release / topic tracks)
+        is_dark_bars = (mean_l < 25 and std_l < 18) and (mean_r < 25 and std_r < 18)
+        # Uniform solid color bars (low color variance)
+        is_solid_bars = (std_l < 6.0 and std_r < 6.0)
+
+        return is_dark_bars or is_solid_bars
+    except Exception:
+        return False
+
+
+def process_cover_image(
+    img: Image.Image,
+    is_audio: bool = True,
+    cover_style: Optional[str] = None
+) -> Image.Image:
+    """
+    Process cover image based on media type and user cover style setting.
+    - 'smart' (default): checks if widescreen image is pillarboxed. If pillarboxed, crops to 1:1 square. If full-frame 16:9, preserves original widescreen.
+    - 'original': preserves original aspect ratio (16:9 / native).
+    - 'square': forces 1:1 square center-crop for both audio and video.
+    """
+    if not cover_style:
+        try:
+            from core.settings import SettingsManager
+            mgr = SettingsManager()
+            cover_style = mgr.get("cover_aspect_ratio") or mgr.get("audio_cover_style", "smart")
+        except Exception:
+            cover_style = "smart"
+
+    cover_style = str(cover_style).lower()
+
+    if cover_style == "square":
+        return crop_to_square(img)
+
+    if cover_style == "original":
+        if img.mode in ("RGBA", "P"):
+            return img.convert("RGB")
+        return img
+
+    # Default 'smart':
+    # For video files, always preserve widescreen 16:9
+    if not is_audio:
+        if img.mode in ("RGBA", "P"):
+            return img.convert("RGB")
+        return img
+
+    # For audio files, check if image is pillarboxed (has black/solid sidebars)
+    if is_pillarboxed(img):
+        return crop_to_square(img)
+    else:
+        # Full-frame 16:9 with active imagery/text -> preserve original aspect ratio!
+        if img.mode in ("RGBA", "P"):
+            return img.convert("RGB")
+        return img
+
+
 def crop_to_square(img: Image.Image) -> Image.Image:
     """Center-crop an image to 1:1 aspect ratio and resize to 1000x1000 with LANCZOS."""
     w, h = img.size
@@ -332,7 +420,7 @@ def is_root_or_general_folder(folder_path: Path | str) -> bool:
     return False
 
 
-def set_folder_icon(folder_path: Path | str, image_source: Any) -> bool:
+def set_folder_icon(folder_path: Path | str, image_source: Any, cover_style: Optional[str] = None) -> bool:
     """
     Sets the Windows folder icon from an image URL, PIL Image, or local image file.
     Creates desktop.ini and folder_icon.ico with system & hidden attributes.
@@ -378,8 +466,25 @@ def set_folder_icon(folder_path: Path | str, image_source: Any) -> bool:
         if not img:
             return False
 
-        # Center crop to square
-        sq_img = crop_to_square(img)
+        if not cover_style:
+            try:
+                from core.settings import SettingsManager
+                cover_style = SettingsManager().get("audio_cover_style", "smart")
+            except Exception:
+                cover_style = "smart"
+
+        resample = getattr(Image, "Resampling", Image).LANCZOS
+        if cover_style == "square" or is_pillarboxed(img):
+            sq_img = crop_to_square(img)
+        else:
+            # Fit full-frame 16:9 into square canvas with clean dark letterbox so nothing is cut off in Windows Explorer!
+            sq_img = Image.new("RGBA", (512, 512), (15, 23, 42, 255))
+            w, h = img.size
+            scale = min(512 / w, 512 / h)
+            new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+            resized = img.convert("RGBA").resize((new_w, new_h), resample)
+            offset = ((512 - new_w) // 2, (512 - new_h) // 2)
+            sq_img.paste(resized, offset, resized)
 
         # Save multi-resolution ICO
         unhide_file(ico_path)
@@ -419,8 +524,8 @@ def set_folder_icon(folder_path: Path | str, image_source: Any) -> bool:
         return False
 
 
-def save_playlist_cover_image(folder_path: Path | str, image_source: Any) -> Optional[Path]:
-    """Save playlist cover as 1:1 square-cropped cover.jpg / cover.png in 1000x1000 quality."""
+def save_playlist_cover_image(folder_path: Path | str, image_source: Any, cover_style: Optional[str] = None) -> Optional[Path]:
+    """Save playlist cover image as PNG according to audio_cover_style setting."""
     if not image_source or is_root_or_general_folder(folder_path):
         return None
     try:
@@ -456,12 +561,12 @@ def save_playlist_cover_image(folder_path: Path | str, image_source: Any) -> Opt
         if not img:
             return None
 
-        # Center crop to 1000x1000 square
-        sq_img = crop_to_square(img)
+        # Process cover according to user settings
+        target_img = process_cover_image(img, is_audio=True, cover_style=cover_style)
 
         # Save single lossless PNG cover (highest quality, no JPEG artifacts)
         png_cover = folder / "cover.png"
-        sq_img.save(str(png_cover), format="PNG")
+        target_img.save(str(png_cover), format="PNG")
 
         # Clean up redundant cover.jpg if present
         jpg_cover = folder / "cover.jpg"
@@ -1469,20 +1574,14 @@ def fetch_and_crop_cover_jpeg(
     artist: Optional[str] = None,
     title: Optional[str] = None,
     square: bool = True,
+    cover_style: Optional[str] = None,
 ) -> Optional[bytes]:
     """Search for downloaded thumbnail, or download thumbnail_url / YouTube / iTunes cover.
-    If square=True (Audio), crops to 1000x1000 square for ID3/album art.
-    If square=False (Video), preserves native widescreen aspect ratio (16:9).
+    Processes cover according to cover_style ('smart', 'original', 'square').
     Returns JPEG bytes.
     """
     def _prepare_img(img: Image.Image) -> bytes:
-        if square:
-            target_img = crop_to_square(img)
-        else:
-            if img.mode in ("RGBA", "P"):
-                target_img = img.convert("RGB")
-            else:
-                target_img = img
+        target_img = process_cover_image(img, is_audio=square, cover_style=cover_style)
         buf = io.BytesIO()
         target_img.save(buf, format="JPEG", quality=95)
         return buf.getvalue()
@@ -1591,10 +1690,9 @@ def fix_mp3_cover(path: Path, thumbnail_url: Optional[str] = None, artist: Optio
             apic = tags[key]
             try:
                 img = Image.open(io.BytesIO(apic.data))
-                if img.width == img.height == 1000:
-                    continue
+                processed = process_cover_image(img, is_audio=True)
                 buf = io.BytesIO()
-                crop_to_square(img).save(buf, format="JPEG", quality=95)
+                processed.save(buf, format="JPEG", quality=95)
                 tags[key] = APIC(
                     encoding=3,
                     mime="image/jpeg",
@@ -1710,25 +1808,23 @@ def fix_flac_cover(path: Path, thumbnail_url: Optional[str] = None, artist: Opti
         for pic in pictures:
             try:
                 img = Image.open(io.BytesIO(pic.data))
-                if img.width == img.height == 1000:
-                    new_pictures.append(pic)
-                    continue
+                processed = process_cover_image(img, is_audio=True)
                 buf = io.BytesIO()
-                crop_to_square(img).save(buf, format="JPEG", quality=95)
+                processed.save(buf, format="JPEG", quality=95)
                 if Picture:
                     new_pic = Picture()
                     new_pic.data = buf.getvalue()
                     new_pic.mime = "image/jpeg"
                     new_pic.type = 3  # Cover (front)
-                    new_pic.width = 1000
-                    new_pic.height = 1000
+                    new_pic.width = processed.width
+                    new_pic.height = processed.height
                     new_pic.depth = 24
                     new_pic.desc = getattr(pic, "desc", "Cover") or "Cover"
                     new_pictures.append(new_pic)
                 else:
                     pic.data = buf.getvalue()
                     pic.mime = "image/jpeg"
-                    pic.width, pic.height, pic.depth = 1000, 1000, 24
+                    pic.width, pic.height, pic.depth = processed.width, processed.height, 24
                     pic.type = 3
                     new_pictures.append(pic)
                 changed = True
@@ -1841,16 +1937,14 @@ def fix_opus_cover(path: Path, thumbnail_url: Optional[str] = None, artist: Opti
                     raw_bytes = base64.b64decode(b64_str)
                     pic = Picture(raw_bytes)
                     img = Image.open(io.BytesIO(pic.data))
-                    if img.width == img.height == 1000:
-                        new_b64_list.append(b64_str)
-                        continue
+                    processed = process_cover_image(img, is_audio=True)
                     buf = io.BytesIO()
-                    crop_to_square(img).save(buf, format="JPEG", quality=95)
+                    processed.save(buf, format="JPEG", quality=95)
                     pic.data = buf.getvalue()
                     pic.mime = "image/jpeg"
                     pic.type = 3
-                    pic.width = 1000
-                    pic.height = 1000
+                    pic.width = processed.width
+                    pic.height = processed.height
                     pic.depth = 24
                     pic.desc = "Cover"
                     new_b64_list.append(base64.b64encode(pic.write()).decode("ascii"))
@@ -1957,11 +2051,9 @@ def fix_m4a_cover(path: Path, thumbnail_url: Optional[str] = None, artist: Optio
         for cover in covers:
             try:
                 img = Image.open(io.BytesIO(cover))
-                if img.width == img.height == 1000:
-                    new_covers.append(cover)
-                    continue
+                processed = process_cover_image(img, is_audio=True)
                 buf = io.BytesIO()
-                crop_to_square(img).save(buf, format="JPEG", quality=95)
+                processed.save(buf, format="JPEG", quality=95)
                 new_covers.append(MP4Cover(buf.getvalue(), imageformat=MP4Cover.FORMAT_JPEG))
                 changed = True
             except Exception:

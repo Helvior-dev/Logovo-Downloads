@@ -1,6 +1,6 @@
 """Shared constants for the Logovo Downloads project."""
 
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.8.2"
 
 # Media file extensions for audio files
 AUDIO_EXTS = frozenset({".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac"})
@@ -23,8 +23,15 @@ SORT_SYNCED_DESC = "synced_desc"
 MEDIA_TYPE_AUDIO = "Audio"
 MEDIA_TYPE_VIDEO = "Video"
 
+# Audio cover style modes
+COVER_STYLE_SMART = "smart"
+COVER_STYLE_ORIGINAL = "original"
+COVER_STYLE_SQUARE = "square"
+
 # Settings keys
 SETTING_PLAYLIST_SORT_MODE = "playlist_sort_mode"
+SETTING_COVER_ASPECT_RATIO = "cover_aspect_ratio"
+SETTING_AUDIO_COVER_STYLE = "audio_cover_style"
 
 # Minimum valid media file size (500 KB)
 MIN_MEDIA_SIZE_BYTES = 500 * 1024

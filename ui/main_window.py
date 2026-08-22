@@ -2718,6 +2718,23 @@ class MainWindow(QMainWindow):
         )
         gen_grid.addWidget(self.compat_combo, 3, 1)
 
+        # Row 4: Cover Artwork Aspect Ratio (General setting for both audio and video)
+        gen_grid.addWidget(QLabel("Cover Aspect Ratio:"), 4, 0)
+        self.cover_style_combo = make_combo()
+        self.cover_style_combo.addItem("Smart (Auto-detect sidebars: crop 1:1 if pillarboxed, keep 16:9 if full frame) - Default", "smart")
+        self.cover_style_combo.addItem("Original Aspect Ratio (16:9 / No Cropping)", "original")
+        self.cover_style_combo.addItem("Square (1:1 Force Center-Crop)", "square")
+        cur_cover_style = self.settings.get('cover_aspect_ratio') or self.settings.get('audio_cover_style', 'smart')
+        idx_cs = self.cover_style_combo.findData(cur_cover_style)
+        if idx_cs >= 0:
+            self.cover_style_combo.setCurrentIndex(idx_cs)
+        else:
+            self.cover_style_combo.setCurrentIndex(0)
+        self.cover_style_combo.currentIndexChanged.connect(
+            lambda: self.settings.set('cover_aspect_ratio', self.cover_style_combo.currentData())
+        )
+        gen_grid.addWidget(self.cover_style_combo, 4, 1)
+
         gen_grid.setColumnStretch(1, 1)
         layout.addLayout(gen_grid)
 
