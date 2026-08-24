@@ -793,12 +793,14 @@ def _author_and_title_match(stem: str, title: Optional[str], author: Optional[st
         if any(t in critical_tags for t in tags_stem):
             return False
 
+    online_a_clean = clean_artist_name(author or "")
     title_candidates = [title]
     if re.search(r'\s+[-–—]\s+', title):
         t_parts = [p.strip() for p in re.split(r'\s+[-–—]\s+', title) if p.strip()]
         if len(t_parts) >= 2:
-            title_candidates.append(t_parts[-1])
-            title_candidates.append(' - '.join(t_parts[1:]))
+            for tp in [t_parts[-1], ' - '.join(t_parts[1:]), ' - '.join(t_parts[:-1]), t_parts[0]]:
+                if clean_artist_name(tp) != online_a_clean:
+                    title_candidates.append(tp)
 
     # Extract all candidate (artist, title) splits from multi-part stem
     parts = [p.strip() for p in re.split(r'\s+[-–—]\s+', stem) if p.strip()]
@@ -815,15 +817,25 @@ def _author_and_title_match(stem: str, title: Optional[str], author: Optional[st
         candidates.append((parts[1], ' - '.join(parts[2:])))
         candidates.append((' - '.join(parts[:-1]), parts[-1]))
         candidates.append((parts[0] + ' ' + parts[1], ' - '.join(parts[2:])))
+        candidates.append((parts[0], ' - '.join(parts[1:-1])))
         candidates.append(("", stem))
 
     generic_uploaders = {'topic', 'release', 'variousartists', 'soundtrack', ''}
-    clean_a_variants = translit_both_ways(clean_artist_name(author or ""))
+    clean_a_variants = translit_both_ways(online_a_clean)
+    lead_artist_clean = clean_artist_name(parts[0]) if parts else ""
 
     for raw_t in title_candidates:
-        clean_t_variants = translit_both_ways(clean_song_title(raw_t, author or ""))
+        clean_t = clean_song_title(raw_t, author or "")
+        if clean_t == online_a_clean:
+            continue
+        clean_t_variants = translit_both_ways(clean_t)
 
         for cand_a_raw, cand_t_raw in candidates:
+            cand_a_clean = clean_artist_name(cand_a_raw)
+            cand_t_clean = clean_artist_name(cand_t_raw)
+            if cand_t_clean and (cand_t_clean == cand_a_clean or cand_t_clean == lead_artist_clean or cand_t_clean == online_a_clean):
+                continue
+
             cand_t_variants = translit_both_ways(clean_song_title(cand_t_raw, cand_a_raw))
             cand_a_variants = translit_both_ways(clean_artist_name(cand_a_raw))
 
@@ -839,12 +851,7 @@ def _author_and_title_match(stem: str, title: Optional[str], author: Optional[st
                         break
 
             if not t_match:
-                if is_in_archive and (clean_a_variants & cand_a_variants):
-                    return True
                 continue
-
-            if is_in_archive:
-                return True
 
             # If title matches, verify artist
             if not author or any(g in clean_a_variants for g in generic_uploaders):
@@ -891,6 +898,54 @@ def match_search_candidate(cand_title: str, cand_uploader: str, orig_title: str,
         artist_match = True
 
     return title_match and artist_match
+
+
+def sanitize_extracted_artist(
+    raw_artist: Optional[str],
+    raw_uploader: Optional[str] = None,
+    raw_channel: Optional[str] = None,
+    raw_creator: Optional[str] = None,
+) -> str:
+    """Resolve clean artist name, stripping generic '- Topic', 'Release - Topic' uploader strings."""
+    candidates = [raw_artist, raw_creator, raw_uploader, raw_channel]
+    for cand in candidates:
+        if not cand:
+            continue
+        c = str(cand).strip()
+        c_clean = clean_artist_name(c)
+        if c_clean in ("topic", "release", "variousartists", "soundtrack", "auto-generated"):
+            continue
+        if re.search(r'\s*-\s*Topic$', c, flags=re.IGNORECASE):
+            c = re.sub(r'\s*-\s*Topic$', '', c, flags=re.IGNORECASE).strip()
+        if c:
+            return c
+    return (raw_artist or raw_creator or raw_uploader or raw_channel or "").strip()
+
+
+def resolve_album_tag(
+    entry_album: Optional[str],
+    playlist_folder_name: Optional[str],
+    track_title: Optional[str],
+    settings: Optional[Any] = None,
+) -> Optional[str]:
+    """
+    Resolve the ID3 TALB (Album) tag.
+    - If user set album_tag_mode == 'playlist': uses playlist_folder_name.
+    - Otherwise (default 'original'): uses real entry_album if present, or track_title (single),
+      ensuring distinct (Artist, Album) identity per song to eliminate VLC and media player cover cache collisions.
+    """
+    album_mode = "original"
+    if settings:
+        album_mode = settings.get("album_tag_mode", "original")
+
+    if album_mode == "playlist":
+        return playlist_folder_name or entry_album or track_title or None
+
+    if entry_album and str(entry_album).strip():
+        return str(entry_album).strip()
+
+    # For standalone tracks/singles without an explicit album name, use track_title
+    return (track_title or playlist_folder_name or None)
 
 
 def check_and_clean_archive_if_file_missing(output_dir: Path | str, vid: str, title: str = "", author: str = "") -> None:
@@ -967,14 +1022,13 @@ def is_file_already_downloaded(
     if stem_map is None:
         stem_map = read_stem_vid_map(out)
 
-    # 1. Fast check via video ID in stem_map
-    if vid and any(mapped_vid == vid for mapped_vid in stem_map.values()):
-        return True
-
-    if archive_ids is None:
-        archive_ids = read_archive_ids(out)
-
-    is_in_archive = bool(vid and vid in archive_ids)
+    # 1. Fast check via video ID in stem_map (only if file exists on disk)
+    if vid:
+        for mapped_stem, mapped_vid in stem_map.items():
+            if mapped_vid == vid:
+                for ext in valid_exts:
+                    if (out / f"{mapped_stem}{ext}").exists():
+                        return True
 
     # 2. Check via strict Author & Title matching in filenames
     if title and len(title.strip()) >= 2:
@@ -988,7 +1042,7 @@ def is_file_already_downloaded(
                 local_stems = []
 
         for stem in local_stems:
-            if _author_and_title_match(stem, title, author, is_in_archive=is_in_archive):
+            if _author_and_title_match(stem, title, author):
                 return True
 
     return False
@@ -1012,8 +1066,14 @@ def build_local_files_index(
         valid_exts = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
 
     stem_map = read_stem_vid_map(out)
-    archive_ids = read_archive_ids(out)
-    combined_vid_set = set(stem_map.values()) | archive_ids
+    
+    # Only consider video IDs whose files physically exist on disk!
+    verified_vids: set[str] = set()
+    for stem, vid in stem_map.items():
+        for ext in valid_exts:
+            if (out / f"{stem}{ext}").exists():
+                verified_vids.add(vid)
+                break
 
     title_index: dict[str, list[tuple[set[str], set[str], str]]] = {}
     valid_file_count = 0
@@ -1038,17 +1098,24 @@ def build_local_files_index(
                     candidates.append((parts[1], ' - '.join(parts[2:])))
                     candidates.append((' - '.join(parts[:-1]), parts[-1]))
                     candidates.append((parts[0] + ' ' + parts[1], ' - '.join(parts[2:])))
+                    candidates.append((parts[0], ' - '.join(parts[1:-1])))
                     candidates.append(("", stem))
 
+                lead_artist_clean = clean_artist_name(parts[0]) if parts else ""
                 for cand_a_raw, cand_t_raw in candidates:
+                    cand_a_clean = clean_artist_name(cand_a_raw)
+                    cand_t_clean = clean_artist_name(cand_t_raw)
+                    if cand_t_clean and (cand_t_clean == cand_a_clean or cand_t_clean == lead_artist_clean):
+                        continue
                     cand_t_vars = translit_both_ways(clean_song_title(cand_t_raw, cand_a_raw))
                     cand_a_vars = translit_both_ways(clean_artist_name(cand_a_raw))
                     for tv in cand_t_vars:
-                        title_index.setdefault(tv, []).append((tags, cand_a_vars, stem))
+                        if tv and tv != lead_artist_clean:
+                            title_index.setdefault(tv, []).append((tags, cand_a_vars, stem))
     except Exception:
         pass
 
-    return combined_vid_set, title_index, valid_file_count
+    return verified_vids, title_index, valid_file_count
 
 
 def is_entry_in_index(
@@ -1059,7 +1126,7 @@ def is_entry_in_index(
     title_index: dict[str, list[tuple[set[str], set[str], str]]],
 ) -> bool:
     """O(1) lookup to check if an online track already exists locally."""
-    # 1. Exact match via video ID in downloaded archive or stem map
+    # 1. Exact match via verified video ID
     if vid and vid in combined_vid_set:
         return True
 
@@ -1067,19 +1134,26 @@ def is_entry_in_index(
         return False
 
     tags_online = extract_significant_version_tags(title)
-    online_a_vars = translit_both_ways(clean_artist_name(author or ""))
+    online_a_clean = clean_artist_name(author or "")
+    online_a_vars = translit_both_ways(online_a_clean)
     generic = {'topic', 'release', 'variousartists', 'soundtrack', ''}
 
     title_candidates = [title]
     if re.search(r'\s+[-–—]\s+', title):
         t_parts = [p.strip() for p in re.split(r'\s+[-–—]\s+', title) if p.strip()]
         if len(t_parts) >= 2:
-            title_candidates.append(t_parts[-1])
-            title_candidates.append(' - '.join(t_parts[1:]))
+            for tp in [t_parts[-1], ' - '.join(t_parts[1:]), ' - '.join(t_parts[:-1]), t_parts[0]]:
+                if clean_artist_name(tp) != online_a_clean:
+                    title_candidates.append(tp)
 
     for raw_t in title_candidates:
-        clean_t_vars = translit_both_ways(clean_song_title(raw_t, author or ""))
+        clean_t = clean_song_title(raw_t, author or "")
+        if clean_t == online_a_clean:
+            continue
+        clean_t_vars = translit_both_ways(clean_t)
         for ctv in clean_t_vars:
+            if not ctv or ctv == online_a_clean:
+                continue
             if ctv in title_index:
                 for file_tags, file_a_vars, raw_stem in title_index[ctv]:
                     if tags_online and tags_online != file_tags:
@@ -1481,7 +1555,7 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict],
         track_num = count - i
         vid = entry.get("id") or (entry.get("url", "").split("v=")[-1].split("&")[0])
         title = entry.get("title", "")
-        author = entry.get("uploader") or entry.get("artist") or entry.get("channel") or ""
+        author = sanitize_extracted_artist(entry.get("artist"), entry.get("uploader"), entry.get("channel"), entry.get("creator"))
         year = str(entry.get("release_year") or entry.get("upload_date") or "")[:4] or None
         thumb = entry.get("thumbnail") or ""
 
@@ -1503,7 +1577,8 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict],
             ext = target_file.suffix.lower()
 
             target_idx = track_num if track_number_enabled else None
-            target_album = out.name if album_enabled else None
+            resolved_alb = resolve_album_tag(entry.get("album"), out.name, title, settings)
+            target_album = resolved_alb if album_enabled else None
             target_art = author if artist_enabled else None
             target_tit = title if title_enabled else None
             target_yr = year if year_enabled else None
@@ -2665,6 +2740,7 @@ class MediaDownloader:
         extracted_thumb: str = ""
         extracted_artist: str = ""
         extracted_title: str = ""
+        extracted_album: str = ""
         extracted_year: str = ""
         extracted_resolution: str = ""
         extracted_fps: str = ""
@@ -2690,7 +2766,7 @@ class MediaDownloader:
             ydl_opts["download_archive"] = archive_path
 
         def internal_progress_hook(d: dict) -> None:
-            nonlocal extracted_vid, extracted_thumb, extracted_artist, extracted_title, extracted_year, extracted_resolution, extracted_fps
+            nonlocal extracted_vid, extracted_thumb, extracted_artist, extracted_title, extracted_album, extracted_year, extracted_resolution, extracted_fps
             if d.get("status") == "finished":
                 fn = d.get("filename")
                 if fn:
@@ -2700,8 +2776,11 @@ class MediaDownloader:
                     extracted_vid = info.get("id")
                 if info.get("thumbnail"):
                     extracted_thumb = info.get("thumbnail")
-                if info.get("artist") or info.get("creator") or info.get("uploader"):
-                    extracted_artist = info.get("artist") or info.get("creator") or info.get("uploader")
+                art_cand = sanitize_extracted_artist(info.get("artist"), info.get("uploader"), info.get("channel"), info.get("creator"))
+                if art_cand:
+                    extracted_artist = art_cand
+                if info.get("album"):
+                    extracted_album = str(info.get("album")).strip()
                 if info.get("track") or info.get("title"):
                     extracted_title = info.get("track") or info.get("title")
                 if info.get("release_year"):
@@ -2726,7 +2805,7 @@ class MediaDownloader:
                 progress_callback(d)
 
         def internal_postprocessor_hook(d: dict) -> None:
-            nonlocal extracted_vid, extracted_thumb, extracted_artist, extracted_title, extracted_year, extracted_resolution, extracted_fps
+            nonlocal extracted_vid, extracted_thumb, extracted_artist, extracted_title, extracted_album, extracted_year, extracted_resolution, extracted_fps
             if d.get("status") == "finished":
                 fp = d.get("filepath") or (d.get("info_dict") or {}).get("filepath")
                 if fp:
@@ -2736,8 +2815,11 @@ class MediaDownloader:
                     extracted_vid = info.get("id")
                 if info.get("thumbnail"):
                     extracted_thumb = info.get("thumbnail")
-                if info.get("artist") or info.get("creator") or info.get("uploader"):
-                    extracted_artist = info.get("artist") or info.get("creator") or info.get("uploader")
+                art_cand = sanitize_extracted_artist(info.get("artist"), info.get("uploader"), info.get("channel"), info.get("creator"))
+                if art_cand:
+                    extracted_artist = art_cand
+                if info.get("album"):
+                    extracted_album = str(info.get("album")).strip()
                 if info.get("track") or info.get("title"):
                     extracted_title = info.get("track") or info.get("title")
                 if info.get("release_year"):
@@ -2967,12 +3049,19 @@ class MediaDownloader:
                 for candidate in target_paths:
                     if candidate.exists() and candidate.is_file() and candidate not in processed_files:
                         if is_audio:
+                            final_artist = sanitize_extracted_artist(extracted_artist, author)
+                            final_album = resolve_album_tag(
+                                extracted_album,
+                                os.path.basename(self.output_dir) if playlist_count else None,
+                                extracted_title or title,
+                                self.settings
+                            )
                             candidate = postprocess_audio_file(
                                 candidate,
                                 playlist_index=playlist_index,
                                 playlist_count=playlist_count,
-                                album=os.path.basename(self.output_dir) if playlist_count else None,
-                                artist=extracted_artist or author,
+                                album=final_album,
+                                artist=final_artist,
                                 title=extracted_title or title,
                                 year=extracted_year,
                                 naming_pattern=naming_pattern,
@@ -3011,12 +3100,19 @@ class MediaDownloader:
                         and _author_and_title_match(f.stem, title or extracted_title, author or extracted_artist)
                     ):
                         if is_audio:
+                            final_artist = sanitize_extracted_artist(extracted_artist, author)
+                            final_album = resolve_album_tag(
+                                extracted_album,
+                                os.path.basename(self.output_dir) if playlist_count else None,
+                                extracted_title or title,
+                                self.settings
+                            )
                             f = postprocess_audio_file(
                                 f,
                                 playlist_index=playlist_index,
                                 playlist_count=playlist_count,
-                                album=os.path.basename(self.output_dir) if playlist_count else None,
-                                artist=extracted_artist or author,
+                                album=final_album,
+                                artist=final_artist,
                                 title=extracted_title or title,
                                 year=extracted_year,
                                 naming_pattern=naming_pattern,

@@ -285,7 +285,7 @@ class QueueItemWidget(QWidget):
         
         main_layout.addLayout(controls_layout)
 
-        # Automatic thumbnail load if URL has thumbnail
+        # Store thumbnail URL if available, but do not automatically download image
         thumb_url = item_data.get('thumbnail')
         if not thumb_url:
             raw_u = item_data.get('url', '')
@@ -294,8 +294,13 @@ class QueueItemWidget(QWidget):
                 if match:
                     thumb_url = f"https://img.youtube.com/vi/{match.group(1)}/mqdefault.jpg"
                     item_data['thumbnail'] = thumb_url
-        if thumb_url:
-            self._load_thumbnail(thumb_url)
+
+        # Check if preview thumbnail was already pre-rendered
+        pre_pixmap = item_data.get('thumbnail_pixmap')
+        if pre_pixmap and hasattr(pre_pixmap, 'isNull') and not pre_pixmap.isNull():
+            self.set_thumbnail(pre_pixmap)
+        else:
+            self.btn_load_preview.show()
 
         # Automatic background metadata resolution if title/artist is missing or raw URL
         cur_t = str(item_data.get('title', '')).strip()
@@ -313,6 +318,9 @@ class QueueItemWidget(QWidget):
 
     def _on_metadata_enriched(self, data: dict):
         if not data:
+            if getattr(self, '_pending_preview_load', False):
+                self.btn_load_preview.setEnabled(True)
+                self.btn_load_preview.setText("Preview")
             return
         t = data.get('title')
         if t and not str(t).startswith('http'):
@@ -344,9 +352,10 @@ class QueueItemWidget(QWidget):
         self.subtitle_label.setText(f"{p}{dur_str} • {auth}")
 
         thumb = data.get('thumbnail')
-        if thumb and not getattr(self, '_thumb_loaded', False):
+        if thumb:
             self.item_data['thumbnail'] = thumb
-            self._load_thumbnail(thumb)
+            if getattr(self, '_pending_preview_load', False) and not getattr(self, '_thumb_loaded', False):
+                self._load_thumbnail(thumb)
 
     def _populate_subs_combo(self):
         cur_fmt = self.format_combo.currentText() if hasattr(self, 'format_combo') else str(self.item_data.get('media_type', ''))
@@ -439,21 +448,29 @@ class QueueItemWidget(QWidget):
         self._populate_subs_combo()
         
     def _on_load_preview(self):
-        self.btn_load_preview.hide()
-        
         thumb_url = self.item_data.get('thumbnail')
         url = self.item_data.get('url', '')
         
         # Fallback for YouTube thumbnails if yt-dlp didn't provide one
         if not thumb_url and ('youtube.com' in url or 'youtu.be' in url):
             import re
-            match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
+            match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11})', url)
             if match:
                 video_id = match.group(1)
                 thumb_url = f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
+                self.item_data['thumbnail'] = thumb_url
                 
         if thumb_url:
+            self.btn_load_preview.hide()
             self._load_thumbnail(thumb_url)
+        else:
+            self.btn_load_preview.setEnabled(False)
+            self.btn_load_preview.setText("Loading...")
+            self._pending_preview_load = True
+            if not hasattr(self, 'enricher') or not self.enricher or not self.enricher.isRunning():
+                self.enricher = QueueMetadataEnricher(url)
+                self.enricher.metadata_ready.connect(self._on_metadata_enriched)
+                self.enricher.start()
 
     def _load_thumbnail(self, url):
         self.fetcher = ThumbnailFetcher(url)
@@ -471,6 +488,10 @@ class QueueItemWidget(QWidget):
             )
             self.thumbnail_label.setPixmap(scaled)
             self.btn_load_preview.hide()
+        else:
+            self.btn_load_preview.setEnabled(True)
+            self.btn_load_preview.setText("Preview")
+            self.btn_load_preview.show()
 
     def _on_remove(self):
         if self.status_state not in ["Downloading", "Retrying"]:

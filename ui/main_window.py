@@ -2788,6 +2788,24 @@ class MainWindow(QMainWindow):
         art_layout.addWidget(self.cover_mode_combo, 1)
         audio_layout.addLayout(art_layout)
 
+        # Album Tag Source Row
+        album_mode_layout = QHBoxLayout()
+        album_mode_layout.addWidget(QLabel("Album Tag (TALB):"))
+        self.album_mode_combo = make_combo()
+        self.album_mode_combo.addItem("Original Album / Track Title (Recommended — prevents VLC/Player cover conflicts)", "original")
+        self.album_mode_combo.addItem("Playlist Folder Name (Groups all tracks under one playlist album)", "playlist")
+        cur_alb_mode = self.settings.get('album_tag_mode', 'original')
+        idx_am = self.album_mode_combo.findData(cur_alb_mode)
+        if idx_am >= 0:
+            self.album_mode_combo.setCurrentIndex(idx_am)
+        else:
+            self.album_mode_combo.setCurrentIndex(0)
+        self.album_mode_combo.currentIndexChanged.connect(
+            lambda: self.settings.set('album_tag_mode', self.album_mode_combo.currentData())
+        )
+        album_mode_layout.addWidget(self.album_mode_combo, 1)
+        audio_layout.addLayout(album_mode_layout)
+
         # Karaoke Mode Toggle + Language Selection
         lyrics_section = QVBoxLayout()
         lyrics_section.setSpacing(6)
