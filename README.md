@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.8.3-007acc.svg?style=flat-square" alt="Version 1.8.3" />
+  <img src="https://img.shields.io/badge/version-1.8.4-007acc.svg?style=flat-square" alt="Version 1.8.4" />
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52.svg?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
   <img src="https://img.shields.io/badge/Core-yt--dlp-red.svg?style=flat-square" alt="yt-dlp" />
@@ -37,11 +37,14 @@ It is designed for managing offline music libraries with accurate metadata extra
 - **Widescreen & Square Covers:** Native 16:9 thumbnails for video containers and square 1:1 artwork for audio files.
 - **Multi-Threaded Queue:** Concurrent download queue with configurable stream limits (up to 6 workers).
 
-### Playlist Synchronization
-- **Fast Local Indexing:** Compares local folders against online playlists in seconds using cached file stems.
-- **Removed Track Detection:** Identifies tracks removed or unlisted from playlists and displays neutral `-N removed` markers.
+### Playlist Synchronization & Library Integrity
+- **Fast Local Indexing:** Compares local folders against online playlists in seconds using cached file stems and multi-ID tracking.
+- **Fallback & Alternative Auto-Healing:** Automatically links alternative downloads (e.g. tracks unavailable on YouTube found via fallback search) with original playlist entries to eliminate download/delete loops.
+- **Strict Version Match Guard:** Strictly isolates originals from remixes, VIPs, acoustics, and live versions to prevent false positive matches.
+- **Removed Track Detection:** Identifies tracks removed or unlisted from playlists with neutral `-N removed` markers and interactive cleanup dialogs.
+- **Persistent Kept Tracks:** Retains files you choose to keep locally across sync cycles, with a quick-reset action in the card UI.
 - **Zero-Lag Reordering:** Drag-and-drop playlist cards or use arrow buttons with instantaneous in-place reordering.
-- **Title Cleaning:** Automatically strips junk video labels and promotional clutter while preserving genuine version suffixes (`Remix`, `VIP`, `Extended`, `Acoustic`, `Instrumental`, `Live`).
+- **Title Cleaning:** Automatically strips promotional clutter while preserving genuine version suffixes (`Remix`, `VIP`, `Extended`, `Acoustic`, `Instrumental`, `Live`).
 - **Duplicate Detection:** Identifies duplicate tracks within online playlists and provides direct links to manage them.
 
 ### App Updates & Maintenance

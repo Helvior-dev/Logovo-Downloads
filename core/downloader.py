@@ -594,8 +594,8 @@ def apply_playlist_cover_settings(folder_path: Path | str, image_source: Any, mo
 
 # ─── Playlist Persistence Helpers ─────────────────────────────────────────────
 
-def read_stem_vid_map(output_dir: Path | str) -> dict[str, str]:
-    """Read stem -> video_id mapping from stem_vid_map.json, keeping only existing files."""
+def read_raw_stem_vid_map(output_dir: Path | str) -> dict[str, str | dict]:
+    """Read raw stem -> video_id (or dict with vid/original_vid) from stem_vid_map.json."""
     out = Path(output_dir)
     map_file = out / "stem_vid_map.json"
     if map_file.exists():
@@ -603,12 +603,12 @@ def read_stem_vid_map(output_dir: Path | str) -> dict[str, str]:
             raw = json.loads(map_file.read_text(encoding="utf-8"))
             valid_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv", ".webm"}
             cleaned = {}
-            for stem, vid in raw.items():
+            for stem, val in raw.items():
                 for ext in valid_exts:
                     p = out / f"{stem}{ext}"
                     try:
                         if p.exists() and p.stat().st_size > 100 * 1024:
-                            cleaned[stem] = vid
+                            cleaned[stem] = val
                             break
                     except Exception:
                         pass
@@ -618,21 +618,122 @@ def read_stem_vid_map(output_dir: Path | str) -> dict[str, str]:
     return {}
 
 
-def update_stem_vid_map(output_dir: Path | str, stem: str, vid: str) -> None:
-    """Record a track's stem (filename without extension) and video ID in stem_vid_map.json."""
-    if not stem or not vid:
+def read_stem_vid_map(output_dir: Path | str) -> dict[str, str]:
+    """Read stem -> video_id mapping from stem_vid_map.json, keeping only existing files.
+    Backwards-compatible: always returns a string ID (preferring original_vid if available)."""
+    raw = read_raw_stem_vid_map(output_dir)
+    res: dict[str, str] = {}
+    for stem, val in raw.items():
+        if isinstance(val, dict):
+            vid = val.get("original_vid") or val.get("vid") or ""
+            if vid:
+                res[stem] = str(vid)
+        elif isinstance(val, str) and val:
+            res[stem] = val
+    return res
+
+
+def read_stem_all_vids_map(output_dir: Path | str) -> dict[str, set[str]]:
+    """Return all video IDs (both original playlist ID and alternative download ID) mapped to each stem."""
+    raw = read_raw_stem_vid_map(output_dir)
+    res: dict[str, set[str]] = {}
+    for stem, val in raw.items():
+        vids = set()
+        if isinstance(val, dict):
+            if val.get("original_vid"):
+                vids.add(str(val["original_vid"]).strip())
+            if val.get("vid"):
+                vids.add(str(val["vid"]).strip())
+        elif isinstance(val, str) and val:
+            vids.add(val.strip())
+        if vids:
+            res[stem] = vids
+    return res
+
+
+def update_stem_vid_map(output_dir: Path | str, stem: str, vid: str, original_vid: Optional[str] = None) -> None:
+    """Record a track's stem (filename without extension) and video ID in stem_vid_map.json.
+    Supports storing both candidate vid and original_vid for fallback/alternative downloads."""
+    if not stem or (not vid and not original_vid):
         return
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     map_file = out / "stem_vid_map.json"
     unhide_file(map_file)
-    data = read_stem_vid_map(out)
-    data[stem] = vid
+    data = read_raw_stem_vid_map(out)
+
+    existing_entry = data.get(stem)
+    if original_vid and vid and original_vid != vid:
+        data[stem] = {"vid": vid, "original_vid": original_vid}
+    elif isinstance(existing_entry, dict):
+        if vid:
+            existing_entry["vid"] = vid
+        if original_vid:
+            existing_entry["original_vid"] = original_vid
+        data[stem] = existing_entry
+    elif original_vid and not vid:
+        data[stem] = original_vid
+    else:
+        data[stem] = vid
+
     try:
         map_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         hide_file(map_file)
     except Exception:
         pass
+
+
+def read_kept_orphans(output_dir: Path | str) -> set[str]:
+    """Read set of filenames/stems that user explicitly chose to keep despite not being in online playlist."""
+    out = Path(output_dir)
+    f = out / ".kept_orphans.json"
+    if not f.exists():
+        return set()
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            valid_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv", ".webm"}
+            kept = set()
+            for s in data:
+                # Keep if file physically exists
+                if (out / s).exists() or any((out / f"{s}{ext}").exists() for ext in valid_exts):
+                    kept.add(s)
+            return kept
+    except Exception:
+        pass
+    return set()
+
+
+def add_kept_orphans(output_dir: Path | str, items: list[str] | set[str]) -> None:
+    """Add filenames/stems to .kept_orphans.json."""
+    if not items:
+        return
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    f = out / ".kept_orphans.json"
+    unhide_file(f)
+    existing = read_kept_orphans(out)
+    for it in items:
+        stem = Path(it).stem
+        existing.add(it)
+        existing.add(stem)
+    try:
+        f.write_text(json.dumps(sorted(list(existing)), ensure_ascii=False, indent=2), encoding="utf-8")
+        hide_file(f)
+    except Exception:
+        pass
+
+
+def clear_kept_orphans(output_dir: Path | str) -> None:
+    """Reset / clear .kept_orphans.json so files will be re-evaluated on next sync."""
+    out = Path(output_dir)
+    f = out / ".kept_orphans.json"
+    if f.exists():
+        try:
+            unhide_file(f)
+            f.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def read_archive_ids(output_dir: Path | str) -> set[str]:
@@ -699,16 +800,23 @@ def clean_song_title(title: str, author: str = "") -> str:
 
     # Strip feat / with in title
     t = re.sub(r'\b(?:feat|ft|with)\.?\s+[a-zA-Z0-9\u0400-\u04FF\s]+(?=[\(\[\{]|$)', '', t, flags=re.IGNORECASE)
-    t = re.sub(r'[-–—]\s*[a-zA-Z0-9\s]+\(out\s+on\s+spotify[!]*\)', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'[-–—]\s*[a-zA-Z0-9\s_]+\(out\s+on\s+spotify[!]*\)', '', t, flags=re.IGNORECASE)
 
-    # Strip repeated artists from title e.g. "Blank Banshee - Blank Banshee - B: / Start Up"
-    if re.search(r'\s*[-–—]\s*', t):
+    # Clean artist candidates for filtering repeated artist tokens in title
+    author_tokens = set()
+    if author:
+        author_tokens.add(clean_artist_name(author))
+        pure_author = re.sub(r'[\(\[\{][^\)\]\}]*[\)\]\}]', '', author).strip()
+        author_tokens.add(clean_artist_name(pure_author))
+        author_tokens.discard('')
+
+    # Strip repeated artists from title e.g. "Blank Banshee - Blank Banshee - B: / Start Up" or "-proloxx"
+    if re.search(r'[-–—]', t):
         parts = [p.strip() for p in re.split(r'\s*[-–—]\s*', t) if p.strip()]
-        a_clean = re.sub(r'[\W_]+', '', (author or '').lower())
         new_parts = []
         for p in parts:
-            p_clean = re.sub(r'[\W_]+', '', p.lower())
-            if a_clean and (p_clean == a_clean or p_clean.startswith(a_clean) or p_clean.endswith(a_clean)):
+            p_clean = clean_artist_name(p)
+            if author_tokens and any(p_clean == at or (len(p_clean) >= 3 and (p_clean in at or at in p_clean)) for at in author_tokens):
                 continue
             new_parts.append(p)
         if new_parts:
@@ -817,7 +925,6 @@ def _author_and_title_match(stem: str, title: Optional[str], author: Optional[st
         candidates.append((parts[1], ' - '.join(parts[2:])))
         candidates.append((' - '.join(parts[:-1]), parts[-1]))
         candidates.append((parts[0] + ' ' + parts[1], ' - '.join(parts[2:])))
-        candidates.append((parts[0], ' - '.join(parts[1:-1])))
         candidates.append(("", stem))
 
     generic_uploaders = {'topic', 'release', 'variousartists', 'soundtrack', ''}
@@ -1065,14 +1172,14 @@ def build_local_files_index(
     else:
         valid_exts = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
 
-    stem_map = read_stem_vid_map(out)
+    stem_all_vids = read_stem_all_vids_map(out)
     
     # Only consider video IDs whose files physically exist on disk!
     verified_vids: set[str] = set()
-    for stem, vid in stem_map.items():
+    for stem, vids in stem_all_vids.items():
         for ext in valid_exts:
             if (out / f"{stem}{ext}").exists():
-                verified_vids.add(vid)
+                verified_vids.update(vids)
                 break
 
     title_index: dict[str, list[tuple[set[str], set[str], str]]] = {}
@@ -1083,7 +1190,7 @@ def build_local_files_index(
             if f.is_file() and f.suffix.lower() in valid_exts and f.stat().st_size >= 500 * 1024:
                 valid_file_count += 1
                 stem = f.stem
-                parts = [p.strip() for p in re.split(r'\s+[-–—]\s+', stem) if p.strip()] if (' - ' in stem or ' – ' in stem or ' — ' in stem) else [stem]
+                parts = [p.strip() for p in re.split(r'\s+[-–—]\s*|\s*[-–—]\s+', stem) if p.strip()] if re.search(r'[-–—]', stem) else [stem]
                 tags = extract_significant_version_tags(stem)
 
                 candidates = []
@@ -1098,7 +1205,6 @@ def build_local_files_index(
                     candidates.append((parts[1], ' - '.join(parts[2:])))
                     candidates.append((' - '.join(parts[:-1]), parts[-1]))
                     candidates.append((parts[0] + ' ' + parts[1], ' - '.join(parts[2:])))
-                    candidates.append((parts[0], ' - '.join(parts[1:-1])))
                     candidates.append(("", stem))
 
                 lead_artist_clean = clean_artist_name(parts[0]) if parts else ""
@@ -1278,10 +1384,13 @@ def detect_orphan_files_in_folder(output_dir: Path | str, entries: list[dict], i
     if valid_cnt == 0:
         return []
 
+    kept_items = read_kept_orphans(out)
+    stem_all_vids = read_stem_all_vids_map(out)
     stem_map = read_stem_vid_map(out)
-    vid_to_stems = {}
-    for s, v in stem_map.items():
-        vid_to_stems.setdefault(v, []).append(s)
+    vid_to_stems: dict[str, list[str]] = {}
+    for s, vids in stem_all_vids.items():
+        for v in vids:
+            vid_to_stems.setdefault(v, []).append(s)
 
     claimed_stems = set()
     generic = {'topic', 'release', 'variousartists', 'soundtrack', 'records', 'music', 'official', ''}
@@ -1305,7 +1414,7 @@ def detect_orphan_files_in_folder(output_dir: Path | str, entries: list[dict], i
         author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ''
         tags_online = extract_significant_version_tags(t)
 
-        parts = [p.strip() for p in re.split(r'\s+[-–—]\s+', t) if p.strip()] if (' - ' in t or ' – ' in t or ' — ' in t) else [t]
+        parts = [p.strip() for p in re.split(r'\s+[-–—]\s*|\s*[-–—]\s+', t) if p.strip()] if re.search(r'[-–—]', t) else [t]
         candidates = []
         if len(parts) == 1:
             candidates.append((author, parts[0]))
@@ -1368,6 +1477,8 @@ def detect_orphan_files_in_folder(output_dir: Path | str, entries: list[dict], i
     for f in out.iterdir():
         if f.is_file() and f.suffix.lower() in valid_exts and f.stat().st_size >= 500 * 1024:
             stem = f.stem
+            if f.name in kept_items or stem in kept_items:
+                continue
             if stem not in claimed_stems:
                 vid = stem_map.get(stem)
                 url = f"https://www.youtube.com/watch?v={vid}" if vid else ""
@@ -1380,6 +1491,170 @@ def detect_orphan_files_in_folder(output_dir: Path | str, entries: list[dict], i
                 })
 
     return orphan_items
+
+
+def is_safe_autoheal_match(orphan_item: dict, entry: dict) -> bool:
+    """Strictly evaluates whether an orphaned local file corresponds to a missing playlist entry.
+    Enforces strict safety rules to completely eliminate false positives:
+      1. Version tags MUST match identically (e.g. remix vs original never match).
+      2. Artist matching (clean_artist_name with transliteration, no conflicting artists).
+      3. Clean title token matching (must have high confidence, matching tokens).
+      4. Duration guard: if both durations are known, diff must be <= 20 seconds.
+    """
+    orphan_stem = orphan_item.get('title') or Path(orphan_item.get('filename', '')).stem
+    entry_title = entry.get('title') or ''
+    entry_author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ''
+
+    if not orphan_stem or not entry_title:
+        return False
+
+    # 1. Strict Version Tags Matching
+    orphan_tags = extract_significant_version_tags(orphan_stem)
+    entry_tags = extract_significant_version_tags(entry_title)
+    if orphan_tags != entry_tags:
+        return False
+
+    # 2. Duration Guard
+    entry_dur = entry.get('duration')
+    orphan_dur = orphan_item.get('duration')
+    if entry_dur and orphan_dur:
+        try:
+            if abs(float(entry_dur) - float(orphan_dur)) > 20:
+                return False
+        except (ValueError, TypeError):
+            pass
+
+    # 3. Artist Matching
+    stem_parts = [p.strip() for p in re.split(r'\s+[-–—]\s*|\s*[-–—]\s+', orphan_stem) if p.strip()]
+    file_author = stem_parts[0] if len(stem_parts) >= 2 else ""
+
+    clean_entry_a = clean_artist_name(entry_author)
+    clean_pure_entry_a = clean_artist_name(re.sub(r'[\(\[\{][^\)\]\}]*[\)\]\}]', '', entry_author).strip())
+    clean_file_a = clean_artist_name(file_author) if file_author else ""
+
+    entry_a_vars = (translit_both_ways(clean_entry_a) | translit_both_ways(clean_pure_entry_a)) - {''}
+    generic = {'topic', 'release', 'variousartists', 'soundtrack', ''}
+
+    author_ok = False
+    if not clean_entry_a or clean_entry_a in generic:
+        author_ok = True
+    elif not clean_file_a:
+        author_ok = any(var and var in orphan_stem.lower() for var in entry_a_vars) or len(entry_title) >= 10
+    else:
+        file_a_vars = translit_both_ways(clean_file_a)
+        if entry_a_vars & file_a_vars:
+            author_ok = True
+        elif any(ea and fa and (ea in fa or fa in ea) for ea in entry_a_vars for fa in file_a_vars if len(min(ea, fa)) >= 3):
+            author_ok = True
+
+    if not author_ok:
+        return False
+
+    # 4. Clean Title Matching
+    clean_t_entry = clean_song_title(entry_title, entry_author)
+    title_candidates = []
+    if len(stem_parts) == 1:
+        title_candidates.append(stem_parts[0])
+    elif len(stem_parts) == 2:
+        title_candidates.append(stem_parts[1])
+        title_candidates.append(stem_parts[0])
+    else:
+        title_candidates.append(' - '.join(stem_parts[1:]))
+        title_candidates.append(stem_parts[1])
+        title_candidates.append(stem_parts[-1])
+    title_candidates.append(orphan_stem)
+
+    title_matched = False
+    clean_entry_vars = translit_both_ways(clean_t_entry)
+    for cand in title_candidates:
+        clean_cand = clean_song_title(cand, file_author or entry_author)
+        clean_cand_vars = translit_both_ways(clean_cand)
+        if clean_entry_vars & clean_cand_vars:
+            title_matched = True
+            break
+        for ev in clean_entry_vars:
+            for cv in clean_cand_vars:
+                if ev and cv and len(ev) >= 6 and len(cv) >= 6:
+                    if ev in cv or cv in ev:
+                        title_matched = True
+                        break
+            if title_matched:
+                break
+        if title_matched:
+            break
+
+    return title_matched
+
+
+def autoheal_orphans_and_missing(
+    output_dir: Path | str,
+    orphaned_files: list[dict],
+    missing_entries: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """Safe auto-healing between orphans and missing entries.
+    Strictly verifies 1-to-1 bipartite compatibility before linking.
+    Returns:
+        (remaining_orphans, remaining_missing)
+    """
+    if not orphaned_files or not missing_entries:
+        return orphaned_files, missing_entries
+
+    out = Path(output_dir)
+    orphan_to_missing: dict[int, list[int]] = {}
+    missing_to_orphan: dict[int, list[int]] = {}
+
+    for o_idx, o_item in enumerate(orphaned_files):
+        for m_idx, m_entry in enumerate(missing_entries):
+            if is_safe_autoheal_match(o_item, m_entry):
+                orphan_to_missing.setdefault(o_idx, []).append(m_idx)
+                missing_to_orphan.setdefault(m_idx, []).append(o_idx)
+
+    # Enforce strict 1-to-1 matching:
+    healed_pairs = []
+    for o_idx, m_list in orphan_to_missing.items():
+        if len(m_list) == 1:
+            m_idx = m_list[0]
+            if len(missing_to_orphan.get(m_idx, [])) == 1:
+                healed_pairs.append((o_idx, m_idx))
+
+    if not healed_pairs:
+        return orphaned_files, missing_entries
+
+    healed_o_indices = set()
+    healed_m_indices = set()
+
+    for o_idx, m_idx in healed_pairs:
+        healed_o_indices.add(o_idx)
+        healed_m_indices.add(m_idx)
+
+        o_item = orphaned_files[o_idx]
+        m_entry = missing_entries[m_idx]
+
+        entry_vid = m_entry.get('id')
+        if not entry_vid:
+            u = m_entry.get('url', '')
+            if 'v=' in u: entry_vid = u.split('v=')[-1].split('&')[0]
+            elif 'youtu.be/' in u: entry_vid = u.split('youtu.be/')[-1].split('?')[0]
+
+        stem = o_item.get('title') or Path(o_item.get('filename', '')).stem
+        cand_vid = o_item.get('vid') if o_item.get('vid') != 'Local Copy' else None
+
+        if entry_vid and stem:
+            update_stem_vid_map(out, stem, vid=cand_vid or entry_vid, original_vid=entry_vid)
+            archive_file = out / "downloaded_archive.txt"
+            if archive_file.exists():
+                try:
+                    unhide_file(archive_file)
+                    with open(archive_file, "a", encoding="utf-8") as f_arc:
+                        f_arc.write(f"youtube {entry_vid}\n")
+                    hide_file(archive_file)
+                except Exception:
+                    pass
+
+    remaining_orphans = [o for i, o in enumerate(orphaned_files) if i not in healed_o_indices]
+    remaining_missing = [m for i, m in enumerate(missing_entries) if i not in healed_m_indices]
+
+    return remaining_orphans, remaining_missing
 
 
 def cleanup_orphan_files(output_dir: Path | str, is_audio_playlist: bool = True) -> int:
@@ -2749,6 +3024,10 @@ class MediaDownloader:
         elif "youtu.be/" in clean_url:
             extracted_vid = clean_url.split("youtu.be/")[-1].split("?")[0]
 
+        target_original_vid = extracted_vid
+        target_original_title = (title or "").strip()
+        target_original_author = (author or "").strip()
+
         if should_track_playlist and extracted_vid:
             if is_file_already_downloaded(self.output_dir, extracted_vid, title=title, author=author, is_audio=is_audio):
                 self.was_skipped = True
@@ -2799,8 +3078,8 @@ class MediaDownloader:
                     except Exception:
                         pass
                 stem = Path(fn).stem if fn else ""
-                if should_track_playlist and stem and extracted_vid:
-                    update_stem_vid_map(self.output_dir, stem, extracted_vid)
+                if should_track_playlist and stem and (extracted_vid or target_original_vid):
+                    update_stem_vid_map(self.output_dir, stem, vid=extracted_vid or target_original_vid, original_vid=target_original_vid or None)
             if progress_callback:
                 progress_callback(d)
 
@@ -2838,8 +3117,8 @@ class MediaDownloader:
                     except Exception:
                         pass
                 stem = Path(fp).stem if fp else ""
-                if should_track_playlist and stem and extracted_vid:
-                    update_stem_vid_map(self.output_dir, stem, extracted_vid)
+                if should_track_playlist and stem and (extracted_vid or target_original_vid):
+                    update_stem_vid_map(self.output_dir, stem, vid=extracted_vid or target_original_vid, original_vid=target_original_vid or None)
 
         ydl_opts["progress_hooks"] = [internal_progress_hook]
         ydl_opts["postprocessor_hooks"] = [internal_postprocessor_hook]
@@ -3049,11 +3328,19 @@ class MediaDownloader:
                 for candidate in target_paths:
                     if candidate.exists() and candidate.is_file() and candidate not in processed_files:
                         if is_audio:
-                            final_artist = sanitize_extracted_artist(extracted_artist, author)
+                            clean_target_author = re.sub(r'[\(\[\{]\s*read\s+desc[^\)\]\}]*[\)\]\}]', '', target_original_author or author or '', flags=re.IGNORECASE).strip()
+                            clean_target_title = re.sub(r'[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]', '', target_original_title or title or '', flags=re.IGNORECASE).strip()
+                            if clean_target_author and clean_target_title:
+                                final_artist = clean_target_author
+                                final_title = clean_target_title
+                            else:
+                                final_artist = sanitize_extracted_artist(extracted_artist, author)
+                                final_title = extracted_title or title
+
                             final_album = resolve_album_tag(
                                 extracted_album,
                                 os.path.basename(self.output_dir) if playlist_count else None,
-                                extracted_title or title,
+                                final_title,
                                 self.settings
                             )
                             candidate = postprocess_audio_file(
@@ -3062,7 +3349,7 @@ class MediaDownloader:
                                 playlist_count=playlist_count,
                                 album=final_album,
                                 artist=final_artist,
-                                title=extracted_title or title,
+                                title=final_title,
                                 year=extracted_year,
                                 naming_pattern=naming_pattern,
                                 settings=self.settings,
@@ -3086,8 +3373,8 @@ class MediaDownloader:
                         processed_files.append(candidate)
                         if should_track_playlist:
                             append_playlist_order(self.output_dir, candidate.name)
-                            if extracted_vid:
-                                update_stem_vid_map(self.output_dir, candidate.stem, extracted_vid)
+                            if extracted_vid or target_original_vid:
+                                update_stem_vid_map(self.output_dir, candidate.stem, vid=extracted_vid or target_original_vid, original_vid=target_original_vid or None)
 
             # Strict validation: Only accept newly created/modified files matching this download
             if not processed_files and not self.was_skipped:
@@ -3100,11 +3387,19 @@ class MediaDownloader:
                         and _author_and_title_match(f.stem, title or extracted_title, author or extracted_artist)
                     ):
                         if is_audio:
-                            final_artist = sanitize_extracted_artist(extracted_artist, author)
+                            clean_target_author = re.sub(r'[\(\[\{]\s*read\s+desc[^\)\]\}]*[\)\]\}]', '', target_original_author or author or '', flags=re.IGNORECASE).strip()
+                            clean_target_title = re.sub(r'[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]', '', target_original_title or title or '', flags=re.IGNORECASE).strip()
+                            if clean_target_author and clean_target_title:
+                                final_artist = clean_target_author
+                                final_title = clean_target_title
+                            else:
+                                final_artist = sanitize_extracted_artist(extracted_artist, author)
+                                final_title = extracted_title or title
+
                             final_album = resolve_album_tag(
                                 extracted_album,
                                 os.path.basename(self.output_dir) if playlist_count else None,
-                                extracted_title or title,
+                                final_title,
                                 self.settings
                             )
                             f = postprocess_audio_file(
@@ -3113,7 +3408,7 @@ class MediaDownloader:
                                 playlist_count=playlist_count,
                                 album=final_album,
                                 artist=final_artist,
-                                title=extracted_title or title,
+                                title=final_title,
                                 year=extracted_year,
                                 naming_pattern=naming_pattern,
                                 settings=self.settings,
@@ -3137,8 +3432,8 @@ class MediaDownloader:
                         processed_files.append(f)
                         if should_track_playlist:
                             append_playlist_order(self.output_dir, f.name)
-                            if extracted_vid:
-                                update_stem_vid_map(self.output_dir, f.stem, extracted_vid)
+                            if extracted_vid or target_original_vid:
+                                update_stem_vid_map(self.output_dir, f.stem, vid=extracted_vid or target_original_vid, original_vid=target_original_vid or None)
 
             if processed_files:
                 success = True

@@ -37,6 +37,7 @@ from core.downloader import (
     cleanup_orphan_files,
     is_file_already_downloaded,
     read_stem_vid_map,
+    read_stem_all_vids_map,
     read_archive_ids,
     restore_dates_from_order,
     reindex_existing_playlist_files,
@@ -53,6 +54,10 @@ from core.downloader import (
     is_entry_in_index,
     detect_online_playlist_duplicates,
     detect_orphan_files_in_folder,
+    read_kept_orphans,
+    add_kept_orphans,
+    clear_kept_orphans,
+    autoheal_orphans_and_missing,
 )
 from core.constants import APP_VERSION
 from core.utils import clean_filename_for_all_devices
@@ -376,6 +381,13 @@ class SyncPlaylistWorker(QThread):
                 is_audio=(media_type_category == "Audio")
             )
 
+            # 5. Safe Auto-healing between orphans and missing entries (strict 1-to-1 matching)
+            orphaned_files, missing_entries = autoheal_orphans_and_missing(
+                out_dir,
+                orphaned_files,
+                missing_entries
+            )
+
             self.finished_signal.emit(
                 preview,
                 self.p_dict,
@@ -648,7 +660,9 @@ def detect_and_prompt_orphans(parent, out_dir: str, preview: dict) -> list[str]:
     """Detect truly orphaned files with known video IDs no longer in online playlist and prompt user with interactive details dialog."""
     local_files = [f for f in os.listdir(out_dir) if os.path.isfile(os.path.join(out_dir, f)) and not f.startswith('.')]
     archived_ids = read_archive_ids(out_dir)
+    stem_all_vids = read_stem_all_vids_map(out_dir)
     stem_map = read_stem_vid_map(out_dir)
+    kept_items = read_kept_orphans(out_dir)
 
     playlist_ids = set()
     for e in preview.get('entries', []):
@@ -672,6 +686,13 @@ def detect_and_prompt_orphans(parent, out_dir: str, preview: dict) -> list[str]:
         if not f_lower.endswith(valid_exts):
             continue
         stem = os.path.splitext(f)[0]
+        if f in kept_items or stem in kept_items:
+            continue
+
+        mapped_vids = stem_all_vids.get(stem, set())
+        if mapped_vids and any(v in playlist_ids for v in mapped_vids):
+            continue
+
         mapped_vid = stem_map.get(stem)
 
         # STRICT CHECK: Only flag if mapped_vid is explicitly in orphan_ids and NOT in online playlist_ids
@@ -688,7 +709,8 @@ def detect_and_prompt_orphans(parent, out_dir: str, preview: dict) -> list[str]:
         return []
 
     dlg = OrphanFilesDialog(orphan_items, parent=parent)
-    if dlg.exec() == QDialog.DialogCode.Accepted and dlg.deleted_files:
+    res = dlg.exec()
+    if res == QDialog.DialogCode.Accepted and dlg.deleted_files:
         deleted = []
         for fn in dlg.deleted_files:
             try:
@@ -709,8 +731,13 @@ def detect_and_prompt_orphans(parent, out_dir: str, preview: dict) -> list[str]:
                     )
             except Exception:
                 pass
+        kept_fns = [it.get('filename') for it in orphan_items if it.get('filename') not in dlg.deleted_files]
+        if kept_fns:
+            add_kept_orphans(out_dir, kept_fns)
         return deleted
-    return []
+    else:
+        add_kept_orphans(out_dir, [it.get('filename') for it in orphan_items if it.get('filename')])
+        return []
 
 
 class OnlineDuplicatesDialog(QDialog):
@@ -2242,8 +2269,12 @@ class MainWindow(QMainWindow):
             raw_removed = p.get('removed_tracks_count', 0)
             badge_removed_html = f"  <span style='color: #f87171; font-weight: bold; background-color: #450a0a; padding: 2px 6px; border-radius: 4px; border: 1px solid #b91c1c;'>-{raw_removed} removed</span>" if raw_removed > 0 else ""
 
+            kept_set = read_kept_orphans(folder_str) if folder_str and os.path.exists(folder_str) else set()
+            kept_count = len({Path(f).name for f in kept_set if (Path(folder_str) / f).is_file()}) if folder_str else 0
+            badge_kept_html = f"  <span style='color: #c084fc; font-weight: bold; background-color: #2e1065; padding: 2px 6px; border-radius: 4px; border: 1px solid #7e22ce;'>{kept_count} kept</span>" if kept_count > 0 else ""
+
             last_sync_str = p.get('last_synced', 'Never')
-            meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}{badge_removed_html}  <span style='color: #475569;'>•</span>  <span style='color: #94a3b8;'>Synced: {last_sync_str}</span>")
+            meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}{badge_removed_html}{badge_kept_html}  <span style='color: #475569;'>•</span>  <span style='color: #94a3b8;'>Synced: {last_sync_str}</span>")
             meta_lbl.setTextFormat(Qt.TextFormat.RichText)
             meta_lbl.setStyleSheet(f"font-size: 11px; color: {status_color}; font-weight: 500; background: transparent;")
             meta_lbl.setWordWrap(True)
@@ -2262,6 +2293,62 @@ class MainWindow(QMainWindow):
             btn_folder = QPushButton("Folder")
             btn_folder.setFixedSize(75, 32)
             btn_folder.clicked.connect(lambda _, fp=p.get('folder_path'): QDesktopServices.openUrl(QUrl.fromLocalFile(fp)))
+
+            if kept_count > 0:
+                btn_kept = QPushButton(f"Kept ({kept_count})")
+                btn_kept.setFixedSize(75, 32)
+                btn_kept.setToolTip("Click to reset kept tracks list and re-evaluate them on next sync")
+                btn_kept.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2e1065;
+                        color: #c084fc;
+                        border: 1px solid #7e22ce;
+                        border-radius: 6px;
+                        font-size: 11px;
+                        font-weight: bold;
+                        padding: 0px;
+                    }
+                    QPushButton:hover {
+                        background-color: #581c87;
+                        color: #ffffff;
+                    }
+                """)
+                def _on_reset_kept(folder=folder_str, pl_title=p.get('title'), k_cnt=kept_count):
+                    reply = QMessageBox.question(
+                        self, "Reset Kept Tracks",
+                        f"Reset the list of {k_cnt} kept track(s) in '{pl_title}'?\n\nOn the next Sync, these files will be re-evaluated against the online playlist.",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    )
+                    if reply == QMessageBox.StandardButton.Yes:
+                        clear_kept_orphans(folder)
+                        self.refresh_playlists_ui()
+                        self.status_label.setText(f"Kept tracks reset for '{pl_title}'.")
+                btn_kept.clicked.connect(lambda _, f=folder_str, t=p.get('title'), c=kept_count: _on_reset_kept(f, t, c))
+                btn_box.addWidget(btn_kept)
+
+            card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            def _show_card_context_menu(pos, pl=p, folder=folder_str, k_cnt=kept_count):
+                menu = QMenu(self)
+                act_sync = menu.addAction("Sync Playlist")
+                act_folder = menu.addAction("Open Folder")
+                act_reset_k = None
+                if k_cnt > 0:
+                    act_reset_k = menu.addAction(f"Reset Kept Tracks ({k_cnt})")
+                menu.addSeparator()
+                act_del = menu.addAction("Remove from Tracking")
+                chosen = menu.exec(card.mapToGlobal(pos))
+                if chosen == act_sync:
+                    self.sync_tracked_playlist(pl)
+                elif chosen == act_folder:
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+                elif act_reset_k and chosen == act_reset_k:
+                    clear_kept_orphans(folder)
+                    self.refresh_playlists_ui()
+                    self.status_label.setText(f"Kept tracks reset for '{pl.get('title')}'.")
+                elif chosen == act_del:
+                    self.remove_tracked_playlist(pl.get('url'))
+
+            card.customContextMenuRequested.connect(_show_card_context_menu)
 
             btn_remove = QPushButton("✕")
             btn_remove.setFixedSize(32, 32)
@@ -2476,7 +2563,8 @@ class MainWindow(QMainWindow):
         remaining_orphans = len(orphaned_files) if orphaned_files else 0
         if orphaned_files:
             dlg = OrphanFilesDialog(orphaned_files, parent=self)
-            if dlg.exec() == QDialog.DialogCode.Accepted and dlg.deleted_files:
+            res = dlg.exec()
+            if res == QDialog.DialogCode.Accepted and dlg.deleted_files:
                 for fn in dlg.deleted_files:
                     fp = os.path.join(out_dir, fn)
                     try:
@@ -2498,7 +2586,14 @@ class MainWindow(QMainWindow):
                             )
                     except Exception:
                         pass
-                remaining_orphans = max(0, remaining_orphans - len(dlg.deleted_files))
+                kept_fns = [it.get('filename') for it in orphaned_files if it.get('filename') not in dlg.deleted_files]
+                if kept_fns:
+                    add_kept_orphans(out_dir, kept_fns)
+                remaining_orphans = 0
+                self.refresh_playlists_ui()
+            else:
+                add_kept_orphans(out_dir, [it.get('filename') for it in orphaned_files if it.get('filename')])
+                remaining_orphans = 0
                 self.refresh_playlists_ui()
 
         p_dict['removed_tracks_count'] = remaining_orphans
