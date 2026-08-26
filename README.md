@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.8.4-007acc.svg?style=flat-square" alt="Version 1.8.4" />
+  <img src="https://img.shields.io/badge/version-1.8.5-007acc.svg?style=flat-square" alt="Version 1.8.5" />
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52.svg?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
   <img src="https://img.shields.io/badge/Core-yt--dlp-red.svg?style=flat-square" alt="yt-dlp" />
@@ -46,6 +46,12 @@ It is designed for managing offline music libraries with accurate metadata extra
 - **Zero-Lag Reordering:** Drag-and-drop playlist cards or use arrow buttons with instantaneous in-place reordering.
 - **Title Cleaning:** Automatically strips promotional clutter while preserving genuine version suffixes (`Remix`, `VIP`, `Extended`, `Acoustic`, `Instrumental`, `Live`).
 - **Duplicate Detection:** Identifies duplicate tracks within online playlists and provides direct links to manage them.
+
+### Cross-Playlist Comparison & Deduplication
+- **Pairwise Comparison (A ↔ B):** Directly compare any two playlists side by side with instant sub-filters (`Common / Overlaps`, `Only in A`, `Only in B`, `All Tracks`).
+- **Safe In-Place File Deletion:** Clean up duplicate files directly from the comparison table with confirmation dialogs and instant UI updates.
+- **Fast Hash Indexing:** Inverted indexing matches thousands of tracks across collections in milliseconds without UI freezes.
+- **Single Playlist & Library Audit:** Inspect how an individual playlist intersects with the rest of your library, or cluster duplicates across all tracked folders.
 
 ### App Updates & Maintenance
 - **GitHub Release Checker:** Background check for new app versions on GitHub with non-intrusive KDE Plasma style toasts.
