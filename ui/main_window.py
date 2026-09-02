@@ -132,6 +132,7 @@ class WorkerThread(QThread):
         naming_pattern=None,
         settings=None,
         thumbnail=None,
+        format_compat=None,
     ):
         super().__init__()
         self.url = url
@@ -148,9 +149,10 @@ class WorkerThread(QThread):
         self.naming_pattern = naming_pattern
         self.settings = settings
         self.thumbnail = thumbnail
+        self.format_compat = format_compat
 
     def run(self):
-        downloader = MediaDownloader(output_dir=self.output_dir, settings=self.settings)
+        downloader = MediaDownloader(output_dir=self.output_dir, settings=self.settings, format_compat=self.format_compat)
 
         def progress_callback(*args, **kwargs):
             if args and isinstance(args[0], dict):
@@ -183,6 +185,7 @@ class WorkerThread(QThread):
             speed_limit=self.speed_limit,
             naming_pattern=self.naming_pattern,
             thumbnail=self.thumbnail,
+            format_compat=self.format_compat,
         )
         self.finished_signal.emit(success, error_msg, was_skipped)
 
@@ -313,11 +316,12 @@ class SyncPlaylistWorker(QThread):
     finished_signal = pyqtSignal(dict, dict, list, int, list, list, list)
     error_signal = pyqtSignal(str, dict)
 
-    def __init__(self, p_dict: dict, settings, cookies=None):
+    def __init__(self, p_dict: dict, settings, cookies=None, format_compat: str = None):
         super().__init__()
         self.p_dict = p_dict
         self.settings = settings
         self.cookies = cookies
+        self.format_compat = format_compat
 
     def run(self):
         try:
@@ -362,6 +366,8 @@ class SyncPlaylistWorker(QThread):
                 entry['playlist_count'] = count
                 entry['media_type_category'] = media_type_category
                 entry['media_type'] = "Audio (Best)" if media_type_category == "Audio" else "Video (Best)"
+                if self.format_compat:
+                    entry['format_compat'] = self.format_compat
 
                 vid = entry.get('url', '').split('v=')[-1].split('&')[0]
                 author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
@@ -1237,6 +1243,108 @@ class SafeModeDialog(QDialog):
     def _choose_full(self):
         self.enable_safe_mode = False
         self.accept()
+
+
+class PlaylistFormatMismatchDialog(QDialog):
+    def __init__(self, parent=None, pl_title: str = "Playlist", pl_format: str = "unix", settings_format: str = "windows"):
+        super().__init__(parent)
+        self.setWindowTitle("Format Mismatch")
+        self.setFixedWidth(540)
+        self.setStyleSheet("""
+            QDialog { background-color: #0b1120; color: #f8fafc; }
+            QPushButton { border-radius: 6px; padding: 10px 16px; font-weight: bold; font-size: 12px; }
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        icon_lbl = QLabel("⚠️")
+        icon_lbl.setStyleSheet("font-size: 36px;")
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(icon_lbl)
+
+        title_lbl = QLabel("Несоответствие формата файлов")
+        title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #f59e0b;")
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_lbl)
+
+        pl_fmt_label = "UNIX" if pl_format == "unix" else "Windows"
+        set_fmt_label = "Windows" if settings_format == "windows" else "UNIX"
+
+        desc_lbl = QLabel(
+            f"В ваших настройках сейчас выбран формат <b>{set_fmt_label}</b>, "
+            f"а плейлист <b>«{pl_title}»</b> скачан под <b>{pl_fmt_label}</b> системы.<br><br>"
+            "Как вы хотите продолжить скачивание новых треков?"
+        )
+        desc_lbl.setWordWrap(True)
+        desc_lbl.setStyleSheet("font-size: 12px; color: #cbd5e1; line-height: 1.5;")
+        layout.addWidget(desc_lbl)
+
+        self.choice = None
+
+        # Option 1: Keep playlist format
+        btn_keep = QPushButton(f"📁 Продолжить скачивание в формате плейлиста ({pl_fmt_label})")
+        btn_keep.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_keep.setStyleSheet("""
+            QPushButton {
+                background-color: #2563eb;
+                color: #ffffff;
+                border: none;
+                text-align: left;
+                padding-left: 14px;
+            }
+            QPushButton:hover { background-color: #1d4ed8; }
+        """)
+        btn_keep.clicked.connect(self._choose_keep)
+        layout.addWidget(btn_keep)
+
+        hint_keep = QLabel("• Скачает треки в прежнем формате плейлиста. Плашка останется прежней.")
+        hint_keep.setStyleSheet("font-size: 11px; color: #94a3b8; margin-top: -8px; margin-left: 14px; margin-bottom: 6px;")
+        layout.addWidget(hint_keep)
+
+        # Option 2: Switch to settings format (mixed)
+        btn_settings = QPushButton(f"🔀 Продолжить скачивание под {set_fmt_label} (Смешать форматы)")
+        btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_settings.setStyleSheet("""
+            QPushButton {
+                background-color: #d97706;
+                color: #ffffff;
+                border: none;
+                text-align: left;
+                padding-left: 14px;
+            }
+            QPushButton:hover { background-color: #b45309; }
+        """)
+        btn_settings.clicked.connect(self._choose_settings)
+        layout.addWidget(btn_settings)
+
+        hint_settings = QLabel("• Новые треки скачаются под текущие настройки, а плашка плейлиста сменится на Unix/Win.")
+        hint_settings.setStyleSheet("font-size: 11px; color: #94a3b8; margin-top: -8px; margin-left: 14px; margin-bottom: 6px;")
+        layout.addWidget(hint_settings)
+
+        # Cancel
+        btn_cancel = QPushButton("Отмена")
+        btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_cancel.setStyleSheet("""
+            QPushButton {
+                background-color: #334155;
+                color: #cbd5e1;
+                border: 1px solid #475569;
+            }
+            QPushButton:hover { background-color: #475569; color: #ffffff; }
+        """)
+        btn_cancel.clicked.connect(self.reject)
+        layout.addWidget(btn_cancel)
+
+    def _choose_keep(self):
+        self.choice = 'keep'
+        self.accept()
+
+    def _choose_settings(self):
+        self.choice = 'settings'
+        self.accept()
+
+
 class DraggablePlaylistCard(QWidget):
     def __init__(self, index: int, parent_view, parent=None):
         super().__init__(parent)
@@ -1849,9 +1957,14 @@ class MainWindow(QMainWindow):
         layout.addLayout(url_layout)
         layout.addWidget(self.queue_scroll_area)
 
-        # Format Selection & Add to Queue
+        # Stats (Left) & Format Selection / Add to Queue (Right)
         queue_layout = QHBoxLayout()
-        queue_layout.addWidget(QLabel("Type:"))
+        self.stats_label = QLabel("Success: 0 | In queue: 0 | Errors: 0")
+        queue_layout.addWidget(self.stats_label)
+        queue_layout.addStretch()
+
+        self.lbl_format_type = QLabel("Type:")
+        queue_layout.addWidget(self.lbl_format_type)
         self.format_combo = QComboBox()
         self.format_combo.wheelEvent = lambda event: event.ignore()
         self.format_combo.addItems(["Audio", "Video"])
@@ -1865,6 +1978,7 @@ class MainWindow(QMainWindow):
         self.subs_combo = QComboBox()
         self.subs_combo.wheelEvent = lambda event: event.ignore()
         self.subs_combo.addItems(["Default (Settings)", "None", "Original (Uploaded)", "All", "en", "ru", "uk"])
+        self.subs_combo.currentTextChanged.connect(self.on_main_subs_combo_changed)
         queue_layout.addWidget(self.subs_combo)
         self.update_main_subs_combo_state()
 
@@ -1878,10 +1992,6 @@ class MainWindow(QMainWindow):
 
         queue_layout.addWidget(self.btn_add_queue)
         queue_layout.addWidget(self.btn_clear_queue)
-
-        self.stats_label = QLabel("Success: 0 | In queue: 0 | Errors: 0")
-        queue_layout.addStretch()
-        queue_layout.addWidget(self.stats_label)
 
         layout.addLayout(queue_layout)
 
@@ -1909,8 +2019,18 @@ class MainWindow(QMainWindow):
         """)
         layout.addWidget(self.global_progress)
 
-        # Bottom Actions Bar
+        # Bottom Actions Bar (Open Folder & Logs Left, Action Buttons Right)
         bottom_actions = QHBoxLayout()
+        self.btn_open_folder = QPushButton("Open Folder")
+        self.btn_open_folder.clicked.connect(self.open_downloads_folder)
+
+        self.btn_logs = QPushButton("Logs")
+        self.btn_logs.clicked.connect(self.open_logs_file)
+
+        bottom_actions.addWidget(self.btn_open_folder)
+        bottom_actions.addWidget(self.btn_logs)
+        bottom_actions.addStretch()
+
         self.btn_download_all = QPushButton("Download")
         self.btn_download_all.setEnabled(False)
         self.btn_download_all.clicked.connect(self.start_queue)
@@ -1922,18 +2042,9 @@ class MainWindow(QMainWindow):
         self.btn_clear_completed = QPushButton("Clear Completed")
         self.btn_clear_completed.clicked.connect(self.clear_completed)
 
-        self.btn_open_folder = QPushButton("Open Folder")
-        self.btn_open_folder.clicked.connect(self.open_downloads_folder)
-
-        self.btn_logs = QPushButton("Logs")
-        self.btn_logs.clicked.connect(self.open_logs_file)
-
         bottom_actions.addWidget(self.btn_download_all)
         bottom_actions.addWidget(self.btn_stop)
         bottom_actions.addWidget(self.btn_clear_completed)
-        bottom_actions.addStretch()
-        bottom_actions.addWidget(self.btn_open_folder)
-        bottom_actions.addWidget(self.btn_logs)
 
         layout.addLayout(bottom_actions)
         self.tabs.addTab(self.downloads_tab, "DOWNLOADS")
@@ -1996,6 +2107,8 @@ class MainWindow(QMainWindow):
         self.combo_playlist_sort.addItem("Tracks (Most → Fewest)", "tracks_desc")
         self.combo_playlist_sort.addItem("Tracks (Fewest → Most)", "tracks_asc")
         self.combo_playlist_sort.addItem("Last Synced (Newest)", "synced_desc")
+        self.combo_playlist_sort.addItem("OS Format (Windows First)", "format_win")
+        self.combo_playlist_sort.addItem("OS Format (UNIX First)", "format_unix")
 
         saved_sort = self.settings.get('playlist_sort_mode', 'custom')
         self._current_pl_sort = saved_sort
@@ -2246,8 +2359,45 @@ class MainWindow(QMainWindow):
 
             # Details
             info_layout = QVBoxLayout()
+            title_row = QHBoxLayout()
+            title_row.setSpacing(8)
+            title_row.setContentsMargins(0, 0, 0, 0)
+            title_row.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             title_lbl = QLabel(p.get('title', 'Untitled Playlist'))
             title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #f8fafc;")
+            title_row.addWidget(title_lbl)
+
+            # Format Badge (Windows, UNIX, Unix/Win)
+            pl_format = p.get('format_compat')
+            if not pl_format and folder_str:
+                from core.downloader import read_playlist_format
+                pl_format = read_playlist_format(folder_str)
+            if not pl_format:
+                pl_format = 'windows'
+
+            badge_lbl = QLabel()
+            badge_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if pl_format in ('unix/win', 'mixed'):
+                badge_lbl.setText("Unix/Win")
+                badge_lbl.setStyleSheet(
+                    "background-color: #d97706; color: #ffffff; font-size: 10px; font-weight: bold; "
+                    "padding: 2px 7px; border-radius: 4px;"
+                )
+            elif pl_format == 'unix':
+                badge_lbl.setText("UNIX")
+                badge_lbl.setStyleSheet(
+                    "background-color: #7c3aed; color: #ffffff; font-size: 10px; font-weight: bold; "
+                    "padding: 2px 7px; border-radius: 4px;"
+                )
+            else:
+                badge_lbl.setText("Windows")
+                badge_lbl.setStyleSheet(
+                    "background-color: #0284c7; color: #ffffff; font-size: 10px; font-weight: bold; "
+                    "padding: 2px 7px; border-radius: 4px;"
+                )
+            title_row.addWidget(badge_lbl)
+            title_row.addStretch()
+            info_layout.addLayout(title_row)
 
             path_lbl = QLabel(f"📁 {p.get('folder_path', '')}")
             path_lbl.setStyleSheet("font-size: 11px; color: #94a3b8;")
@@ -2309,7 +2459,6 @@ class MainWindow(QMainWindow):
             meta_lbl.setStyleSheet(f"font-size: 11px; color: {status_color}; font-weight: 500; background: transparent;")
             meta_lbl.setWordWrap(True)
 
-            info_layout.addWidget(title_lbl)
             info_layout.addWidget(path_lbl)
             info_layout.addWidget(meta_lbl)
             card_layout.addLayout(info_layout, 1)
@@ -2522,13 +2671,15 @@ class MainWindow(QMainWindow):
             if thumb and cover_mode != 'none':
                 apply_playlist_cover_settings(final_folder, thumb, mode=cover_mode)
 
+            active_compat = self.settings.get('filename_compat', 'windows')
             self.playlists_mgr.add_playlist(
                 url=url,
                 title=title,
                 folder_path=final_folder,
                 thumbnail=thumb,
                 track_count=count,
-                media_type=type_combo.currentText()
+                media_type=type_combo.currentText(),
+                format_compat=active_compat
             )
             self.refresh_playlists_ui()
             self.status_label.setText(f"Tracked playlist '{title}' added.")
@@ -2549,14 +2700,42 @@ class MainWindow(QMainWindow):
             self._active_sync_urls = set()
         if url in self._active_sync_urls:
             return
-        self._active_sync_urls.add(url)
 
         title = p_dict.get('title', 'Playlist')
+
+        # Check format compatibility mismatch
+        from core.downloader import read_playlist_format, write_playlist_format
+        pl_format = p_dict.get('format_compat')
+        if not pl_format and out_dir:
+            pl_format = read_playlist_format(out_dir)
+        if not pl_format:
+            pl_format = 'windows'
+
+        global_format = self.settings.get('filename_compat', 'windows')
+        chosen_format = pl_format
+
+        if pl_format not in ('unix/win', 'mixed') and pl_format != global_format:
+            dlg = PlaylistFormatMismatchDialog(self, pl_title=title, pl_format=pl_format, settings_format=global_format)
+            if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.choice:
+                return  # User cancelled sync
+            if dlg.choice == 'keep':
+                chosen_format = pl_format
+            elif dlg.choice == 'settings':
+                chosen_format = global_format
+                p_dict['format_compat'] = 'unix/win'
+                self.playlists_mgr.set_playlist_format(url, 'unix/win')
+                write_playlist_format(out_dir, 'unix/win')
+                self.refresh_playlists_ui()
+        elif pl_format in ('unix/win', 'mixed'):
+            chosen_format = global_format
+
+        self._active_sync_urls.add(url)
+
         platform = detect_platform_name(url)
         self.status_label.setText(f"Syncing playlist '{title}' in background...")
         self.loading_overlay.show_loading(f"Syncing '{title}'...", f"Connecting to {platform} and comparing tracks...")
 
-        worker = SyncPlaylistWorker(p_dict, self.settings, cookies=self.get_cookies_config())
+        worker = SyncPlaylistWorker(p_dict, self.settings, cookies=self.get_cookies_config(), format_compat=chosen_format)
         worker.finished_signal.connect(self._on_sync_playlist_finished)
         worker.error_signal.connect(self._on_sync_playlist_error)
         if not hasattr(self, '_sync_workers'):
@@ -2743,6 +2922,11 @@ class MainWindow(QMainWindow):
 
         self.history_table = QTableWidget(0, 5)
         self.history_table.setHorizontalHeaderLabels(["Date", "Author", "Title", "Platform", "Status"])
+        self.history_table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        for col in range(5):
+            h_item = self.history_table.horizontalHeaderItem(col)
+            if h_item:
+                h_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.history_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         self.history_table.setColumnWidth(1, 200)
@@ -3855,6 +4039,10 @@ class MainWindow(QMainWindow):
                 if widget.status_state == "Pending" and hasattr(widget, 'set_media_category'):
                     widget.set_media_category(new_type)
 
+    def on_main_subs_combo_changed(self, text):
+        if text and text != "None" and hasattr(self, 'subs_combo') and not self.subs_combo.isHidden():
+            self.settings.set('main_subs_choice', text)
+
     def update_main_subs_combo_state(self):
         current_type = self.format_combo.currentText()
         if current_type == "Audio":
@@ -3864,11 +4052,23 @@ class MainWindow(QMainWindow):
         else:
             is_enabled = self.settings.get('download_subtitles', False) or self.settings.get('download_audio_lyrics', False)
 
-        self.subs_combo.setEnabled(is_enabled)
         if hasattr(self, 'lbl_main_subs'):
+            self.lbl_main_subs.setVisible(is_enabled)
             self.lbl_main_subs.setEnabled(is_enabled)
-        if not is_enabled:
-            self.subs_combo.setCurrentText("None")
+        if hasattr(self, 'subs_combo'):
+            self.subs_combo.setVisible(is_enabled)
+            self.subs_combo.setEnabled(is_enabled)
+            self.subs_combo.blockSignals(True)
+            if is_enabled:
+                saved_choice = self.settings.get('main_subs_choice', 'Default (Settings)')
+                idx = self.subs_combo.findText(saved_choice)
+                if idx >= 0:
+                    self.subs_combo.setCurrentIndex(idx)
+                else:
+                    self.subs_combo.setCurrentIndex(0)
+            else:
+                self.subs_combo.setCurrentText("None")
+            self.subs_combo.blockSignals(False)
 
     def refresh_queue_items_subs(self):
         for widget in self.download_queue:
@@ -3891,6 +4091,7 @@ class MainWindow(QMainWindow):
 
             for it in (item_date, item_author, item_title, item_plat, item_status):
                 it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             if status in ["Completed", "Success"]:
                 completed += 1
@@ -4148,8 +4349,11 @@ class MainWindow(QMainWindow):
             return
         self._queue_url_set.add(queue_key)
 
-        chosen_subs = self.subs_combo.currentText()
-        if chosen_subs and chosen_subs not in ("Default (Settings)", ""):
+        if hasattr(self, 'subs_combo') and not self.subs_combo.isHidden():
+            chosen_subs = self.subs_combo.currentText()
+        else:
+            chosen_subs = "None"
+        if chosen_subs and chosen_subs not in ("Default (Settings)", "", "None"):
             info_dict['specific_subs'] = chosen_subs
 
         widget = QueueItemWidget(info_dict, settings=self.settings)
@@ -4450,7 +4654,8 @@ class MainWindow(QMainWindow):
             speed_limit=speed_limit,
             naming_pattern=naming_pattern,
             settings=self.settings,
-            thumbnail=item_data.get('thumbnail')
+            thumbnail=item_data.get('thumbnail'),
+            format_compat=item_data.get('format_compat'),
         )
 
         self.widget_start_times[widget] = time.time()

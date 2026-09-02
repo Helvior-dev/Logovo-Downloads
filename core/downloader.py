@@ -607,6 +607,49 @@ def ensure_nomedia_file(folder_path: Path | str) -> bool:
         return False
 
 
+def read_playlist_format(output_dir: Path | str) -> Optional[str]:
+    """Read the saved format (windows, unix, or unix/win) from playlist_format.txt in the folder."""
+    try:
+        out = Path(output_dir)
+        fmt_file = out / "playlist_format.txt"
+        if fmt_file.exists():
+            content = fmt_file.read_text(encoding="utf-8").strip().lower()
+            if content in ("windows", "unix", "unix/win", "mixed", "win"):
+                return "unix/win" if content == "mixed" else ("windows" if content == "win" else content)
+    except Exception:
+        pass
+    return None
+
+
+def write_playlist_format(output_dir: Path | str, format_mode: str) -> None:
+    """Save the playlist format (windows, unix, or unix/win) to playlist_format.txt in the folder."""
+    try:
+        out = Path(output_dir)
+        if not out.exists():
+            out.mkdir(parents=True, exist_ok=True)
+        fmt_file = out / "playlist_format.txt"
+        unhide_file(fmt_file)
+        clean_mode = str(format_mode or "").strip().lower()
+        if clean_mode in ("mixed", "unix/win"):
+            clean_mode = "unix/win"
+        elif clean_mode in ("posix", "unix"):
+            clean_mode = "unix"
+        else:
+            clean_mode = "windows"
+        fmt_file.write_text(clean_mode, encoding="utf-8")
+        hide_file(fmt_file)
+    except Exception as e:
+        print(f"Error writing playlist_format.txt in {output_dir}: {e}")
+
+
+def detect_folder_format(output_dir: Path | str) -> str:
+    """Detect format from playlist_format.txt, or default to windows if not found."""
+    fmt = read_playlist_format(output_dir)
+    if fmt:
+        return fmt
+    return "windows"
+
+
 # ─── Playlist Persistence Helpers ─────────────────────────────────────────────
 
 def read_raw_stem_vid_map(output_dir: Path | str) -> dict[str, str | dict]:
@@ -1690,7 +1733,7 @@ def cleanup_orphan_files(output_dir: Path | str, is_audio_playlist: bool = True)
 
     protected_basenames = {
         "cover.png", "cover.jpg", "cover.jpeg", "cover.webp", "cover.ico",
-        "folder.ico", "desktop.ini", ".nomedia",
+        "folder.ico", "desktop.ini", ".nomedia", "playlist_format.txt",
         "stem_vid_map.json", "playlist_order.txt", "downloaded_archive.txt",
         "failed_downloads.txt", "app_logs.txt"
     }
@@ -2587,6 +2630,7 @@ def postprocess_audio_file(
     naming_pattern: Optional[str] = None,
     settings: Optional[Any] = None,
     thumbnail_url: Optional[str] = None,
+    filename_compat: Optional[str] = None,
 ) -> Path:
     """Fix artwork to 1000x1000 and ID3 tags for Windows Explorer / Groove."""
     path = Path(file_path)
@@ -2647,9 +2691,7 @@ def postprocess_audio_file(
             fix_m4a_tags(path, track_num=target_idx, total_tracks=playlist_count if track_number_enabled else None, album=target_album, artist=target_artist, title=target_title, year=target_year, lyrics=target_lyrics)
 
         # Apply custom naming pattern if specified, or sanitize default name
-        mode = "windows"
-        if settings:
-            mode = settings.get('filename_compat', 'windows')
+        mode = filename_compat or ("windows" if not settings else settings.get('filename_compat', 'windows'))
 
         if naming_pattern and naming_pattern.strip():
             pat = naming_pattern.strip()
@@ -2771,6 +2813,7 @@ def postprocess_video_file(
     naming_pattern: Optional[str] = None,
     settings: Optional[Any] = None,
     thumbnail_url: Optional[str] = None,
+    filename_compat: Optional[str] = None,
 ) -> Path:
     """Apply custom naming pattern, video metadata tag normalization, cover embedding, and timestamps to a downloaded video file."""
     path = Path(file_path)
@@ -2779,9 +2822,7 @@ def postprocess_video_file(
 
     fix_video_tags(path, artist=artist, title=title, year=year, settings=settings, thumbnail_url=thumbnail_url)
 
-    mode = "windows"
-    if settings:
-        mode = settings.get('filename_compat', 'windows')
+    mode = filename_compat or ("windows" if not settings else settings.get('filename_compat', 'windows'))
 
     if naming_pattern and naming_pattern.strip():
         pat = naming_pattern.strip()
@@ -2830,13 +2871,14 @@ def postprocess_video_file(
 
 
 class MediaDownloader:
-    def __init__(self, output_dir: str = "downloads", settings: Optional[Any] = None):
+    def __init__(self, output_dir: str = "downloads", settings: Optional[Any] = None, format_compat: Optional[str] = None):
         self.output_dir = output_dir
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir, exist_ok=True)
         self.last_error = ""
         self.was_skipped = False
         self.settings = settings or SettingsManager()
+        self.format_compat = format_compat
         if self.settings and self.settings.get("create_nomedia_file", False):
             ensure_nomedia_file(self.output_dir)
 
@@ -2872,6 +2914,7 @@ class MediaDownloader:
         speed_limit: Optional[str] = None,
         naming_pattern: Optional[str] = None,
         thumbnail: Optional[str] = None,
+        format_compat: Optional[str] = None,
     ) -> tuple[bool, str, bool]:
         """Download media from the given URL with auto client rotation, rate limit, and playlist tracking."""
         self.current_title = f"{author} - {title}".strip(" -") if (author or title) else ""
@@ -3058,6 +3101,13 @@ class MediaDownloader:
             or (out_path / "playlist_order.txt").exists()
         )
         should_track_playlist = is_playlist or has_existing_logs
+
+        # Determine effective filename compatibility mode
+        target_compat = format_compat or getattr(self, 'format_compat', None)
+        if not target_compat and should_track_playlist:
+            target_compat = read_playlist_format(self.output_dir)
+        if not target_compat:
+            target_compat = self.settings.get('filename_compat', 'windows') if self.settings else 'windows'
 
         # Tracking downloaded files & video IDs for postprocessing and mapping
         downloaded_files: set[str] = set()
@@ -3417,6 +3467,7 @@ class MediaDownloader:
                                 naming_pattern=naming_pattern,
                                 settings=self.settings,
                                 thumbnail_url=extracted_thumb or thumbnail,
+                                filename_compat=target_compat,
                             )
                         else:
                             v_pat = self.settings.get('video_naming_pattern', '{title}') if self.settings else '{title}'
@@ -3432,6 +3483,7 @@ class MediaDownloader:
                                 naming_pattern=v_pat,
                                 settings=self.settings,
                                 thumbnail_url=extracted_thumb or thumbnail,
+                                filename_compat=target_compat,
                             )
                         processed_files.append(candidate)
                         if should_track_playlist:
@@ -3481,6 +3533,7 @@ class MediaDownloader:
                                 naming_pattern=naming_pattern,
                                 settings=self.settings,
                                 thumbnail_url=extracted_thumb or thumbnail,
+                                filename_compat=target_compat,
                             )
                         else:
                             v_pat = self.settings.get('video_naming_pattern', '{title}') if self.settings else '{title}'
@@ -3496,6 +3549,7 @@ class MediaDownloader:
                                 naming_pattern=v_pat,
                                 settings=self.settings,
                                 thumbnail_url=extracted_thumb or thumbnail,
+                                filename_compat=target_compat,
                             )
                         processed_files.append(f)
                         if should_track_playlist:
@@ -3512,9 +3566,16 @@ class MediaDownloader:
 
             # Hide service files on Windows if created/updated
             if should_track_playlist:
+                if target_compat:
+                    existing_fmt = read_playlist_format(self.output_dir)
+                    if existing_fmt and existing_fmt != "unix/win" and existing_fmt != target_compat:
+                        write_playlist_format(self.output_dir, "unix/win")
+                    elif not existing_fmt:
+                        write_playlist_format(self.output_dir, target_compat)
                 hide_file(out_path / "downloaded_archive.txt")
                 hide_file(out_path / "stem_vid_map.json")
                 hide_file(out_path / "playlist_order.txt")
+                hide_file(out_path / "playlist_format.txt")
 
             # If download failed, log to failed_downloads.txt in playlist folder
             if not success and self.last_error and not self.was_skipped:

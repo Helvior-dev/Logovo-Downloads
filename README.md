@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.8.6-007acc.svg?style=flat-square" alt="Version 1.8.6" />
+  <img src="https://img.shields.io/badge/version-1.8.7-007acc.svg?style=flat-square" alt="Version 1.8.7" />
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52.svg?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
   <img src="https://img.shields.io/badge/Core-yt--dlp-red.svg?style=flat-square" alt="yt-dlp" />
@@ -38,6 +38,9 @@ It is designed for managing offline music libraries with accurate metadata extra
 - **Multi-Threaded Queue:** Concurrent download queue with configurable stream limits (up to 6 workers).
 
 ### Playlist Synchronization & Library Integrity
+- **OS Format Badges & Directory Persistence:** Visual indicators (`Windows`, `UNIX`, `Unix/Win`) next to playlist titles; automatic persistence via hidden `playlist_format.txt` files inside playlist folders.
+- **Sync Format Mismatch Resolution:** Interactive modal prompt on synchronization when global settings differ from a playlist's downloaded format, allowing continuous single-format downloads or mixed (`Unix/Win`) preservation.
+- **OS Format Sorting:** Dedicated sorting modes (`OS Format (Windows First)`, `OS Format (UNIX First)`) in the Playlists tab.
 - **Chronological Track Numbering (`#` / `TRCK`):** Continuous 1..N indexing strictly matching playlist add chronology (Track #1 = first added track, Track #N = newest added track).
 - **Automatic Gap Adaptation:** Seamlessly re-indexes local tracks upon sync or deletion, closing gaps and eliminating obsolete index offsets.
 - **1-Click Track Re-indexing:** Instant `Re-index Tracks (1..N)` action in playlist context menus to update tags, track numbers, and covers for existing files in seconds.
@@ -50,6 +53,11 @@ It is designed for managing offline music libraries with accurate metadata extra
 - **Zero-Lag Reordering:** Drag-and-drop playlist cards or use arrow buttons with instantaneous in-place reordering.
 - **Title Cleaning:** Automatically strips promotional clutter while preserving genuine version suffixes (`Remix`, `VIP`, `Extended`, `Acoustic`, `Instrumental`, `Live`).
 - **Duplicate Detection:** Identifies duplicate tracks within online playlists without false positives on similar artist tracks.
+
+### User Interface & Experience
+- **Reorganized Downloads Controls:** Swapped bottom control sections for enhanced workflow ergonomicity — stats and quick actions on the left, download triggers and options on the right.
+- **Dynamic Lyrics/Subtitles Visibility:** Automatically hides `Subs/Lyrics` selectors when disabled in Settings, cleanly shifting type options into place, while remembering user language selections.
+- **History Table Alignment:** Symmetrically centered column headers and cells across Date, Author, Title, Platform, and Status.
 
 ### Cross-Playlist Comparison & Deduplication
 - **Pairwise Comparison (A ↔ B):** Directly compare any two playlists side by side with instant sub-filters (`Common / Overlaps`, `Only in A`, `Only in B`, `All Tracks`).

@@ -1,7 +1,7 @@
 """Shared constants for the Logovo Downloads project."""
 
 APP_NAME = "Logovo Downloads"
-APP_VERSION = "1.8.6"
+APP_VERSION = "1.8.7"
 
 # Media file extensions for audio files
 AUDIO_EXTS = frozenset({".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac"})
@@ -19,6 +19,8 @@ SORT_NAME_DESC = "name_desc"
 SORT_TRACKS_DESC = "tracks_desc"
 SORT_TRACKS_ASC = "tracks_asc"
 SORT_SYNCED_DESC = "synced_desc"
+SORT_FORMAT_WIN = "format_win"
+SORT_FORMAT_UNIX = "format_unix"
 
 # Media type category strings
 MEDIA_TYPE_AUDIO = "Audio"
