@@ -592,6 +592,21 @@ def apply_playlist_cover_settings(folder_path: Path | str, image_source: Any, mo
         set_folder_icon(folder_path, image_source)
 
 
+def ensure_nomedia_file(folder_path: Path | str) -> bool:
+    """Creates a .nomedia file in the specified directory if it doesn't already exist."""
+    try:
+        p = Path(folder_path)
+        if not p.exists():
+            p.mkdir(parents=True, exist_ok=True)
+        nomedia_path = p / ".nomedia"
+        if not nomedia_path.exists():
+            nomedia_path.touch(exist_ok=True)
+        return True
+    except Exception as e:
+        print(f"Error creating .nomedia file in {folder_path}: {e}")
+        return False
+
+
 # ─── Playlist Persistence Helpers ─────────────────────────────────────────────
 
 def read_raw_stem_vid_map(output_dir: Path | str) -> dict[str, str | dict]:
@@ -793,6 +808,7 @@ def clean_song_title(title: str, author: str = "") -> str:
         r'[\(\[\{]\s*(?:feat|ft|with)\.?\s+[^)\]\}]+[\)\]\}]',
         r'\(from\s+the\s+series\s+Arcane\s+League\s+of\s+Legends\)',
         r'[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]',
+        r'\[[A-Za-z0-9_\s-]+(?:Channel|Topic|Music|Records|Release|Audio|Video|Visualizer)\]',
         r'\[[A-Za-z0-9_-]+\]',
     ]
     for pat in noise_patterns:
@@ -816,7 +832,7 @@ def clean_song_title(title: str, author: str = "") -> str:
         new_parts = []
         for p in parts:
             p_clean = clean_artist_name(p)
-            if author_tokens and any(p_clean == at or (len(p_clean) >= 3 and (p_clean in at or at in p_clean)) for at in author_tokens):
+            if author_tokens and any(p_clean == at or (len(p_clean) >= 3 and p_clean in at) for at in author_tokens):
                 continue
             new_parts.append(p)
         if new_parts:
@@ -973,6 +989,9 @@ def _author_and_title_match(stem: str, title: Optional[str], author: Optional[st
                 for cda in cand_a_variants:
                     if ca and cda and (ca in cda or cda in ca):
                         return True
+
+            if any(cda and len(cda) >= 3 and cda in clean_artist_name(title) for cda in cand_a_variants):
+                return True
 
     return False
 
@@ -1278,6 +1297,9 @@ def is_entry_in_index(
                             if ca and cda and (ca in cda or cda in ca):
                                 return True
 
+                    if any(fa and len(fa) >= 3 and fa in clean_artist_name(title) for fa in file_a_vars):
+                        return True
+
     return False
 
 
@@ -1325,7 +1347,7 @@ def detect_online_playlist_duplicates(entries: list[dict]) -> list[dict]:
         else:
             candidates = _get_entry_candidates(t, a)
             for cand_t, cand_a, cand_tags in candidates:
-                if not cand_t or len(cand_t) < 3:
+                if not cand_t or len(cand_t) < 3 or cand_t in generic or cand_t == cand_a:
                     continue
                 if cand_t in seen_by_title:
                     for orig_idx, orig_u, orig_t, orig_a, orig_ca, orig_alb, orig_tags, orig_dur in seen_by_title[cand_t]:
@@ -1367,7 +1389,7 @@ def detect_online_playlist_duplicates(entries: list[dict]) -> list[dict]:
                 seen_by_vid[e_vid] = (i, u, t, a)
             candidates = _get_entry_candidates(t, a)
             for cand_t, cand_a, cand_tags in candidates:
-                if cand_t and len(cand_t) >= 3:
+                if cand_t and len(cand_t) >= 3 and cand_t not in generic and cand_t != cand_a:
                     seen_by_title.setdefault(cand_t, []).append((i, u, t, a, cand_a, alb, cand_tags, dur))
 
     return online_duplicates
@@ -1668,7 +1690,7 @@ def cleanup_orphan_files(output_dir: Path | str, is_audio_playlist: bool = True)
 
     protected_basenames = {
         "cover.png", "cover.jpg", "cover.jpeg", "cover.webp", "cover.ico",
-        "folder.ico", "desktop.ini",
+        "folder.ico", "desktop.ini", ".nomedia",
         "stem_vid_map.json", "playlist_order.txt", "downloaded_archive.txt",
         "failed_downloads.txt", "app_logs.txt"
     }
@@ -1800,7 +1822,7 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict],
         return
 
     count = len(entries)
-    stem_map = read_stem_vid_map(out)
+    all_vids_map = read_stem_all_vids_map(out)
     valid_exts = (".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv", ".webm", ".aac", ".alac")
 
     embed_all = True if settings is None else settings.get('embed_all_metadata', True)
@@ -1811,18 +1833,21 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict],
     artist_enabled = embed_all or tag_opts.get('artist', True)
     title_enabled = embed_all or tag_opts.get('title', True)
     year_enabled = embed_all or tag_opts.get('year', True)
+    cover_enabled = embed_all or tag_opts.get('cover', True)
 
     # Map vid -> list of existing Path objects
     vid_to_paths: dict[str, list[Path]] = {}
-    for stem, vid in stem_map.items():
+    for stem, vids in all_vids_map.items():
         for ext in valid_exts:
             p = out / f"{stem}{ext}"
             if p.exists() and p.is_file():
-                vid_to_paths.setdefault(vid, []).append(p)
+                for vid in vids:
+                    vid_to_paths.setdefault(vid, []).append(p)
 
     # Scan all local audio files in out
     all_local_files = [f for f in out.iterdir() if f.is_file() and f.suffix.lower() in valid_exts]
 
+    matched_paths = set()
     ordered_file_names: list[str] = []
     base_time = time.time()
 
@@ -1837,17 +1862,30 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict],
         target_file: Optional[Path] = None
 
         # 1. Look up via vid
-        if vid and vid in vid_to_paths and vid_to_paths[vid]:
-            target_file = vid_to_paths[vid][0]
+        if vid and vid in vid_to_paths:
+            for p in vid_to_paths[vid]:
+                if p not in matched_paths and p.exists():
+                    target_file = p
+                    break
 
         # 2. Look up via strict Author & Title match
         if not target_file and title and len(title.strip()) >= 2:
             for f in all_local_files:
-                if _author_and_title_match(f.stem, title, author):
+                if f not in matched_paths and _author_and_title_match(f.stem, title, author):
                     target_file = f
                     break
 
+        # 3. Look up via clean title match
+        if not target_file and title and len(title.strip()) >= 2:
+            c_t = clean_song_title(title, author)
+            if c_t and len(c_t) >= 4:
+                for f in all_local_files:
+                    if f not in matched_paths and (c_t == clean_song_title(f.stem) or c_t in clean_song_title(f.stem)):
+                        target_file = f
+                        break
+
         if target_file and target_file.exists():
+            matched_paths.add(target_file)
             ordered_file_names.append(target_file.name)
             ext = target_file.suffix.lower()
 
@@ -1861,15 +1899,23 @@ def reindex_existing_playlist_files(output_dir: Path | str, entries: list[dict],
             try:
                 if ext == ".mp3":
                     fix_mp3_tags(target_file, track_num=target_idx, total_tracks=count if track_number_enabled else None, album=target_album, artist=target_art, title=target_tit, year=target_yr)
+                    if cover_enabled:
+                        fix_mp3_cover(target_file, thumbnail_url=thumb, artist=target_art, title=target_tit)
                 elif ext == ".flac":
                     fix_flac_tags(target_file, track_num=target_idx, total_tracks=count if track_number_enabled else None, album=target_album, artist=target_art, title=target_tit, year=target_yr)
+                    if cover_enabled:
+                        fix_flac_cover(target_file, thumbnail_url=thumb, artist=target_art, title=target_tit)
                 elif ext in (".opus", ".ogg"):
                     fix_opus_tags(target_file, track_num=target_idx, total_tracks=count if track_number_enabled else None, album=target_album, artist=target_art, title=target_tit, year=target_yr)
+                    if cover_enabled:
+                        fix_opus_cover(target_file, thumbnail_url=thumb, artist=target_art, title=target_tit)
                 elif ext in (".m4a", ".aac", ".alac"):
                     fix_m4a_tags(target_file, track_num=target_idx, total_tracks=count if track_number_enabled else None, album=target_album, artist=target_art, title=target_tit, year=target_yr)
+                    if cover_enabled:
+                        fix_m4a_cover(target_file, thumbnail_url=thumb, artist=target_art, title=target_tit)
 
-                # Update timestamp for proper sorting
-                new_time = base_time - 86400 + track_num
+                # Update timestamp for proper sorting (Track 1 has newest timestamp for descending sort)
+                new_time = base_time - 86400 + (count - i)
                 os.utime(str(target_file), (new_time, new_time))
             except Exception:
                 pass
@@ -1940,9 +1986,10 @@ def fetch_and_crop_cover_jpeg(
     try:
         parent = path.parent
         stem = path.stem
+        protected = {"cover.png", "cover.jpg", "cover.jpeg", "cover.webp", "cover.ico", "folder.ico", "folder.jpg", "desktop.ini", ".nomedia"}
         for ext in (".jpg", ".jpeg", ".webp", ".png"):
             cand = parent / f"{stem}{ext}"
-            if cand.exists() and cand.is_file():
+            if cand.exists() and cand.is_file() and cand.name.lower() not in protected and not cand.name.lower().startswith("cover.") and not cand.name.lower().startswith("folder"):
                 try:
                     img = Image.open(cand)
                     res_bytes = _prepare_img(img)
@@ -1951,7 +1998,7 @@ def fetch_and_crop_cover_jpeg(
                 except Exception:
                     pass
         for f in parent.glob(f"{stem[:25]}*.*"):
-            if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".webp", ".png") and not f.name.startswith("cover."):
+            if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".webp", ".png") and f.name.lower() not in protected and not f.name.lower().startswith("cover.") and not f.name.lower().startswith("folder"):
                 try:
                     img = Image.open(f)
                     res_bytes = _prepare_img(img)
@@ -2638,7 +2685,8 @@ def postprocess_audio_file(
         if playlist_index is not None:
             try:
                 base_time = time.time()
-                new_time = base_time - 86400 + playlist_index
+                offset = (playlist_count - playlist_index) if playlist_count else playlist_index
+                new_time = base_time - 86400 + offset
                 os.utime(str(path), (new_time, new_time))
             except Exception:
                 pass
@@ -2772,7 +2820,8 @@ def postprocess_video_file(
     if playlist_index is not None:
         try:
             base_time = time.time()
-            new_time = base_time - 86400 + playlist_index
+            offset = (playlist_count - playlist_index) if playlist_count else playlist_index
+            new_time = base_time - 86400 + offset
             os.utime(str(path), (new_time, new_time))
         except Exception:
             pass
@@ -2788,6 +2837,8 @@ class MediaDownloader:
         self.last_error = ""
         self.was_skipped = False
         self.settings = settings or SettingsManager()
+        if self.settings and self.settings.get("create_nomedia_file", False):
+            ensure_nomedia_file(self.output_dir)
 
     def _map_quality(self, quality: str) -> str:
         if quality in ("Best video", "Best", "Source (Best)"):
@@ -2799,7 +2850,6 @@ class MediaDownloader:
         elif quality == "Video only (no audio)":
             return "bestvideo/best"
 
-        import re
         match = re.search(r"(\d+)p", quality)
         if match:
             height = match.group(1)
@@ -2893,6 +2943,7 @@ class MediaDownloader:
             "convertthumbnails": "jpg",
             "addmetadata": True,
             "embedthumbnail": not is_audio,
+            "updatetime": False,
             "quiet": False,
             "no_warnings": True,
             "noprogress": False,
@@ -2948,7 +2999,6 @@ class MediaDownloader:
                 pass
 
             def error(self, msg: str) -> None:
-                import re
                 import datetime
 
                 clean_msg = re.sub(r"\x1b\[[0-9;]*m", "", msg).strip()
@@ -3047,14 +3097,20 @@ class MediaDownloader:
         def internal_progress_hook(d: dict) -> None:
             nonlocal extracted_vid, extracted_thumb, extracted_artist, extracted_title, extracted_album, extracted_year, extracted_resolution, extracted_fps
             if d.get("status") == "finished":
-                fn = d.get("filename")
-                if fn:
-                    downloaded_files.add(fn)
+                for k in ("filepath", "_filename", "filename"):
+                    v = d.get(k)
+                    if v and isinstance(v, str):
+                        downloaded_files.add(v)
+                    v_info = (d.get("info_dict") or {}).get(k)
+                    if v_info and isinstance(v_info, str):
+                        downloaded_files.add(v_info)
                 info = d.get("info_dict") or {}
                 if info.get("id"):
                     extracted_vid = info.get("id")
                 if info.get("thumbnail"):
                     extracted_thumb = info.get("thumbnail")
+                elif not extracted_thumb and (extracted_vid or target_original_vid):
+                    extracted_thumb = f"https://i.ytimg.com/vi/{extracted_vid or target_original_vid}/hqdefault.jpg"
                 art_cand = sanitize_extracted_artist(info.get("artist"), info.get("uploader"), info.get("channel"), info.get("creator"))
                 if art_cand:
                     extracted_artist = art_cand
@@ -3077,6 +3133,7 @@ class MediaDownloader:
                         extracted_fps = str(int(info.get("fps")))
                     except Exception:
                         pass
+                fn = d.get("filename")
                 stem = Path(fn).stem if fn else ""
                 if should_track_playlist and stem and (extracted_vid or target_original_vid):
                     update_stem_vid_map(self.output_dir, stem, vid=extracted_vid or target_original_vid, original_vid=target_original_vid or None)
@@ -3086,14 +3143,20 @@ class MediaDownloader:
         def internal_postprocessor_hook(d: dict) -> None:
             nonlocal extracted_vid, extracted_thumb, extracted_artist, extracted_title, extracted_album, extracted_year, extracted_resolution, extracted_fps
             if d.get("status") == "finished":
-                fp = d.get("filepath") or (d.get("info_dict") or {}).get("filepath")
-                if fp:
-                    downloaded_files.add(fp)
+                for k in ("filepath", "_filename", "filename"):
+                    v = d.get(k)
+                    if v and isinstance(v, str):
+                        downloaded_files.add(v)
+                    v_info = (d.get("info_dict") or {}).get(k)
+                    if v_info and isinstance(v_info, str):
+                        downloaded_files.add(v_info)
                 info = d.get("info_dict") or {}
                 if info.get("id"):
                     extracted_vid = info.get("id")
                 if info.get("thumbnail"):
                     extracted_thumb = info.get("thumbnail")
+                elif not extracted_thumb and (extracted_vid or target_original_vid):
+                    extracted_thumb = f"https://i.ytimg.com/vi/{extracted_vid or target_original_vid}/hqdefault.jpg"
                 art_cand = sanitize_extracted_artist(info.get("artist"), info.get("uploader"), info.get("channel"), info.get("creator"))
                 if art_cand:
                     extracted_artist = art_cand
@@ -3116,6 +3179,7 @@ class MediaDownloader:
                         extracted_fps = str(int(info.get("fps")))
                     except Exception:
                         pass
+                fp = d.get("filepath") or (d.get("info_dict") or {}).get("filepath")
                 stem = Path(fp).stem if fp else ""
                 if should_track_playlist and stem and (extracted_vid or target_original_vid):
                     update_stem_vid_map(self.output_dir, stem, vid=extracted_vid or target_original_vid, original_vid=target_original_vid or None)
@@ -3267,7 +3331,6 @@ class MediaDownloader:
                 if not is_placeholder and t:
                     if progress_callback:
                         progress_callback({"status": "downloading", "msg": "Searching official release..."})
-                    import re
                     clean_q_t = re.sub(r"[\(\[\{]\s*from\s+[^)\]\}]+[\)\]\}]", "", t, flags=re.IGNORECASE).strip()
                     clean_q_a = re.sub(r"[\(\[\{]\s*read\s+desc[^\)\]\}]*[\)\]\}]", "", a, flags=re.IGNORECASE).strip()
                     search_q = f"{clean_q_a} {clean_q_t}".strip()
@@ -3376,15 +3439,20 @@ class MediaDownloader:
                             if extracted_vid or target_original_vid:
                                 update_stem_vid_map(self.output_dir, candidate.stem, vid=extracted_vid or target_original_vid, original_vid=target_original_vid or None)
 
-            # Strict validation: Only accept newly created/modified files matching this download
+            # Strict validation: Accept newly created/modified files matching this download
             if not processed_files and not self.was_skipped:
+                valid_exts = (".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac", ".mp4", ".mkv", ".webm")
                 for f in Path(self.output_dir).glob("*.*"):
                     if (
                         f.is_file()
-                        and f.suffix.lower() in (".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".mp4", ".mkv")
+                        and f.suffix.lower() in valid_exts
                         and f.stat().st_size >= 500 * 1024
-                        and f.stat().st_mtime >= start_time
-                        and _author_and_title_match(f.stem, title or extracted_title, author or extracted_artist)
+                        and (
+                            f.stat().st_mtime >= start_time - 60
+                            or (hasattr(f.stat(), "st_ctime") and f.stat().st_ctime >= start_time - 60)
+                            or _author_and_title_match(f.stem, title or extracted_title, author or extracted_artist)
+                            or _author_and_title_match(f.stem, extracted_title, extracted_artist)
+                        )
                     ):
                         if is_audio:
                             clean_target_author = re.sub(r'[\(\[\{]\s*read\s+desc[^\)\]\}]*[\)\]\}]', '', target_original_author or author or '', flags=re.IGNORECASE).strip()
@@ -3434,6 +3502,7 @@ class MediaDownloader:
                             append_playlist_order(self.output_dir, f.name)
                             if extracted_vid or target_original_vid:
                                 update_stem_vid_map(self.output_dir, f.stem, vid=extracted_vid or target_original_vid, original_vid=target_original_vid or None)
+                        break
 
             if processed_files:
                 success = True
@@ -3460,6 +3529,9 @@ class MediaDownloader:
             cleanup_orphan_files(self.output_dir, is_audio_playlist=is_audio)
             return success, self.last_error, self.was_skipped
         except Exception as e:
+            import traceback
+            print(f"EXCEPTION IN POSTPROCESS: {e}")
+            traceback.print_exc()
             cleanup_orphan_files(self.output_dir, is_audio_playlist=is_audio)
             if success:
                 return True, "", self.was_skipped

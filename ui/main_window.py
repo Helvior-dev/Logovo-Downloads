@@ -33,6 +33,7 @@ from core.downloader import (
     set_folder_icon,
     save_playlist_cover_image,
     apply_playlist_cover_settings,
+    ensure_nomedia_file,
     clear_failed_log_if_clean,
     cleanup_orphan_files,
     is_file_already_downloaded,
@@ -341,6 +342,9 @@ class SyncPlaylistWorker(QThread):
             if preview.get('thumbnail') and cover_mode != 'none':
                 apply_playlist_cover_settings(out_dir, preview.get('thumbnail'), mode=cover_mode)
 
+            if self.settings and self.settings.get('create_nomedia_file', False):
+                ensure_nomedia_file(out_dir)
+
             # Restore dates from .playlist_order.json if needed
             restore_dates_from_order(out_dir)
 
@@ -399,6 +403,32 @@ class SyncPlaylistWorker(QThread):
             )
         except Exception as e:
             self.error_signal.emit(str(e), self.p_dict)
+
+
+class ReindexPlaylistWorker(QThread):
+    finished_signal = pyqtSignal(dict, int)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, p_dict: dict, settings, cookies=None):
+        super().__init__()
+        self.p_dict = p_dict
+        self.settings = settings
+        self.cookies = cookies
+
+    def run(self):
+        try:
+            url = self.p_dict.get('url')
+            out_dir = self.p_dict.get('folder_path')
+            preview = get_video_preview(url, cookies=self.cookies)
+            if not preview or not preview.get('is_playlist'):
+                platform = detect_platform_name(url)
+                self.error_signal.emit(f"Could not load playlist from {platform}.")
+                return
+            entries = preview.get('entries', [])
+            reindex_existing_playlist_files(out_dir, entries, settings=self.settings)
+            self.finished_signal.emit(self.p_dict, len(entries))
+        except Exception as e:
+            self.error_signal.emit(str(e))
 
 
 class SpinnerWidget(QWidget):
@@ -2330,6 +2360,7 @@ class MainWindow(QMainWindow):
             def _show_card_context_menu(pos, pl=p, folder=folder_str, k_cnt=kept_count):
                 menu = QMenu(self)
                 act_sync = menu.addAction("Sync Playlist")
+                act_reindex = menu.addAction("Re-index Tracks (1..N)")
                 act_folder = menu.addAction("Open Folder")
                 act_reset_k = None
                 if k_cnt > 0:
@@ -2339,6 +2370,8 @@ class MainWindow(QMainWindow):
                 chosen = menu.exec(card.mapToGlobal(pos))
                 if chosen == act_sync:
                     self.sync_tracked_playlist(pl)
+                elif chosen == act_reindex:
+                    self.reindex_tracked_playlist(pl)
                 elif chosen == act_folder:
                     QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
                 elif act_reset_k and chosen == act_reset_k:
@@ -2539,6 +2572,48 @@ class MainWindow(QMainWindow):
         worker.finished.connect(_cleanup)
         worker.start()
 
+    def reindex_tracked_playlist(self, pl: dict):
+        url = pl.get('url')
+        out_dir = pl.get('folder_path')
+        if not out_dir or not os.path.exists(out_dir):
+            QMessageBox.warning(self, "Folder Not Found", f"The folder for '{pl.get('title')}' was not found on disk.")
+            return
+
+        title = pl.get('title', 'Playlist')
+        platform = detect_platform_name(url)
+        self.status_label.setText(f"Re-indexing tracks for '{title}'...")
+        self.loading_overlay.show_loading(f"Re-indexing '{title}'...", f"Fetching current order from {platform} and updating tags (1..N)...")
+
+        worker = ReindexPlaylistWorker(pl, self.settings, cookies=self.get_cookies_config())
+        worker.finished_signal.connect(self._on_reindex_playlist_finished)
+        worker.error_signal.connect(self._on_reindex_playlist_error)
+        if not hasattr(self, '_reindex_workers'):
+            self._reindex_workers = []
+        self._reindex_workers.append(worker)
+
+        def _cleanup():
+            if worker in self._reindex_workers:
+                self._reindex_workers.remove(worker)
+
+        worker.finished.connect(_cleanup)
+        worker.start()
+
+    def _on_reindex_playlist_finished(self, pl: dict, count: int):
+        self.loading_overlay.hide_loading()
+        title = pl.get('title', 'Playlist')
+        self.status_label.setText(f"Successfully re-indexed {count} tracks in '{title}'.")
+        self.refresh_playlists_ui()
+        QMessageBox.information(
+            self,
+            "Re-indexing Complete",
+            f"Successfully updated track numbers (1..{count}) and metadata tags for all files in '{title}'.\n\nAll track numbers now strictly match the online playlist without gaps."
+        )
+
+    def _on_reindex_playlist_error(self, err_msg: str):
+        self.loading_overlay.hide_loading()
+        self.status_label.setText("Re-indexing failed.")
+        QMessageBox.warning(self, "Re-indexing Error", f"Could not re-index playlist:\n{err_msg}")
+
     def _on_sync_playlist_error(self, err_msg: str, p_dict: dict):
         self.loading_overlay.hide_loading()
         title = p_dict.get('title', 'Playlist') if p_dict else 'Playlist'
@@ -2597,6 +2672,11 @@ class MainWindow(QMainWindow):
                 self.refresh_playlists_ui()
 
         p_dict['removed_tracks_count'] = remaining_orphans
+
+        # Always re-index and update track numbers/tags for existing files in folder to match the current online list (1..N)
+        reindex_existing_playlist_files(out_dir, preview.get('entries', []), settings=self.settings)
+        if self.settings and self.settings.get('create_nomedia_file', False):
+            ensure_nomedia_file(out_dir)
 
         if not missing_entries:
             self.playlists_mgr.update_sync_info(url, track_count=count, status='synced', unavailable_count=unavail_cnt, duplicates_count=dupes_cnt, removed_tracks_count=remaining_orphans)
@@ -2829,6 +2909,12 @@ class MainWindow(QMainWindow):
             lambda: self.settings.set('cover_aspect_ratio', self.cover_style_combo.currentData())
         )
         gen_grid.addWidget(self.cover_style_combo, 4, 1)
+
+        # Row 5: Create .nomedia file
+        self.chk_nomedia = QCheckBox("Create .nomedia file in download and playlist folders (Hides folder from Android gallery and media scanners)")
+        self.chk_nomedia.setChecked(self.settings.get('create_nomedia_file', False))
+        self.chk_nomedia.toggled.connect(self._toggle_nomedia_setting)
+        gen_grid.addWidget(self.chk_nomedia, 5, 0, 1, 2)
 
         gen_grid.setColumnStretch(1, 1)
         layout.addLayout(gen_grid)
@@ -3451,6 +3537,14 @@ class MainWindow(QMainWindow):
         self.naming_input.setText(default_pattern)
         self.settings.set('naming_pattern', default_pattern)
 
+    def _toggle_nomedia_setting(self, checked: bool):
+        self.settings.set('create_nomedia_file', checked)
+        if checked:
+            for p in self.playlists_mgr.get_all():
+                folder = p.get('folder_path')
+                if folder and os.path.exists(folder):
+                    ensure_nomedia_file(folder)
+
     def _on_embed_all_meta_toggled(self, checked: bool):
         self.settings.set('embed_all_metadata', checked)
         self._update_meta_checkboxes_state(checked)
@@ -3984,11 +4078,11 @@ class MainWindow(QMainWindow):
 
                     detect_and_prompt_orphans(self, out_dir, preview)
 
-                # Cleanup orphan files and leftover raw .mp4 before batch adding
-                cleanup_orphan_files(out_dir, is_audio_playlist=(selected_type == "Audio"))
+                if self.settings and self.settings.get('create_nomedia_file', False):
+                    ensure_nomedia_file(out_dir)
 
                 # Re-index existing tracks so numbers 1..N match current playlist count without gaps
-                reindex_existing_playlist_files(out_dir, preview.get('entries', []))
+                reindex_existing_playlist_files(out_dir, preview.get('entries', []), settings=self.settings)
 
                 # Auto-clear previous completed/finished queue if not currently downloading
                 if self.download_queue and not self.is_downloading:
@@ -4340,7 +4434,7 @@ class MainWindow(QMainWindow):
             cookies = None
 
         speed_limit = self.settings.get('speed_limit', 'Unlimited')
-        naming_pattern = self.settings.get('audio_naming_pattern', '{artist} - {title}') if is_audio else self.settings.get('video_naming_pattern', '{title}')
+        naming_pattern = self.settings.get('naming_pattern', '{artist} - {title}') if is_audio else self.settings.get('video_naming_pattern', '{title}')
 
         thread = WorkerThread(
             url=url,

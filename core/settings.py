@@ -41,6 +41,7 @@ class SettingsManager:
             'speed_limit': 'Unlimited', # 'Unlimited', '1 MB/s', '3 MB/s', '5 MB/s', '10 MB/s', '20 MB/s'
             'playlist_sort_mode': 'custom', # 'custom', 'name_asc', 'name_desc', 'tracks_desc', 'tracks_asc', 'synced_desc'
             'filename_compat': 'Windows (Original)', # 'Windows (Original)' or 'UNIX / POSIX / MTP'
+            'create_nomedia_file': False, # Whether to create .nomedia file in download / playlist folders
             'post_download_action': 'Disabled', # 'Disabled', 'Shutdown PC', 'Sleep / Suspend'
             'check_ytdlp_updates_on_startup': True,
             'embed_all_metadata': True,

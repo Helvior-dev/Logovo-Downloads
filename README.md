@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.8.5-007acc.svg?style=flat-square" alt="Version 1.8.5" />
+  <img src="https://img.shields.io/badge/version-1.8.6-007acc.svg?style=flat-square" alt="Version 1.8.6" />
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52.svg?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
   <img src="https://img.shields.io/badge/Core-yt--dlp-red.svg?style=flat-square" alt="yt-dlp" />
@@ -31,13 +31,17 @@ It is designed for managing offline music libraries with accurate metadata extra
 
 ### Media Downloads & Platform Support
 - **Multi-Platform:** Native support for YouTube, Spotify, SoundCloud, Bandcamp, Twitch, TikTok, Vimeo, VK, and more.
-- **Spotify DRM Bypass:** Automatically resolves Spotify tracks, albums, and playlists to high-quality audio streams while retaining original Spotify metadata, artist tags, and album artwork.
+- **Spotify DRM Bypass & Authentic Covers:** Automatically resolves Spotify tracks, albums, and playlists to high-quality audio streams while retaining original Spotify metadata, artist tags, and individual song artwork (without inheriting playlist thumbnails).
 - **Formats:** Audio (MP3 320 kbps, FLAC, M4A, Opus, Ogg, WAV, ALAC) and Video (up to 4K/8K 60fps, MP4/MKV).
 - **Fast Metadata Enrichment:** Automatically resolves titles, artist names, and HD thumbnails in 50ms when importing links from text files or pasting raw URLs.
-- **Widescreen & Square Covers:** Native 16:9 thumbnails for video containers and square 1:1 artwork for audio files.
+- **Widescreen & Square Covers:** Native 16:9 thumbnails for video containers and high-resolution square 1:1 artwork for audio files.
 - **Multi-Threaded Queue:** Concurrent download queue with configurable stream limits (up to 6 workers).
 
 ### Playlist Synchronization & Library Integrity
+- **Chronological Track Numbering (`#` / `TRCK`):** Continuous 1..N indexing strictly matching playlist add chronology (Track #1 = first added track, Track #N = newest added track).
+- **Automatic Gap Adaptation:** Seamlessly re-indexes local tracks upon sync or deletion, closing gaps and eliminating obsolete index offsets.
+- **1-Click Track Re-indexing:** Instant `Re-index Tracks (1..N)` action in playlist context menus to update tags, track numbers, and covers for existing files in seconds.
+- **`.nomedia` File Creation & Immunity:** Optional setting to generate `.nomedia` files in library directories to prevent image gallery pollution, protected against cleanup routines.
 - **Fast Local Indexing:** Compares local folders against online playlists in seconds using cached file stems and multi-ID tracking.
 - **Fallback & Alternative Auto-Healing:** Automatically links alternative downloads (e.g. tracks unavailable on YouTube found via fallback search) with original playlist entries to eliminate download/delete loops.
 - **Strict Version Match Guard:** Strictly isolates originals from remixes, VIPs, acoustics, and live versions to prevent false positive matches.
@@ -45,7 +49,7 @@ It is designed for managing offline music libraries with accurate metadata extra
 - **Persistent Kept Tracks:** Retains files you choose to keep locally across sync cycles, with a quick-reset action in the card UI.
 - **Zero-Lag Reordering:** Drag-and-drop playlist cards or use arrow buttons with instantaneous in-place reordering.
 - **Title Cleaning:** Automatically strips promotional clutter while preserving genuine version suffixes (`Remix`, `VIP`, `Extended`, `Acoustic`, `Instrumental`, `Live`).
-- **Duplicate Detection:** Identifies duplicate tracks within online playlists and provides direct links to manage them.
+- **Duplicate Detection:** Identifies duplicate tracks within online playlists without false positives on similar artist tracks.
 
 ### Cross-Playlist Comparison & Deduplication
 - **Pairwise Comparison (A ↔ B):** Directly compare any two playlists side by side with instant sub-filters (`Common / Overlaps`, `Only in A`, `Only in B`, `All Tracks`).

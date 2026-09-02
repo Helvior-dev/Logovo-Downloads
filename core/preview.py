@@ -76,7 +76,7 @@ def fetch_spotify_metadata(url: str) -> dict | None:
                     "title": f"{t_artist} - {t_title}" if t_artist and t_artist not in t_title else t_title,
                     "url": f"ytsearch1:{q}",
                     "duration": t_dur if t_dur > 0 else None,
-                    "thumbnail": thumb,
+                    "thumbnail": thumb if media_type == "album" else None,
                     "uploader": t_artist or "Spotify",
                     "channel": t_artist or "Spotify",
                     "is_unavailable": False,
