@@ -2042,9 +2042,9 @@ class MainWindow(QMainWindow):
         self.btn_clear_completed = QPushButton("Clear Completed")
         self.btn_clear_completed.clicked.connect(self.clear_completed)
 
-        bottom_actions.addWidget(self.btn_download_all)
-        bottom_actions.addWidget(self.btn_stop)
         bottom_actions.addWidget(self.btn_clear_completed)
+        bottom_actions.addWidget(self.btn_stop)
+        bottom_actions.addWidget(self.btn_download_all)
 
         layout.addLayout(bottom_actions)
         self.tabs.addTab(self.downloads_tab, "DOWNLOADS")
