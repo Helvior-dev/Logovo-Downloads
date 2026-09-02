@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.8.7-007acc.svg?style=flat-square" alt="Version 1.8.7" />
+  <img src="https://img.shields.io/badge/version-1.8.8-007acc.svg?style=flat-square" alt="Version 1.8.8" />
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52.svg?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
   <img src="https://img.shields.io/badge/Core-yt--dlp-red.svg?style=flat-square" alt="yt-dlp" />
@@ -55,6 +55,7 @@ It is designed for managing offline music libraries with accurate metadata extra
 - **Duplicate Detection:** Identifies duplicate tracks within online playlists without false positives on similar artist tracks.
 
 ### User Interface & Experience
+- **Modern Multi-Resolution Squircle Icon:** High-DPI 7-layer application icon (`16×16` up to `256×256`) featuring a smooth squircle tile, ambient drop shadow, and razor-sharp anti-aliasing across Desktop, Taskbar, and Explorer.
 - **Reorganized Downloads Controls:** Swapped bottom control sections for enhanced workflow ergonomicity — stats and quick actions on the left, download triggers and options on the right.
 - **Dynamic Lyrics/Subtitles Visibility:** Automatically hides `Subs/Lyrics` selectors when disabled in Settings, cleanly shifting type options into place, while remembering user language selections.
 - **History Table Alignment:** Symmetrically centered column headers and cells across Date, Author, Title, Platform, and Status.
