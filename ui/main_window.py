@@ -1963,6 +1963,11 @@ class MainWindow(QMainWindow):
         queue_layout.addWidget(self.stats_label)
         queue_layout.addStretch()
 
+        self.btn_clear_queue = QPushButton("Clear Queue")
+        self.btn_clear_queue.clicked.connect(self.clear_queue)
+        self.btn_clear_queue.setMinimumHeight(30)
+        queue_layout.addWidget(self.btn_clear_queue)
+
         self.lbl_format_type = QLabel("Type:")
         queue_layout.addWidget(self.lbl_format_type)
         self.format_combo = QComboBox()
@@ -1985,13 +1990,7 @@ class MainWindow(QMainWindow):
         self.btn_add_queue = QPushButton("Add to queue")
         self.btn_add_queue.clicked.connect(self.add_to_queue_action)
         self.btn_add_queue.setMinimumHeight(30)
-
-        self.btn_clear_queue = QPushButton("Clear Queue")
-        self.btn_clear_queue.clicked.connect(self.clear_queue)
-        self.btn_clear_queue.setMinimumHeight(30)
-
         queue_layout.addWidget(self.btn_add_queue)
-        queue_layout.addWidget(self.btn_clear_queue)
 
         layout.addLayout(queue_layout)
 
