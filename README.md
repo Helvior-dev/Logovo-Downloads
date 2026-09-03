@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.8.10-007acc.svg?style=flat-square" alt="Version 1.8.10" />
+  <img src="https://img.shields.io/badge/version-1.8.11-007acc.svg?style=flat-square" alt="Version 1.8.11" />
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52.svg?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
   <img src="https://img.shields.io/badge/Core-yt--dlp-red.svg?style=flat-square" alt="yt-dlp" />
@@ -39,7 +39,8 @@ It is designed for managing offline music libraries with accurate metadata extra
 
 ### Playlist Synchronization & Library Integrity
 - **OS Format Badges & Directory Persistence:** Visual indicators (`Windows`, `UNIX`, `Unix/Win`) next to playlist titles; automatic persistence via hidden `playlist_format.txt` files inside playlist folders.
-- **Sync Format Mismatch Resolution:** Interactive modal prompt on synchronization when global settings differ from a playlist's downloaded format, allowing continuous single-format downloads or mixed (`Unix/Win`) preservation.
+- **Format Mismatch Handling & Scratch Re-downloading:** Interactive modal when syncing playlists downloaded under a different OS format (Windows ↔ UNIX). Choose to keep the original playlist format, mix formats (`Unix/Win`), or wipe old tracks and re-download the playlist cleanly from scratch.
+- **1-Click Re-download from Scratch:** Right-click context menu option (`Re-download from Scratch...`) on any playlist card to safely purge local media files and fetch the entire playlist fresh from the online source.
 - **OS Format Sorting:** Dedicated sorting modes (`OS Format (Windows First)`, `OS Format (UNIX First)`) in the Playlists tab.
 - **Chronological Track Numbering (`#` / `TRCK`):** Continuous 1..N indexing strictly matching playlist add chronology (Track #1 = first added track, Track #N = newest added track).
 - **Automatic Gap Adaptation:** Seamlessly re-indexes local tracks upon sync or deletion, closing gaps and eliminating obsolete index offsets.

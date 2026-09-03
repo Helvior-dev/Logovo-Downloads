@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QCheckBox, QFileDialog, QFormLayout,
     QApplication, QRadioButton, QButtonGroup, QGroupBox, QScrollArea, QDialog,
     QSystemTrayIcon, QMenu, QSpinBox, QSlider, QFrame, QGraphicsDropShadowEffect,
-    QTextEdit, QGraphicsBlurEffect, QTabBar
+    QTextEdit, QGraphicsBlurEffect, QTabBar, QLayout
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QObject, QEvent, QMimeData, QPropertyAnimation, QPoint, QEasingCurve, QRectF
 from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon, QColor, QPainter, QPen, QDrag, QPainterPath, QFont
@@ -1248,33 +1248,33 @@ class SafeModeDialog(QDialog):
 class PlaylistFormatMismatchDialog(QDialog):
     def __init__(self, parent=None, pl_title: str = "Playlist", pl_format: str = "unix", settings_format: str = "windows"):
         super().__init__(parent)
-        self.setWindowTitle("Format Mismatch")
-        self.setFixedWidth(540)
+        self.setWindowTitle("Format Compatibility Mismatch")
+        self.setFixedWidth(560)
         self.setStyleSheet("""
             QDialog { background-color: #0b1120; color: #f8fafc; }
             QPushButton { border-radius: 6px; padding: 10px 16px; font-weight: bold; font-size: 12px; }
         """)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(14)
+        layout.setSpacing(16)
 
         icon_lbl = QLabel("⚠️")
         icon_lbl.setStyleSheet("font-size: 36px;")
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(icon_lbl)
 
-        title_lbl = QLabel("Несоответствие формата файлов")
+        title_lbl = QLabel("File Format Compatibility Mismatch")
         title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #f59e0b;")
         title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_lbl)
 
-        pl_fmt_label = "UNIX" if pl_format == "unix" else "Windows"
+        pl_fmt_label = "UNIX" if pl_format == "unix" else ("Windows" if pl_format == "windows" else "Unix/Win")
         set_fmt_label = "Windows" if settings_format == "windows" else "UNIX"
 
         desc_lbl = QLabel(
-            f"В ваших настройках сейчас выбран формат <b>{set_fmt_label}</b>, "
-            f"а плейлист <b>«{pl_title}»</b> скачан под <b>{pl_fmt_label}</b> системы.<br><br>"
-            "Как вы хотите продолжить скачивание новых треков?"
+            f"Your application settings currently use <b>{set_fmt_label}</b> format compatibility, "
+            f"while the playlist <b>\"{pl_title}\"</b> was previously downloaded using <b>{pl_fmt_label}</b> format.<br><br>"
+            "How would you like to proceed with this synchronization?"
         )
         desc_lbl.setWordWrap(True)
         desc_lbl.setStyleSheet("font-size: 12px; color: #cbd5e1; line-height: 1.5;")
@@ -1283,7 +1283,9 @@ class PlaylistFormatMismatchDialog(QDialog):
         self.choice = None
 
         # Option 1: Keep playlist format
-        btn_keep = QPushButton(f"📁 Продолжить скачивание в формате плейлиста ({pl_fmt_label})")
+        opt1_box = QVBoxLayout()
+        opt1_box.setSpacing(4)
+        btn_keep = QPushButton(f"📁 Continue in Playlist Format ({pl_fmt_label})")
         btn_keep.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_keep.setStyleSheet("""
             QPushButton {
@@ -1291,19 +1293,26 @@ class PlaylistFormatMismatchDialog(QDialog):
                 color: #ffffff;
                 border: none;
                 text-align: left;
-                padding-left: 14px;
+                padding: 10px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                border-radius: 6px;
             }
             QPushButton:hover { background-color: #1d4ed8; }
         """)
         btn_keep.clicked.connect(self._choose_keep)
-        layout.addWidget(btn_keep)
+        opt1_box.addWidget(btn_keep)
 
-        hint_keep = QLabel("• Скачает треки в прежнем формате плейлиста. Плашка останется прежней.")
-        hint_keep.setStyleSheet("font-size: 11px; color: #94a3b8; margin-top: -8px; margin-left: 14px; margin-bottom: 6px;")
-        layout.addWidget(hint_keep)
+        hint_keep = QLabel(f"• Downloads missing tracks using the original {pl_fmt_label} format. The badge remains {pl_fmt_label}.")
+        hint_keep.setWordWrap(True)
+        hint_keep.setStyleSheet("font-size: 11px; color: #94a3b8; padding-left: 14px;")
+        opt1_box.addWidget(hint_keep)
+        layout.addLayout(opt1_box)
 
         # Option 2: Switch to settings format (mixed)
-        btn_settings = QPushButton(f"🔀 Продолжить скачивание под {set_fmt_label} (Смешать форматы)")
+        opt2_box = QVBoxLayout()
+        opt2_box.setSpacing(4)
+        btn_settings = QPushButton(f"🔀 Download New Tracks in {set_fmt_label} (Mix Formats)")
         btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_settings.setStyleSheet("""
             QPushButton {
@@ -1311,25 +1320,61 @@ class PlaylistFormatMismatchDialog(QDialog):
                 color: #ffffff;
                 border: none;
                 text-align: left;
-                padding-left: 14px;
+                padding: 10px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                border-radius: 6px;
             }
             QPushButton:hover { background-color: #b45309; }
         """)
         btn_settings.clicked.connect(self._choose_settings)
-        layout.addWidget(btn_settings)
+        opt2_box.addWidget(btn_settings)
 
-        hint_settings = QLabel("• Новые треки скачаются под текущие настройки, а плашка плейлиста сменится на Unix/Win.")
-        hint_settings.setStyleSheet("font-size: 11px; color: #94a3b8; margin-top: -8px; margin-left: 14px; margin-bottom: 6px;")
-        layout.addWidget(hint_settings)
+        hint_settings = QLabel(f"• Only new tracks will be saved in {set_fmt_label} format. Existing files are kept as-is, and the badge becomes Unix/Win.")
+        hint_settings.setWordWrap(True)
+        hint_settings.setStyleSheet("font-size: 11px; color: #94a3b8; padding-left: 14px;")
+        opt2_box.addWidget(hint_settings)
+        layout.addLayout(opt2_box)
+
+        # Option 3: Re-download from scratch in settings format
+        opt3_box = QVBoxLayout()
+        opt3_box.setSpacing(4)
+        btn_redownload = QPushButton(f"🔄 Re-download from Scratch in {set_fmt_label}")
+        btn_redownload.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_redownload.setStyleSheet("""
+            QPushButton {
+                background-color: #7c3aed;
+                color: #ffffff;
+                border: none;
+                text-align: left;
+                padding: 10px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                border-radius: 6px;
+            }
+            QPushButton:hover { background-color: #6d28d9; }
+        """)
+        btn_redownload.clicked.connect(self._choose_redownload)
+        opt3_box.addWidget(btn_redownload)
+
+        hint_redownload = QLabel(f"• Removes existing tracks in this playlist folder and re-downloads all tracks cleanly from scratch in {set_fmt_label} format. The badge updates to {set_fmt_label}.")
+        hint_redownload.setWordWrap(True)
+        hint_redownload.setStyleSheet("font-size: 11px; color: #94a3b8; padding-left: 14px;")
+        opt3_box.addWidget(hint_redownload)
+        layout.addLayout(opt3_box)
 
         # Cancel
-        btn_cancel = QPushButton("Отмена")
+        btn_cancel = QPushButton("Cancel")
         btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_cancel.setStyleSheet("""
             QPushButton {
                 background-color: #334155;
                 color: #cbd5e1;
                 border: 1px solid #475569;
+                font-size: 12px;
+                font-weight: 500;
+                border-radius: 6px;
+                padding: 8px 16px;
             }
             QPushButton:hover { background-color: #475569; color: #ffffff; }
         """)
@@ -1342,6 +1387,10 @@ class PlaylistFormatMismatchDialog(QDialog):
 
     def _choose_settings(self):
         self.choice = 'settings'
+        self.accept()
+
+    def _choose_redownload(self):
+        self.choice = 'redownload'
         self.accept()
 
 
@@ -2509,6 +2558,7 @@ class MainWindow(QMainWindow):
                 menu = QMenu(self)
                 act_sync = menu.addAction("Sync Playlist")
                 act_reindex = menu.addAction("Re-index Tracks (1..N)")
+                act_redownload = menu.addAction("Re-download from Scratch...")
                 act_folder = menu.addAction("Open Folder")
                 act_reset_k = None
                 if k_cnt > 0:
@@ -2520,6 +2570,8 @@ class MainWindow(QMainWindow):
                     self.sync_tracked_playlist(pl)
                 elif chosen == act_reindex:
                     self.reindex_tracked_playlist(pl)
+                elif chosen == act_redownload:
+                    self.redownload_tracked_playlist(pl)
                 elif chosen == act_folder:
                     QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
                 elif act_reset_k and chosen == act_reset_k:
@@ -2713,7 +2765,7 @@ class MainWindow(QMainWindow):
         global_format = self.settings.get('filename_compat', 'windows')
         chosen_format = pl_format
 
-        if pl_format not in ('unix/win', 'mixed') and pl_format != global_format:
+        if pl_format != global_format:
             dlg = PlaylistFormatMismatchDialog(self, pl_title=title, pl_format=pl_format, settings_format=global_format)
             if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.choice:
                 return  # User cancelled sync
@@ -2725,8 +2777,42 @@ class MainWindow(QMainWindow):
                 self.playlists_mgr.set_playlist_format(url, 'unix/win')
                 write_playlist_format(out_dir, 'unix/win')
                 self.refresh_playlists_ui()
-        elif pl_format in ('unix/win', 'mixed'):
-            chosen_format = global_format
+            elif dlg.choice == 'redownload':
+                set_fmt_label = "Windows" if global_format == "windows" else "UNIX"
+                reply = QMessageBox.question(
+                    self,
+                    "Confirm Re-download from Scratch",
+                    f"Are you sure you want to re-download '{title}' from scratch in {set_fmt_label} format?\n\n"
+                    f"This will remove existing downloaded media tracks in '{out_dir}' and cleanly re-download all tracks from the online playlist.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
+                chosen_format = global_format
+                from core.constants import MEDIA_EXTS
+                if out_dir and os.path.isdir(out_dir):
+                    try:
+                        for fname in os.listdir(out_dir):
+                            fpath = os.path.join(out_dir, fname)
+                            if os.path.isfile(fpath):
+                                ext = os.path.splitext(fname)[1].lower()
+                                if ext in MEDIA_EXTS or ext in ('.lrc', '.vtt', '.srt'):
+                                    try:
+                                        os.remove(fpath)
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
+
+                from core.downloader import clear_kept_orphans
+                clear_kept_orphans(out_dir)
+
+                p_dict['format_compat'] = global_format
+                p_dict['track_count'] = 0
+                self.playlists_mgr.set_playlist_format(url, global_format)
+                write_playlist_format(out_dir, global_format)
+                self.refresh_playlists_ui()
 
         self._active_sync_urls.add(url)
 
@@ -2775,6 +2861,78 @@ class MainWindow(QMainWindow):
 
         worker.finished.connect(_cleanup)
         worker.start()
+
+    def redownload_tracked_playlist(self, pl: dict):
+        url = pl.get('url')
+        out_dir = pl.get('folder_path')
+        if not out_dir or not os.path.exists(out_dir):
+            QMessageBox.warning(self, "Folder Not Found", f"The folder for '{pl.get('title')}' was not found on disk.")
+            return
+
+        title = pl.get('title', 'Playlist')
+        global_format = self.settings.get('filename_compat', 'windows')
+        pl_format = pl.get('format_compat')
+        from core.downloader import read_playlist_format, write_playlist_format
+        if not pl_format and out_dir:
+            pl_format = read_playlist_format(out_dir)
+        if not pl_format:
+            pl_format = 'windows'
+
+        if pl_format != global_format:
+            dlg = PlaylistFormatMismatchDialog(self, pl_title=title, pl_format=pl_format, settings_format=global_format)
+            if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.choice:
+                return
+            if dlg.choice == 'keep':
+                chosen_format = pl_format
+            elif dlg.choice == 'settings':
+                chosen_format = global_format
+                pl['format_compat'] = 'unix/win'
+                self.playlists_mgr.set_playlist_format(url, 'unix/win')
+                write_playlist_format(out_dir, 'unix/win')
+                self.refresh_playlists_ui()
+                self.sync_tracked_playlist(pl)
+                return
+            elif dlg.choice == 'redownload':
+                chosen_format = global_format
+        else:
+            chosen_format = global_format
+
+        set_fmt_label = "Windows" if chosen_format == "windows" else "UNIX"
+        reply = QMessageBox.question(
+            self,
+            "Confirm Re-download from Scratch",
+            f"Are you sure you want to re-download '{title}' from scratch in {set_fmt_label} format?\n\n"
+            f"This will remove existing downloaded media tracks in '{out_dir}' and cleanly re-download all tracks from the online playlist.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        from core.constants import MEDIA_EXTS
+        if out_dir and os.path.isdir(out_dir):
+            try:
+                for fname in os.listdir(out_dir):
+                    fpath = os.path.join(out_dir, fname)
+                    if os.path.isfile(fpath):
+                        ext = os.path.splitext(fname)[1].lower()
+                        if ext in MEDIA_EXTS or ext in ('.lrc', '.vtt', '.srt'):
+                            try:
+                                os.remove(fpath)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+        from core.downloader import clear_kept_orphans
+        clear_kept_orphans(out_dir)
+
+        pl['format_compat'] = chosen_format
+        pl['track_count'] = 0
+        self.playlists_mgr.set_playlist_format(url, chosen_format)
+        write_playlist_format(out_dir, chosen_format)
+        self.refresh_playlists_ui()
+
+        self.sync_tracked_playlist(pl)
 
     def _on_reindex_playlist_finished(self, pl: dict, count: int):
         self.loading_overlay.hide_loading()
