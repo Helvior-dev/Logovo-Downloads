@@ -51,4 +51,8 @@ The preparation script downloads pinned FFmpeg, FFprobe and Deno archives, verif
 - yt-dlp updates are staged for the next app launch. The previous working core is retained for rollback.
 - Network diagnostics run only when requested. Automatic update checks can be disabled in settings.
 
+## Acknowledgements
+
+Developed independently with the assistance of AI, inspired by Magerko's [Universal Media Downloader](https://github.com/Magerko/universal-media-downloader).
+
 Licensed under [MIT](LICENSE).
