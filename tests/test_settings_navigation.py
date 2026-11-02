@@ -8,8 +8,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPoint, QPointF, Qt
 from PyQt6.QtGui import QWheelEvent
-from PyQt6.QtWidgets import QApplication, QPushButton
+from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
 
+from core.constants import APP_VERSION
 from core.settings import SettingsManager
 from ui.main_window import MainWindow
 from ui.storage_cleanup_dialog import StorageCleanupDialog
@@ -41,6 +42,11 @@ class SettingsNavigationTests(unittest.TestCase):
             ), patch("ui.main_window.QTimer.singleShot"):
                 window = MainWindow()
                 try:
+                    self.assertEqual(APP_VERSION, "1.9.1")
+                    self.assertIn(
+                        f"Version {APP_VERSION}",
+                        [label.text() for label in window.about_tab.findChildren(QLabel)],
+                    )
                     pages = window.settings_sections
                     self.assertEqual(
                         [pages.tabText(index) for index in range(pages.count())],

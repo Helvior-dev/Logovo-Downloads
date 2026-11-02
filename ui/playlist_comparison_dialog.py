@@ -121,7 +121,8 @@ class TrackOverlapDetailsDialog(QDialog):
         btn_layout.setSpacing(10)
 
         if track_url:
-            btn_browser = QPushButton("Open in Browser ↗")
+            link_is_search = "/search?" in track_url
+            btn_browser = QPushButton("Search online" if link_is_search else "Open video")
             btn_browser.setCursor(Qt.CursorShape.PointingHandCursor)
             btn_browser.setStyleSheet("""
                 QPushButton {
@@ -175,11 +176,11 @@ class CrossPlaylistComparisonDialog(QDialog):
     def __init__(self, playlists_mgr: PlaylistsManager = None, default_target: str = "Trash", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Cross-Playlist Track Comparison")
-        self.setStyleSheet("QDialog { background-color: #080b09; }")
         self.ui_theme = normalize_theme(getattr(parent, "ui_theme", "green"))
         self.theme_colors = get_theme_colors(self.ui_theme)
+        self.setStyleSheet(theme_stylesheet("QDialog { background-color: #080b09; }", self.ui_theme))
         self.setMinimumSize(1080, 640)
-        self.resize(1160, 680)
+        self.resize(1160, 640)
 
         self.pm = playlists_mgr or PlaylistsManager()
         self.comparator = PlaylistComparator(self.pm)
@@ -197,11 +198,11 @@ class CrossPlaylistComparisonDialog(QDialog):
 
         # Header
         header_layout = QVBoxLayout()
-        header_title = QLabel("<h3>Playlist Comparison</h3>")
-        header_title.setStyleSheet("color: #cbd5cc; margin-bottom: 2px;")
+        header_title = QLabel("Compare local playlists")
+        header_title.setStyleSheet("color: #cbd5cc; font-size: 17px; font-weight: bold;")
         header_desc = QLabel(
-            "Analyze your library to find songs that exist in multiple playlists simultaneously.\n"
-            "Compare pairs of playlists (A ↔ B), audit single playlists against all others, or inspect overall collection duplicates."
+            "Find shared audio files across your tracked playlist folders. "
+            "Comparing does not change files; deletion always needs your confirmation."
         )
         header_desc.setStyleSheet("color: #aab7aa; font-size: 12px;")
         header_desc.setWordWrap(True)
@@ -220,20 +221,24 @@ class CrossPlaylistComparisonDialog(QDialog):
                 padding: 6px;
             }
         """)
-        controls_layout = QHBoxLayout(controls_frame)
-        controls_layout.setContentsMargins(10, 8, 10, 8)
+        controls_layout = QVBoxLayout(controls_frame)
+        controls_layout.setContentsMargins(14, 12, 14, 12)
         controls_layout.setSpacing(10)
+
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(10)
 
         lbl_mode = QLabel("Mode:")
         lbl_mode.setStyleSheet("color: #cbd5cc; font-weight: bold; font-size: 12px;")
-        controls_layout.addWidget(lbl_mode)
+        mode_row.addWidget(lbl_mode)
 
         self.combo_mode = QComboBox()
+        self.combo_mode.wheelEvent = lambda event: event.ignore()
         self.combo_mode.blockSignals(True)
         self.combo_mode.addItems([
-            "Compare Single Playlist",
-            "Compare Two Playlists (A ↔ B)",
-            "Compare All Playlists (Audit)"
+            "One playlist",
+            "Two playlists",
+            "Entire library"
         ])
         self.combo_mode.setStyleSheet("""
             QComboBox {
@@ -247,14 +252,23 @@ class CrossPlaylistComparisonDialog(QDialog):
         """)
         self.combo_mode.blockSignals(False)
         self.combo_mode.currentIndexChanged.connect(self._on_mode_changed)
-        controls_layout.addWidget(self.combo_mode)
+        mode_row.addWidget(self.combo_mode)
+        self.mode_description = QLabel()
+        self.mode_description.setStyleSheet("color: #aab7aa; font-size: 11px;")
+        self.mode_description.setWordWrap(True)
+        mode_row.addWidget(self.mode_description, 1)
+        controls_layout.addLayout(mode_row)
+
+        selection_row = QHBoxLayout()
+        selection_row.setSpacing(10)
 
         # Target A selector
         self.lbl_target = QLabel("Target Playlist:")
         self.lbl_target.setStyleSheet("color: #cbd5cc; font-weight: bold; font-size: 12px;")
-        controls_layout.addWidget(self.lbl_target)
+        selection_row.addWidget(self.lbl_target)
 
         self.combo_target = QComboBox()
+        self.combo_target.wheelEvent = lambda event: event.ignore()
         self.combo_target.setStyleSheet("""
             QComboBox {
                 background-color: #080b09;
@@ -266,7 +280,7 @@ class CrossPlaylistComparisonDialog(QDialog):
                 min-width: 140px;
             }
         """)
-        controls_layout.addWidget(self.combo_target)
+        selection_row.addWidget(self.combo_target, 1)
 
         # Swap button for A ↔ B mode
         self.btn_swap = QPushButton("⇄")
@@ -289,15 +303,16 @@ class CrossPlaylistComparisonDialog(QDialog):
         """)
         self.btn_swap.clicked.connect(self._swap_playlists)
         self.btn_swap.setVisible(False)
-        controls_layout.addWidget(self.btn_swap)
+        selection_row.addWidget(self.btn_swap)
 
         # Target B selector (for A ↔ B mode)
         self.lbl_target_b = QLabel("Playlist B:")
         self.lbl_target_b.setStyleSheet("color: #cbd5cc; font-weight: bold; font-size: 12px;")
         self.lbl_target_b.setVisible(False)
-        controls_layout.addWidget(self.lbl_target_b)
+        selection_row.addWidget(self.lbl_target_b)
 
         self.combo_target_b = QComboBox()
+        self.combo_target_b.wheelEvent = lambda event: event.ignore()
         self.combo_target_b.setStyleSheet("""
             QComboBox {
                 background-color: #080b09;
@@ -310,7 +325,7 @@ class CrossPlaylistComparisonDialog(QDialog):
             }
         """)
         self.combo_target_b.setVisible(False)
-        controls_layout.addWidget(self.combo_target_b)
+        selection_row.addWidget(self.combo_target_b, 1)
 
         all_pls = self.pm.get_all()
         target_idx_a = 0
@@ -334,11 +349,22 @@ class CrossPlaylistComparisonDialog(QDialog):
         self.combo_target.currentIndexChanged.connect(self._on_target_changed)
         self.combo_target_b.currentIndexChanged.connect(self._on_target_b_changed)
 
-        controls_layout.addSpacing(6)
+        self.btn_rescan = QPushButton("Refresh files")
+        self.btn_rescan.setToolTip("Scan tracked playlist folders again")
+        self.btn_rescan.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_rescan.setObjectName("PrimaryButton")
+        self.btn_rescan.clicked.connect(self.run_scan)
+        selection_row.addWidget(self.btn_rescan)
+        controls_layout.addLayout(selection_row)
+
+        search_row = QHBoxLayout()
+        search_row.setSpacing(10)
+        search_row.addWidget(QLabel("Filter results:"))
 
         # Search box
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Filter by track name or artist")
+        self.search_edit.setPlaceholderText("Track, artist or playlist name")
+        self.search_edit.setClearButtonEnabled(True)
         self.search_edit.setStyleSheet("""
             QLineEdit {
                 background-color: #080b09;
@@ -350,26 +376,8 @@ class CrossPlaylistComparisonDialog(QDialog):
             }
         """)
         self.search_edit.textChanged.connect(self._filter_results)
-        controls_layout.addWidget(self.search_edit, 1)
-
-        self.btn_rescan = QPushButton("Rescan")
-        self.btn_rescan.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_rescan.setStyleSheet("""
-            QPushButton {
-                background-color: #14271a;
-                color: #a6efb4;
-                border-radius: 0px;
-                padding: 6px 14px;
-                font-weight: bold;
-                font-size: 12px;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: #23442c;
-            }
-        """)
-        self.btn_rescan.clicked.connect(self.run_scan)
-        controls_layout.addWidget(self.btn_rescan)
+        search_row.addWidget(self.search_edit, 1)
+        controls_layout.addLayout(search_row)
 
         layout.addWidget(controls_frame)
 
@@ -387,22 +395,22 @@ class CrossPlaylistComparisonDialog(QDialog):
         subtabs_layout.setContentsMargins(8, 4, 8, 4)
         subtabs_layout.setSpacing(8)
 
-        self.btn_tab_common = QPushButton("Common / Overlaps (0)")
+        self.btn_tab_common = QPushButton("Shared (0)")
         self.btn_tab_common.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_tab_common.clicked.connect(lambda: self._set_pair_subtab("common"))
         subtabs_layout.addWidget(self.btn_tab_common)
 
-        self.btn_tab_only_a = QPushButton("Only in A (0)")
+        self.btn_tab_only_a = QPushButton("Only A (0)")
         self.btn_tab_only_a.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_tab_only_a.clicked.connect(lambda: self._set_pair_subtab("only_a"))
         subtabs_layout.addWidget(self.btn_tab_only_a)
 
-        self.btn_tab_only_b = QPushButton("Only in B (0)")
+        self.btn_tab_only_b = QPushButton("Only B (0)")
         self.btn_tab_only_b.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_tab_only_b.clicked.connect(lambda: self._set_pair_subtab("only_b"))
         subtabs_layout.addWidget(self.btn_tab_only_b)
 
-        self.btn_tab_all = QPushButton("All Tracks (0)")
+        self.btn_tab_all = QPushButton("All (0)")
         self.btn_tab_all.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_tab_all.clicked.connect(lambda: self._set_pair_subtab("all"))
         subtabs_layout.addWidget(self.btn_tab_all)
@@ -416,10 +424,17 @@ class CrossPlaylistComparisonDialog(QDialog):
         self.subtabs_frame.setVisible(False)
         layout.addWidget(self.subtabs_frame)
 
+        self.empty_state = QLabel()
+        self.empty_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_state.setWordWrap(True)
+        self.empty_state.setStyleSheet("color: #aab7aa; padding: 16px;")
+        self.empty_state.hide()
+        layout.addWidget(self.empty_state)
+
         # Results Table
         self.table = QTableWidget()
         self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Track / File", "Also Exists In Playlists", "Action"])
+        self.table.setHorizontalHeaderLabels(["Track / File", "Also found in", "Online"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         self.table.setColumnWidth(0, 360)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -461,17 +476,14 @@ class CrossPlaylistComparisonDialog(QDialog):
         self.lbl_status = QLabel("Ready")
         self.lbl_status.setStyleSheet("color: #91e5a3; font-size: 12px; font-weight: 500;")
         bottom_bar.addWidget(self.lbl_status)
-        bottom_bar.addSpacing(16)
-
-        lbl_hint = QLabel("Select a row to view playlists and file paths.")
-        lbl_hint.setStyleSheet("color: #849184; font-size: 11px;")
-        bottom_bar.addWidget(lbl_hint)
+        self.lbl_status.setWordWrap(True)
 
         bottom_bar.addStretch()
 
-        btn_copy = QPushButton("Copy Results")
-        btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_copy.setStyleSheet("""
+        self.btn_copy = QPushButton("Copy visible results")
+        self.btn_copy.setToolTip("Copy the currently filtered tracks to the clipboard")
+        self.btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_copy.setStyleSheet("""
             QPushButton {
                 background-color: #0b120d;
                 color: #cbd5cc;
@@ -485,8 +497,8 @@ class CrossPlaylistComparisonDialog(QDialog):
                 background-color: #354a38;
             }
         """)
-        btn_copy.clicked.connect(self._copy_results)
-        bottom_bar.addWidget(btn_copy)
+        self.btn_copy.clicked.connect(self._copy_results)
+        bottom_bar.addWidget(self.btn_copy)
 
         btn_close = QPushButton("Close")
         btn_close.setFixedWidth(100)
@@ -508,9 +520,18 @@ class CrossPlaylistComparisonDialog(QDialog):
         bottom_bar.addWidget(btn_close)
 
         layout.addLayout(bottom_bar)
+        self._update_mode_description()
+
+    def _update_mode_description(self):
+        self.mode_description.setText((
+            "Show files from one playlist that also exist in another tracked folder.",
+            "See shared files and files found only in A or B.",
+            "Find files present in more than one tracked playlist.",
+        )[self.combo_mode.currentIndex()])
 
     def _on_mode_changed(self):
         mode = self.combo_mode.currentIndex()
+        self._update_mode_description()
         is_single = (mode == 0)
         is_pair = (mode == 1)
 
@@ -523,6 +544,10 @@ class CrossPlaylistComparisonDialog(QDialog):
         self.combo_target_b.setVisible(is_pair)
 
         self.subtabs_frame.setVisible(is_pair)
+        if is_pair and self.combo_target.count() > 1 and self.combo_target.currentIndex() == self.combo_target_b.currentIndex():
+            self.combo_target_b.blockSignals(True)
+            self.combo_target_b.setCurrentIndex((self.combo_target.currentIndex() + 1) % self.combo_target_b.count())
+            self.combo_target_b.blockSignals(False)
 
         # Clear table immediately to prevent any ghost cells
         self.table.clearContents()
@@ -582,7 +607,7 @@ class CrossPlaylistComparisonDialog(QDialog):
             if mode == 0:
                 target = self.combo_target.currentText()
                 self.table.setColumnCount(3)
-                self.table.setHorizontalHeaderLabels([f"Track in '{target}'", "Also Found In Playlists", "Action"])
+                self.table.setHorizontalHeaderLabels([f"Track in '{target}'", "Also found in", "Online"])
                 self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
                 self.table.setColumnWidth(0, 360)
                 self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -594,7 +619,7 @@ class CrossPlaylistComparisonDialog(QDialog):
                 target_a = self.combo_target.currentText()
                 target_b = self.combo_target_b.currentText()
                 self.table.setColumnCount(4)
-                self.table.setHorizontalHeaderLabels(["Track / Title", f"File in '{target_a}'", f"File in '{target_b}'", "Action"])
+                self.table.setHorizontalHeaderLabels(["Track / Title", f"File in '{target_a}'", f"File in '{target_b}'", "Online"])
                 self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
                 self.table.setColumnWidth(0, 280)
                 self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -602,13 +627,16 @@ class CrossPlaylistComparisonDialog(QDialog):
                 self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
                 self.table.setColumnWidth(3, 120)
 
-                self.pair_results = self.comparator.compare_two_playlists(target_a, target_b)
+                self.pair_results = (
+                    self.comparator.compare_two_playlists(target_a, target_b)
+                    if self.combo_target.count() > 1 else {}
+                )
                 self._update_pair_subtabs()
                 self._apply_pair_results_to_raw()
 
             else:
                 self.table.setColumnCount(3)
-                self.table.setHorizontalHeaderLabels(["Track / Title", "Shared In Playlists (Clustered)", "Action"])
+                self.table.setHorizontalHeaderLabels(["Track / Title", "Shared in playlists", "Online"])
                 self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
                 self.table.setColumnWidth(0, 360)
                 self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -631,14 +659,16 @@ class CrossPlaylistComparisonDialog(QDialog):
         target_a = self.combo_target.currentText()
         target_b = self.combo_target_b.currentText()
 
-        self.btn_tab_common.setText(f"Common / Overlaps ({common_cnt})")
-        self.btn_tab_only_a.setText(f"Only in {target_a} ({only_a_cnt})")
-        self.btn_tab_only_b.setText(f"Only in {target_b} ({only_b_cnt})")
-        self.btn_tab_all.setText(f"All Tracks ({total_cnt})")
+        self.btn_tab_common.setText(f"Shared ({common_cnt})")
+        self.btn_tab_only_a.setText(f"Only A ({only_a_cnt})")
+        self.btn_tab_only_a.setToolTip(f"Tracks only in {target_a}")
+        self.btn_tab_only_b.setText(f"Only B ({only_b_cnt})")
+        self.btn_tab_only_b.setToolTip(f"Tracks only in {target_b}")
+        self.btn_tab_all.setText(f"All ({total_cnt})")
 
         pct_a = stats.get('overlap_pct_a', 0)
         pct_b = stats.get('overlap_pct_b', 0)
-        self.lbl_pair_stats.setText(f"Overlap: <b>{common_cnt}</b> tracks ({pct_a}% of A, {pct_b}% of B)")
+        self.lbl_pair_stats.setText(f"Shared: {common_cnt}  ·  A: {pct_a}%  ·  B: {pct_b}%")
 
         for tab_name, btn in [
             ('common', self.btn_tab_common),
@@ -740,11 +770,11 @@ class CrossPlaylistComparisonDialog(QDialog):
                     if o.get('track', {}).get('vid'):
                         vid = o['track']['vid']
                         break
-        elif not vid and 'track_a' in item:
+        if not vid and 'track_a' in item:
             vid = item['track_a'].get('vid')
-        elif not vid and 'track_b' in item:
+        if not vid and 'track_b' in item:
             vid = item['track_b'].get('vid')
-        elif not vid and 'tracks' in item:
+        if not vid and 'tracks' in item:
             for t in item.get('tracks', []):
                 if t.get('vid'):
                     vid = t['vid']
@@ -894,7 +924,7 @@ class CrossPlaylistComparisonDialog(QDialog):
                 btn_layout.setContentsMargins(0, 0, 0, 0)
                 btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-                btn_link = QPushButton("Open Link ↗")
+                btn_link = QPushButton("Search online" if "/search?" in track_url else "Open video")
                 btn_link.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn_link.setFixedSize(120, 28)
                 btn_link.setStyleSheet("""
@@ -963,7 +993,7 @@ class CrossPlaylistComparisonDialog(QDialog):
                 btn_layout.setContentsMargins(0, 0, 0, 0)
                 btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-                btn_link = QPushButton("Open Link ↗")
+                btn_link = QPushButton("Search online" if "/search?" in track_url else "Open video")
                 btn_link.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn_link.setFixedSize(110, 28)
                 btn_link.setStyleSheet("""
@@ -1011,7 +1041,7 @@ class CrossPlaylistComparisonDialog(QDialog):
                 btn_layout.setContentsMargins(0, 0, 0, 0)
                 btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-                btn_link = QPushButton("Open Link ↗")
+                btn_link = QPushButton("Search online" if "/search?" in track_url else "Open video")
                 btn_link.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn_link.setFixedSize(120, 28)
                 btn_link.setStyleSheet("""
@@ -1036,22 +1066,31 @@ class CrossPlaylistComparisonDialog(QDialog):
                 self.table.setRowHeight(r, 48)
 
         count = len(self.filtered_results)
+        total = len(self.raw_results)
+        query = self.search_edit.text().strip()
+        self.btn_copy.setEnabled(count > 0)
+        if count == 0:
+            if self.combo_target.count() == 0:
+                message = "No tracked playlists. Add one in the Playlists tab to start comparing."
+            elif query:
+                message = "No tracks match this filter. Clear the search field to see all results."
+            elif mode == 1 and self.combo_target.count() < 2:
+                message = "Track at least two playlists to compare them."
+            elif mode == 1 and self.current_pair_subtab == 'common':
+                message = "No shared files found. Check Only A and Only B for differences."
+            elif mode == 0:
+                message = "No matching files in other tracked playlists."
+            else:
+                message = "No files found for this view."
+            self.empty_state.setText(message)
+        self.empty_state.setVisible(count == 0)
         if mode == 0:
             target = self.combo_target.currentText()
-            self.lbl_status.setText(f"Found <b>{count}</b> track(s) in '<b>{target}</b>' that already exist in your other playlists.")
+            self.lbl_status.setText(f"Showing {count} of {total} shared tracks from {target}.")
         elif mode == 1:
-            target_a = self.combo_target.currentText()
-            target_b = self.combo_target_b.currentText()
-            subtab = self.current_pair_subtab
-            subtab_desc = {
-                'common': 'shared between both playlists',
-                'only_a': f'present only in {target_a}',
-                'only_b': f'present only in {target_b}',
-                'all': f'across both {target_a} and {target_b}'
-            }.get(subtab, '')
-            self.lbl_status.setText(f"Showing <b>{count}</b> track(s) {subtab_desc}.")
+            self.lbl_status.setText(f"Showing {count} of {total} tracks in this view.")
         else:
-            self.lbl_status.setText(f"Found <b>{count}</b> cross-playlist track cluster(s) across your entire music collection.")
+            self.lbl_status.setText(f"Showing {count} of {total} shared track groups.")
 
     def _on_table_cell_clicked(self, row: int, column: int):
         """Open detailed breakdown popup when user clicks a row (Mode 0 & 2)."""

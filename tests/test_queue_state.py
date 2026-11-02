@@ -86,36 +86,73 @@ class QueueStateTests(unittest.TestCase):
         self.assertFalse(window._pause_requested)
         window._save_queue.assert_called()
 
-    def test_declined_restore_survives_new_queue_and_its_completion(self):
+    def test_declined_restore_is_not_offered_again_and_keeps_partial_file(self):
         old = {"url": "https://example.org/old", "media_type": "Audio (Best)"}
         new = {
             "url": "https://example.org/new", "media_type": "Video (Best)",
             "download_options": {"source_url": "https://example.org/new"},
         }
-        stored = [old]
         widget = SimpleNamespace(
             status_state="Pending", item_data=new,
             format_combo=SimpleNamespace(currentText=lambda: new["media_type"]),
         )
-        window = SimpleNamespace(download_queue=[], status_label=Mock(), update_queue_ui=Mock())
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "pending_queue.json"
+            partial = Path(folder) / "old.mp3.part"
+            partial.write_bytes(b"partial download")
+            save_pending_queue([old], path)
+            window = SimpleNamespace(download_queue=[], status_label=Mock())
+            window._save_queue = lambda: MainWindow._save_queue(window)
 
-        def save(items):
-            stored[:] = items
+            with patch("ui.main_window.load_pending_queue", side_effect=lambda: load_pending_queue(path)), patch(
+                "ui.main_window.save_pending_queue", side_effect=lambda items: save_pending_queue(items, path)
+            ), patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.No) as question:
+                MainWindow._offer_queue_restore(window)
+                self.assertEqual(load_pending_queue(path), [])
+                self.assertEqual(partial.read_bytes(), b"partial download")
 
-        with patch("ui.main_window.load_pending_queue", side_effect=lambda: list(stored)), patch(
-            "ui.main_window.save_pending_queue", side_effect=save
-        ), patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
+                # A fresh launch must not ask again; newly added work remains allowed.
+                next_window = SimpleNamespace(download_queue=[], status_label=Mock())
+                next_window._save_queue = lambda: MainWindow._save_queue(next_window)
+                MainWindow._offer_queue_restore(next_window)
+                question.assert_called_once()
+                next_window.download_queue.append(widget)
+                next_window._save_queue()
+                self.assertEqual([item["url"] for item in load_pending_queue(path)], [new["url"]])
+                widget.status_state = "Success"
+                next_window._save_queue()
+                self.assertEqual(load_pending_queue(path), [])
+                self.assertEqual(partial.read_bytes(), b"partial download")
+
+    def test_restore_yes_still_adds_and_starts_saved_downloads(self):
+        old = {"url": "https://example.org/old", "media_type": "Audio (Best)"}
+        window = SimpleNamespace(
+            download_queue=[], status_label=Mock(), update_queue_ui=Mock(),
+            start_queue=Mock(), _add_single_item_to_queue=Mock(),
+        )
+        window._save_queue = Mock()
+        with patch("ui.main_window.load_pending_queue", return_value=[old]), patch(
+            "ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes
+        ):
             MainWindow._offer_queue_restore(window)
-            self.assertTrue(window._restore_deferred)
-            window.download_queue.append(widget)
-            MainWindow._save_queue(window)
-            self.assertEqual([item["url"] for item in stored], [old["url"], new["url"]])
-            widget.status_state = "Success"
-            MainWindow._save_queue(window)
-            self.assertEqual(stored, [old])
-            window.download_queue.clear()
-            MainWindow._save_queue(window)
-            self.assertEqual(stored, [old])
+        window._add_single_item_to_queue.assert_called_once_with(
+            old, batch=True, preserve_subtitle_defaults=True,
+        )
+        window._save_queue.assert_called_once()
+        window.start_queue.assert_called_once()
+        self.assertFalse(window._restoring_queue)
+
+    def test_declined_restore_reports_save_failure(self):
+        window = SimpleNamespace(download_queue=[], status_label=Mock())
+        window._save_queue = lambda: MainWindow._save_queue(window)
+        with patch("ui.main_window.load_pending_queue", return_value=[{"url": "https://example.org/old"}]), patch(
+            "ui.main_window.save_pending_queue", side_effect=OSError("disk full")
+        ), patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.No), patch(
+            "ui.main_window.QMessageBox.warning"
+        ) as warning:
+            MainWindow._offer_queue_restore(window)
+        warning.assert_called_once()
+        self.assertIn("Could not remember", warning.call_args.args[2])
 
     def test_close_waits_for_thread_exit_after_result(self):
         worker = Mock()

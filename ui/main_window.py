@@ -104,6 +104,7 @@ from ui.workers import (
     WorkerThread,
 )
 from ui.queue_item import QueueItemWidget
+from ui.spinner import SpinnerWidget
 from ui.log_viewer_dialog import LogViewerDialog
 from ui.playlist_comparison_dialog import CrossPlaylistComparisonDialog
 
@@ -149,35 +150,6 @@ def format_time(seconds: float) -> str:
     if s >= 60:
         return f"{s // 60}m {s % 60:02d}s"
     return f"{s}s"
-
-
-class SpinnerWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(40, 40)
-        self.accent_color = get_theme_colors()["accent"]
-        self.angle = 0
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.rotate)
-        self.timer.start(30)
-
-    def set_theme(self, theme_name: str):
-        self.accent_color = get_theme_colors(theme_name)["accent"]
-        self.update()
-
-    def rotate(self):
-        self.angle = (self.angle + 15) % 360
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.translate(self.width() / 2, self.height() / 2)
-        painter.rotate(self.angle)
-        pen = QPen(QColor(self.accent_color), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        painter.drawArc(-15, -15, 30, 30, 0, 270 * 16)
-        painter.end()
 
 
 class LoadingOverlay(QWidget):
@@ -735,20 +707,12 @@ class MainWindow(QMainWindow):
                         "settings": snapshot_download_settings(self.settings),
                     }
                 items.append(data)
-        if getattr(self, "_restore_deferred", False):
-            # A declined restore must survive new work in this session, even after
-            # the new queue finishes. Replaced entries should not reappear.
-            replaced = getattr(self, "_deferred_replaced_keys", set())
-            replaced.update((item.get("url"), item.get("media_type")) for item in items)
-            self._deferred_replaced_keys = replaced
-            items = [
-                item for item in load_pending_queue()
-                if (item.get("url"), item.get("media_type")) not in replaced
-            ] + items
         try:
             save_pending_queue(items)
         except OSError as exc:
             self.status_label.setText(f"Could not save download queue: {exc}")
+            return False
+        return True
 
     def _offer_queue_restore(self):
         saved = load_pending_queue()
@@ -761,8 +725,13 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes,
         )
         if choice != QMessageBox.StandardButton.Yes:
-            # Leave the snapshot and fragments available on the next launch.
-            self._restore_deferred = True
+            # Discard only the offered snapshot, not partial downloads on disk.
+            # Persist any new work that was queued while the prompt was open.
+            if not self._save_queue():
+                QMessageBox.warning(
+                    self, "Queue not saved",
+                    "Could not remember your choice. The resume prompt may appear again next time.",
+                )
             return
         self._restoring_queue = True
         try:
@@ -3013,22 +2982,27 @@ class MainWindow(QMainWindow):
         folders = [self.settings.get('download_path')]
         folders.extend(p.get('folder_path') for p in self.playlists_mgr.get_all())
 
-        def busy():
-            workers = (
-                list(self.active_workers.values())
-                + list(getattr(self, '_ending_workers', []))
-                + list(getattr(self, '_sync_workers', []))
-                + list(getattr(self, '_sync_commit_workers', []))
-            )
-            upgrade = getattr(self, 'upgrade_worker', None)
-            if upgrade is not None:
-                workers.append(upgrade)
-            return (self.is_downloading or bool(getattr(self, '_active_sync_urls', set()))
-                    or any(worker.isRunning() for worker in workers))
+        StorageCleanupDialog(folders, get_app_data_dir(), self._has_active_file_operations, parent=self).exec()
 
-        StorageCleanupDialog(folders, get_app_data_dir(), busy, parent=self).exec()
+    def _has_active_file_operations(self):
+        workers = (
+            list(self.active_workers.values())
+            + list(getattr(self, '_ending_workers', []))
+            + list(getattr(self, '_sync_workers', []))
+            + list(getattr(self, '_sync_commit_workers', []))
+            + list(getattr(self, '_reindex_workers', []))
+        )
+        for worker in (getattr(self, 'upgrade_worker', None), getattr(self, 'startup_playlist_thread', None)):
+            if worker is not None:
+                workers.append(worker)
+        return (self.is_downloading or bool(self.active_workers)
+                or bool(getattr(self, '_active_sync_urls', set()))
+                or any(worker.isRunning() for worker in workers))
 
     def export_app_data(self):
+        if self._has_active_file_operations():
+            QMessageBox.warning(self, "Backup unavailable", "Wait for downloads, playlist sync, and updates to finish.")
+            return
         now_date = datetime.datetime.now().strftime("%Y-%m-%d")
         def_name = f"LogovoDownloads_Backup_{now_date}.zip"
         initial_dir = self.settings.get('last_selected_folder') or str(Path.home())
@@ -3041,6 +3015,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Export Failed", msg)
 
     def import_app_data(self):
+        if self._has_active_file_operations():
+            QMessageBox.warning(self, "Restore unavailable", "Wait for downloads, playlist sync, and updates to finish.")
+            return
         initial_dir = self.settings.get('last_selected_folder') or str(Path.home())
         zip_path, _ = QFileDialog.getOpenFileName(self, "Select Backup ZIP File", initial_dir, "ZIP Archives (*.zip)")
         if zip_path:
@@ -3051,9 +3028,13 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.Yes:
+                if self._has_active_file_operations():
+                    QMessageBox.warning(self, "Restore unavailable", "Wait for downloads, playlist sync, and updates to finish.")
+                    return
                 ok, msg = import_backup(zip_path)
                 if ok:
                     self.settings.reload()
+                    restored_theme = normalize_theme(self.settings.get('ui_theme', 'green'))
                     self.playlists_mgr.playlists = self.playlists_mgr.load()
                     self.history.history = self.history.load()
                     current_tab = self.tabs.currentWidget()
@@ -3061,6 +3042,7 @@ class MainWindow(QMainWindow):
                     settings_index = self.tabs.indexOf(self.settings_tab)
                     self.tabs.removeTab(settings_index)
                     self.settings_tab.deleteLater()
+                    self.ui_theme = restored_theme
                     self.setup_settings_tab()
                     new_settings_index = self.tabs.indexOf(self.settings_tab)
                     self.tabs.removeTab(new_settings_index)
@@ -3069,6 +3051,7 @@ class MainWindow(QMainWindow):
                         self.tabs.setCurrentWidget(self.settings_tab)
                     elif current_tab is not None:
                         self.tabs.setCurrentWidget(current_tab)
+                    self._apply_ui_theme(restored_theme)
                     self.refresh_playlists_ui()
                     self.refresh_history()
                     QMessageBox.information(self, "Backup Restored", "Backup restored. Playlists and settings reloaded.")
@@ -4439,7 +4422,8 @@ class MainWindow(QMainWindow):
             widget.update_progress(percent_clean, speed_clean, eta_clean)
             self._update_taskbar_progress()
         elif d['status'] == 'finished':
-            widget.set_status("Post-processing...", "Downloading")
+            label = "Converting audio..." if widget.format_combo.currentText().startswith("Audio") else "Processing video..."
+            widget.set_processing(label)
 
     def task_finished(self, widget: QueueItemWidget, success: bool, error_msg: str = "", was_skipped: bool = False, was_cancelled: bool = False):
         # Remove from active workers

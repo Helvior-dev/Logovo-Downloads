@@ -1,7 +1,7 @@
 """Shared constants for the Logovo Downloads project."""
 
 APP_NAME = "Logovo Downloads"
-APP_VERSION = "1.8.11"
+APP_VERSION = "1.9.1"
 # Keep stable across releases so Windows preserves the app's taskbar identity.
 APP_USER_MODEL_ID = "logovo.downloads.app"
 

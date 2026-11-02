@@ -1,6 +1,6 @@
 ﻿# Logovo Downloads
 
-Logovo Downloads is a Windows desktop app for downloading audio and video and keeping local folders in sync with online playlists. It uses yt-dlp for downloads and PyQt6 for the interface. The current application version is **1.8.11**; changes since the last release are still unreleased.
+Logovo Downloads is a Windows desktop app for downloading audio and video and keeping local folders in sync with online playlists. It uses yt-dlp for downloads and PyQt6 for the interface. The current application version is **1.9.1**.
 
 ## What it does
 

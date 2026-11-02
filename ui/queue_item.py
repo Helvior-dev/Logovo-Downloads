@@ -1,9 +1,10 @@
 import re
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QProgressBar, QPushButton, QSizePolicy, QComboBox
-from PyQt6.QtCore import Qt, pyqtSignal, QThread
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QThread
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 import requests
 from ui.styles import get_theme_colors
+from ui.spinner import SpinnerWidget
 
 class ThumbnailFetcher(QThread):
     finished = pyqtSignal(QPixmap)
@@ -181,6 +182,14 @@ class QueueItemWidget(QWidget):
         self.status_label.setStyleSheet("color: #cbd5cc; font-size: 12px;")
         self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.status_label.setMinimumWidth(50)
+        self.processing_spinner = SpinnerWidget(self, size=18)
+        self.processing_spinner.set_theme(theme_name)
+        self.processing_spinner.hide()
+        self._processing = False
+        status_row = QHBoxLayout()
+        status_row.setSpacing(6)
+        status_row.addWidget(self.processing_spinner)
+        status_row.addWidget(self.status_label, 1)
         
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedHeight(6)
@@ -201,7 +210,7 @@ class QueueItemWidget(QWidget):
         
         details_layout.addWidget(self.title_label)
         details_layout.addWidget(self.subtitle_label)
-        details_layout.addWidget(self.status_label)
+        details_layout.addLayout(status_row)
         details_layout.addWidget(self.progress_bar)
         details_layout.addStretch()
         
@@ -213,19 +222,27 @@ class QueueItemWidget(QWidget):
         
         btn_top_row = QHBoxLayout()
         btn_top_row.addStretch()
-        self.btn_remove = QPushButton("×")
+        self.btn_remove = QPushButton()
         self.btn_remove.setToolTip("Remove this item from the queue (downloaded files are kept)")
         self.btn_remove.setAccessibleName("Remove item from queue")
         self.btn_remove.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_remove.setFixedSize(26, 26)
+        remove_icon = QPixmap(16, 16)
+        remove_icon.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(remove_icon)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#ffe0db"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(4, 4, 12, 12)
+        painter.drawLine(12, 4, 4, 12)
+        painter.end()
+        self.btn_remove.setIcon(QIcon(remove_icon))
+        self.btn_remove.setIconSize(QSize(16, 16))
         self.btn_remove.setStyleSheet("""
             QPushButton {
                 background-color: #1b1010;
                 color: #e3aaa3;
                 border: 1px solid #70413d;
                 border-radius: 0px;
-                font-weight: bold;
-                font-size: 18px;
             }
             QPushButton:hover {
                 background-color: #422121;
@@ -511,6 +528,8 @@ class QueueItemWidget(QWidget):
             self.remove_requested.emit(self)
 
     def set_status(self, text, state="Pending"):
+        self._processing = False
+        self.processing_spinner.hide()
         self.status_state = state
         self.status_label.setText(text)
         
@@ -544,11 +563,23 @@ class QueueItemWidget(QWidget):
             else:
                 self.status_label.setStyleSheet("color: #cbd5cc; font-size: 12px;")
 
+    def set_processing(self, text):
+        self.set_status(text, "Downloading")
+        self._processing = True
+        self.progress_bar.hide()
+        self.processing_spinner.show()
+
     def set_theme(self, theme_name):
         self.theme_colors = get_theme_colors(theme_name)
-        self.set_status(self.status_label.text(), self.status_state)
+        self.processing_spinner.set_theme(theme_name)
+        if self._processing:
+            self.set_processing(self.status_label.text())
+        else:
+            self.set_status(self.status_label.text(), self.status_state)
 
     def update_progress(self, percent, speed_clean, eta_clean):
+        self._processing = False
+        self.processing_spinner.hide()
         try:
             val = int(float(percent))
             self.progress_bar.setValue(val)
