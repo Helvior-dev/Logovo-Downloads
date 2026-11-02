@@ -32,6 +32,7 @@ class SettingsManager:
     def __init__(self):
         self.settings_file = get_app_data_dir() / 'settings.json'
         self.default_settings = {
+            'ui_theme': 'green',
             'download_path': str(Path.home() / 'Downloads'),
             'download_subtitles': False,
             'subtitles_langs': 'orig', # 'orig', 'all', 'en', 'ru', 'uk'
@@ -69,9 +70,9 @@ class SettingsManager:
                 'subtitles': True
             },
             'use_cookies': False,
-            'cookie_source_type': 'browser', # 'browser' or 'file'
-            'cookie_browser': 'chrome',
-            'cookie_file': '',
+            'cookies_source': 'none', # 'none', 'browser' or 'file'
+            'cookies_browser': 'chrome',
+            'cookies_file': '',
             'quality_settings': {
                 'YouTube': 'Best video',
                 'Twitch': 'Source (Best)',
@@ -91,6 +92,16 @@ class SettingsManager:
                 with open(self.settings_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     merged = self.default_settings.copy()
+
+                    # Migrate legacy cookie setting names used by earlier builds.
+                    for old_key, new_key in (
+                        ('cookie_source_type', 'cookies_source'),
+                        ('cookie_browser', 'cookies_browser'),
+                        ('cookie_file', 'cookies_file'),
+                    ):
+                        if old_key in data:
+                            data.setdefault(new_key, data[old_key])
+                            data.pop(old_key)
                     
                     # Ensure nested dicts are updated properly
                     if 'quality_settings' in data:
@@ -102,6 +113,10 @@ class SettingsManager:
             except Exception:
                 return self.default_settings.copy()
         return self.default_settings.copy()
+
+    def reload(self):
+        self.settings = self.load()
+        return self.settings
 
     def save(self):
         with open(self.settings_file, 'w', encoding='utf-8') as f:

@@ -15,6 +15,7 @@ from PyQt6.QtGui import QColor, QDesktopServices
 from core.playlist_comparator import PlaylistComparator
 from core.playlists_manager import PlaylistsManager
 from core.downloader import read_raw_stem_vid_map
+from ui.styles import get_theme_colors, normalize_theme, theme_stylesheet
 
 
 class TrackOverlapDetailsDialog(QDialog):
@@ -23,7 +24,7 @@ class TrackOverlapDetailsDialog(QDialog):
     def __init__(self, display_name: str, playlists_data: list[dict], track_url: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Track Overlap Breakdown")
-        self.setStyleSheet("QDialog { background-color: #0b0e14; color: #f8fafc; }")
+        self.setStyleSheet("QDialog { background-color: #080b09; color: #cbd5cc; }")
         self.setFixedSize(680, 440)
 
         layout = QVBoxLayout(self)
@@ -31,13 +32,13 @@ class TrackOverlapDetailsDialog(QDialog):
         layout.setContentsMargins(20, 18, 20, 18)
 
         # Header
-        header = QLabel(f"<h3>🎵 {display_name}</h3>")
-        header.setStyleSheet("color: #38bdf8; font-weight: bold; margin-bottom: 0px;")
+        header = QLabel(f"<h3>{display_name}</h3>")
+        header.setStyleSheet("color: #91e5a3; font-weight: bold; margin-bottom: 0px;")
         header.setWordWrap(True)
         layout.addWidget(header)
 
         sub = QLabel(f"This track is present in <b>{len(playlists_data)}</b> of your tracked playlists:")
-        sub.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        sub.setStyleSheet("color: #aab7aa; font-size: 12px;")
         layout.addWidget(sub)
 
         # Scroll area with playlist cards
@@ -45,9 +46,9 @@ class TrackOverlapDetailsDialog(QDialog):
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("""
             QScrollArea {
-                background-color: #0f172a;
-                border: 1px solid #1e293b;
-                border-radius: 8px;
+                background-color: #080b09;
+                border: 1px solid #0b120d;
+                border-radius: 0px;
             }
         """)
 
@@ -64,9 +65,9 @@ class TrackOverlapDetailsDialog(QDialog):
             card = QFrame()
             card.setStyleSheet("""
                 QFrame {
-                    background-color: #1e293b;
-                    border: 1px solid #334155;
-                    border-radius: 6px;
+                    background-color: #0b120d;
+                    border: 1px solid #354a38;
+                    border-radius: 0px;
                     padding: 8px;
                 }
             """)
@@ -76,26 +77,26 @@ class TrackOverlapDetailsDialog(QDialog):
 
             top_row = QHBoxLayout()
             lbl_name = QLabel(f"<b>#{i}. {pl_name}</b>")
-            lbl_name.setStyleSheet("color: #10b981; font-size: 13px;")
+            lbl_name.setStyleSheet("color: #65c77e; font-size: 13px;")
             top_row.addWidget(lbl_name)
             top_row.addStretch()
 
             if fp and os.path.exists(fp):
-                btn_open_f = QPushButton("📁 Folder")
+                btn_open_f = QPushButton("Folder")
                 btn_open_f.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn_open_f.setStyleSheet("""
                     QPushButton {
-                        background-color: #0f172a;
-                        color: #94a3b8;
-                        border: 1px solid #475569;
-                        border-radius: 4px;
+                        background-color: #080b09;
+                        color: #aab7aa;
+                        border: 1px solid #354a38;
+                        border-radius: 0px;
                         padding: 3px 8px;
                         font-size: 11px;
                         font-weight: 500;
                     }
                     QPushButton:hover {
-                        background-color: #334155;
-                        color: #ffffff;
+                        background-color: #354a38;
+                        color: #cbd5cc;
                     }
                 """)
                 btn_open_f.clicked.connect(lambda _, p=fp: self._open_in_explorer(p))
@@ -105,7 +106,7 @@ class TrackOverlapDetailsDialog(QDialog):
 
             if fp:
                 lbl_path = QLabel(f"Path: {fp}")
-                lbl_path.setStyleSheet("color: #64748b; font-size: 11px;")
+                lbl_path.setStyleSheet("color: #849184; font-size: 11px;")
                 lbl_path.setWordWrap(True)
                 card_layout.addWidget(lbl_path)
 
@@ -124,16 +125,16 @@ class TrackOverlapDetailsDialog(QDialog):
             btn_browser.setCursor(Qt.CursorShape.PointingHandCursor)
             btn_browser.setStyleSheet("""
                 QPushButton {
-                    background-color: #2563eb;
-                    color: white;
-                    border-radius: 6px;
+                    background-color: #14271a;
+                    color: #a6efb4;
+                    border-radius: 0px;
                     padding: 6px 14px;
                     font-weight: bold;
                     font-size: 12px;
                     border: none;
                 }
                 QPushButton:hover {
-                    background-color: #1d4ed8;
+                    background-color: #1a3422;
                 }
             """)
             btn_browser.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(track_url)))
@@ -145,16 +146,16 @@ class TrackOverlapDetailsDialog(QDialog):
         btn_close.setFixedWidth(90)
         btn_close.setStyleSheet("""
             QPushButton {
-                background-color: #334155;
-                color: white;
-                border-radius: 6px;
+                background-color: #354a38;
+                color: #cbd5cc;
+                border-radius: 0px;
                 padding: 6px 14px;
                 font-weight: bold;
                 font-size: 12px;
                 border: none;
             }
             QPushButton:hover {
-                background-color: #475569;
+                background-color: #354a38;
             }
         """)
         btn_close.clicked.connect(self.accept)
@@ -174,7 +175,9 @@ class CrossPlaylistComparisonDialog(QDialog):
     def __init__(self, playlists_mgr: PlaylistsManager = None, default_target: str = "Trash", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Cross-Playlist Track Comparison")
-        self.setStyleSheet("QDialog { background-color: #0b0e14; }")
+        self.setStyleSheet("QDialog { background-color: #080b09; }")
+        self.ui_theme = normalize_theme(getattr(parent, "ui_theme", "green"))
+        self.theme_colors = get_theme_colors(self.ui_theme)
         self.setMinimumSize(1080, 640)
         self.resize(1160, 680)
 
@@ -194,13 +197,13 @@ class CrossPlaylistComparisonDialog(QDialog):
 
         # Header
         header_layout = QVBoxLayout()
-        header_title = QLabel("<h3>🔍 Cross-Playlist Track Comparison</h3>")
-        header_title.setStyleSheet("color: #f8fafc; margin-bottom: 2px;")
+        header_title = QLabel("<h3>Playlist Comparison</h3>")
+        header_title.setStyleSheet("color: #cbd5cc; margin-bottom: 2px;")
         header_desc = QLabel(
             "Analyze your library to find songs that exist in multiple playlists simultaneously.\n"
             "Compare pairs of playlists (A ↔ B), audit single playlists against all others, or inspect overall collection duplicates."
         )
-        header_desc.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        header_desc.setStyleSheet("color: #aab7aa; font-size: 12px;")
         header_desc.setWordWrap(True)
 
         header_layout.addWidget(header_title)
@@ -211,9 +214,9 @@ class CrossPlaylistComparisonDialog(QDialog):
         controls_frame = QFrame()
         controls_frame.setStyleSheet("""
             QFrame {
-                background-color: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 8px;
+                background-color: #0b120d;
+                border: 1px solid #354a38;
+                border-radius: 0px;
                 padding: 6px;
             }
         """)
@@ -222,7 +225,7 @@ class CrossPlaylistComparisonDialog(QDialog):
         controls_layout.setSpacing(10)
 
         lbl_mode = QLabel("Mode:")
-        lbl_mode.setStyleSheet("color: #f8fafc; font-weight: bold; font-size: 12px;")
+        lbl_mode.setStyleSheet("color: #cbd5cc; font-weight: bold; font-size: 12px;")
         controls_layout.addWidget(lbl_mode)
 
         self.combo_mode = QComboBox()
@@ -234,10 +237,10 @@ class CrossPlaylistComparisonDialog(QDialog):
         ])
         self.combo_mode.setStyleSheet("""
             QComboBox {
-                background-color: #0f172a;
-                color: #f8fafc;
-                border: 1px solid #475569;
-                border-radius: 6px;
+                background-color: #080b09;
+                color: #cbd5cc;
+                border: 1px solid #354a38;
+                border-radius: 0px;
                 padding: 5px 10px;
                 font-size: 12px;
             }
@@ -248,16 +251,16 @@ class CrossPlaylistComparisonDialog(QDialog):
 
         # Target A selector
         self.lbl_target = QLabel("Target Playlist:")
-        self.lbl_target.setStyleSheet("color: #f8fafc; font-weight: bold; font-size: 12px;")
+        self.lbl_target.setStyleSheet("color: #cbd5cc; font-weight: bold; font-size: 12px;")
         controls_layout.addWidget(self.lbl_target)
 
         self.combo_target = QComboBox()
         self.combo_target.setStyleSheet("""
             QComboBox {
-                background-color: #0f172a;
-                color: #f8fafc;
-                border: 1px solid #475569;
-                border-radius: 6px;
+                background-color: #080b09;
+                color: #cbd5cc;
+                border: 1px solid #354a38;
+                border-radius: 0px;
                 padding: 5px 10px;
                 font-size: 12px;
                 min-width: 140px;
@@ -272,16 +275,16 @@ class CrossPlaylistComparisonDialog(QDialog):
         self.btn_swap.setFixedSize(30, 28)
         self.btn_swap.setStyleSheet("""
             QPushButton {
-                background-color: #0f172a;
-                color: #38bdf8;
-                border: 1px solid #475569;
-                border-radius: 6px;
+                background-color: #080b09;
+                color: #91e5a3;
+                border: 1px solid #354a38;
+                border-radius: 0px;
                 font-weight: bold;
                 font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #334155;
-                color: #ffffff;
+                background-color: #354a38;
+                color: #cbd5cc;
             }
         """)
         self.btn_swap.clicked.connect(self._swap_playlists)
@@ -290,17 +293,17 @@ class CrossPlaylistComparisonDialog(QDialog):
 
         # Target B selector (for A ↔ B mode)
         self.lbl_target_b = QLabel("Playlist B:")
-        self.lbl_target_b.setStyleSheet("color: #f8fafc; font-weight: bold; font-size: 12px;")
+        self.lbl_target_b.setStyleSheet("color: #cbd5cc; font-weight: bold; font-size: 12px;")
         self.lbl_target_b.setVisible(False)
         controls_layout.addWidget(self.lbl_target_b)
 
         self.combo_target_b = QComboBox()
         self.combo_target_b.setStyleSheet("""
             QComboBox {
-                background-color: #0f172a;
-                color: #f8fafc;
-                border: 1px solid #475569;
-                border-radius: 6px;
+                background-color: #080b09;
+                color: #cbd5cc;
+                border: 1px solid #354a38;
+                border-radius: 0px;
                 padding: 5px 10px;
                 font-size: 12px;
                 min-width: 140px;
@@ -335,13 +338,13 @@ class CrossPlaylistComparisonDialog(QDialog):
 
         # Search box
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("🔍 Filter by track name, artist...")
+        self.search_edit.setPlaceholderText("Filter by track name or artist")
         self.search_edit.setStyleSheet("""
             QLineEdit {
-                background-color: #0f172a;
-                color: #f8fafc;
-                border: 1px solid #475569;
-                border-radius: 6px;
+                background-color: #080b09;
+                color: #cbd5cc;
+                border: 1px solid #354a38;
+                border-radius: 0px;
                 padding: 5px 10px;
                 font-size: 12px;
             }
@@ -349,20 +352,20 @@ class CrossPlaylistComparisonDialog(QDialog):
         self.search_edit.textChanged.connect(self._filter_results)
         controls_layout.addWidget(self.search_edit, 1)
 
-        self.btn_rescan = QPushButton("🔄 Rescan")
+        self.btn_rescan = QPushButton("Rescan")
         self.btn_rescan.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_rescan.setStyleSheet("""
             QPushButton {
-                background-color: #3b82f6;
-                color: white;
-                border-radius: 6px;
+                background-color: #14271a;
+                color: #a6efb4;
+                border-radius: 0px;
                 padding: 6px 14px;
                 font-weight: bold;
                 font-size: 12px;
                 border: none;
             }
             QPushButton:hover {
-                background-color: #2563eb;
+                background-color: #23442c;
             }
         """)
         self.btn_rescan.clicked.connect(self.run_scan)
@@ -374,9 +377,9 @@ class CrossPlaylistComparisonDialog(QDialog):
         self.subtabs_frame = QFrame()
         self.subtabs_frame.setStyleSheet("""
             QFrame {
-                background-color: #0f172a;
-                border: 1px solid #1e293b;
-                border-radius: 8px;
+                background-color: #080b09;
+                border: 1px solid #0b120d;
+                border-radius: 0px;
                 padding: 4px;
             }
         """)
@@ -407,7 +410,7 @@ class CrossPlaylistComparisonDialog(QDialog):
         subtabs_layout.addStretch()
 
         self.lbl_pair_stats = QLabel("")
-        self.lbl_pair_stats.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: 500;")
+        self.lbl_pair_stats.setStyleSheet("color: #91e5a3; font-size: 11px; font-weight: 500;")
         subtabs_layout.addWidget(self.lbl_pair_stats)
 
         self.subtabs_frame.setVisible(False)
@@ -430,25 +433,25 @@ class CrossPlaylistComparisonDialog(QDialog):
         self.table.cellClicked.connect(self._on_table_cell_clicked)
         self.table.setStyleSheet("""
             QTableWidget {
-                background-color: #0f172a;
-                border: 1px solid #1e293b;
-                border-radius: 8px;
-                color: #f1f5f9;
+                background-color: #080b09;
+                border: 1px solid #0b120d;
+                border-radius: 0px;
+                color: #cbd5cc;
                 gridline-color: transparent;
                 outline: none;
             }
             QTableWidget::item {
                 padding: 6px 10px;
-                border-bottom: 1px solid #1e293b;
+                border-bottom: 1px solid #0b120d;
             }
             QHeaderView::section {
-                background-color: #1e293b;
-                color: #94a3b8;
+                background-color: #0b120d;
+                color: #aab7aa;
                 font-weight: bold;
                 font-size: 12px;
                 padding: 8px 10px;
                 border: none;
-                border-bottom: 1px solid #334155;
+                border-bottom: 1px solid #354a38;
             }
         """)
         layout.addWidget(self.table, 1)
@@ -456,30 +459,30 @@ class CrossPlaylistComparisonDialog(QDialog):
         # Bottom Bar
         bottom_bar = QHBoxLayout()
         self.lbl_status = QLabel("Ready")
-        self.lbl_status.setStyleSheet("color: #38bdf8; font-size: 12px; font-weight: 500;")
+        self.lbl_status.setStyleSheet("color: #91e5a3; font-size: 12px; font-weight: 500;")
         bottom_bar.addWidget(self.lbl_status)
         bottom_bar.addSpacing(16)
 
-        lbl_hint = QLabel("💡 <i>Click any row to open detailed breakdown & paths</i>")
-        lbl_hint.setStyleSheet("color: #64748b; font-size: 11px;")
+        lbl_hint = QLabel("Select a row to view playlists and file paths.")
+        lbl_hint.setStyleSheet("color: #849184; font-size: 11px;")
         bottom_bar.addWidget(lbl_hint)
 
         bottom_bar.addStretch()
 
-        btn_copy = QPushButton("📋 Copy Results")
+        btn_copy = QPushButton("Copy Results")
         btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_copy.setStyleSheet("""
             QPushButton {
-                background-color: #1e293b;
-                color: #f8fafc;
-                border: 1px solid #334155;
-                border-radius: 6px;
+                background-color: #0b120d;
+                color: #cbd5cc;
+                border: 1px solid #354a38;
+                border-radius: 0px;
                 padding: 6px 14px;
                 font-weight: bold;
                 font-size: 12px;
             }
             QPushButton:hover {
-                background-color: #334155;
+                background-color: #354a38;
             }
         """)
         btn_copy.clicked.connect(self._copy_results)
@@ -489,16 +492,16 @@ class CrossPlaylistComparisonDialog(QDialog):
         btn_close.setFixedWidth(100)
         btn_close.setStyleSheet("""
             QPushButton {
-                background-color: #334155;
-                color: white;
-                border-radius: 6px;
+                background-color: #354a38;
+                color: #cbd5cc;
+                border-radius: 0px;
                 padding: 6px 14px;
                 font-weight: bold;
                 font-size: 12px;
                 border: none;
             }
             QPushButton:hover {
-                background-color: #475569;
+                background-color: #354a38;
             }
         """)
         btn_close.clicked.connect(self.accept)
@@ -569,7 +572,7 @@ class CrossPlaylistComparisonDialog(QDialog):
         """Scans folders in real-time and performs comparison based on selected mode."""
         self.btn_rescan.setEnabled(False)
         self.combo_mode.setEnabled(False)
-        self.lbl_status.setText("⏳ Comparing playlists...")
+        self.lbl_status.setText("Comparing playlists...")
         QApplication.processEvents()
 
         try:
@@ -644,33 +647,33 @@ class CrossPlaylistComparisonDialog(QDialog):
             ('all', self.btn_tab_all),
         ]:
             if tab_name == self.current_pair_subtab:
-                btn.setStyleSheet("""
+                btn.setStyleSheet(theme_stylesheet("""
                     QPushButton {
-                        background-color: #2563eb;
-                        color: #ffffff;
-                        border: 1px solid #3b82f6;
-                        border-radius: 6px;
+                        background-color: #14271a;
+                        color: #a6efb4;
+                        border: 1px solid #65c77e;
+                        border-radius: 0px;
                         padding: 5px 12px;
                         font-weight: bold;
                         font-size: 11px;
                     }
-                """)
+                """, self.ui_theme))
             else:
-                btn.setStyleSheet("""
+                btn.setStyleSheet(theme_stylesheet("""
                     QPushButton {
-                        background-color: #1e293b;
-                        color: #94a3b8;
-                        border: 1px solid #334155;
-                        border-radius: 6px;
+                        background-color: #0b120d;
+                        color: #aab7aa;
+                        border: 1px solid #354a38;
+                        border-radius: 0px;
                         padding: 5px 12px;
                         font-weight: 500;
                         font-size: 11px;
                     }
                     QPushButton:hover {
-                        background-color: #334155;
-                        color: #f8fafc;
+                        background-color: #354a38;
+                        color: #cbd5cc;
                     }
-                """)
+                """, self.ui_theme))
 
     def _apply_pair_results_to_raw(self):
         subtab = self.current_pair_subtab
@@ -798,7 +801,7 @@ class CrossPlaylistComparisonDialog(QDialog):
     def _create_pair_file_cell(self, track_info: dict, pl_title: str, display_name: str) -> QWidget:
         """Create an interactive cell for Playlist A or B with open folder and safe delete buttons."""
         widget = QWidget()
-        widget.setStyleSheet("background-color: #0f172a; border-radius: 4px;")
+        widget.setStyleSheet("background-color: #080b09; border-radius: 0px;")
         cell_layout = QHBoxLayout(widget)
         cell_layout.setContentsMargins(6, 2, 6, 2)
         cell_layout.setSpacing(6)
@@ -807,47 +810,47 @@ class CrossPlaylistComparisonDialog(QDialog):
         fp = track_info.get('filepath', '')
 
         lbl = QLabel(fname)
-        lbl.setStyleSheet("color: #f1f5f9; font-size: 11px; background: transparent;")
+        lbl.setStyleSheet("color: #cbd5cc; font-size: 11px; background: transparent;")
         lbl.setToolTip(f"{fname}\nPath: {fp}")
         cell_layout.addWidget(lbl, 1)
 
-        btn_folder = QPushButton("📁")
+        btn_folder = QPushButton("Open")
         btn_folder.setToolTip("Open folder in Explorer")
         btn_folder.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_folder.setFixedSize(26, 26)
+        btn_folder.setFixedSize(52, 26)
         btn_folder.setStyleSheet("""
             QPushButton {
-                background-color: #1e293b;
-                color: #38bdf8;
-                border: 1px solid #475569;
-                border-radius: 4px;
+                background-color: #0b120d;
+                color: #91e5a3;
+                border: 1px solid #354a38;
+                border-radius: 0px;
                 font-size: 12px;
                 padding: 0px;
             }
             QPushButton:hover {
-                background-color: #334155;
-                color: #ffffff;
+                background-color: #354a38;
+                color: #cbd5cc;
             }
         """)
         btn_folder.clicked.connect(lambda _, p=fp: self._open_in_explorer(p))
         cell_layout.addWidget(btn_folder)
 
-        btn_del = QPushButton("🗑️")
+        btn_del = QPushButton("Delete")
         btn_del.setToolTip(f"Delete file from {pl_title}")
         btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_del.setFixedSize(26, 26)
+        btn_del.setFixedSize(62, 26)
         btn_del.setStyleSheet("""
             QPushButton {
-                background-color: #1e293b;
-                color: #ef4444;
-                border: 1px solid #7f1d1d;
-                border-radius: 4px;
+                background-color: #0b120d;
+                color: #d98f86;
+                border: 1px solid #70413d;
+                border-radius: 0px;
                 font-size: 12px;
                 padding: 0px;
             }
             QPushButton:hover {
-                background-color: #ef4444;
-                color: #ffffff;
+                background-color: #522723;
+                color: #cbd5cc;
             }
         """)
         btn_del.clicked.connect(lambda _, p=fp, pl=pl_title, d=display_name: self._confirm_and_delete_track(p, pl, d))
@@ -871,7 +874,7 @@ class CrossPlaylistComparisonDialog(QDialog):
 
                 item_track = QTableWidgetItem(display_name)
                 item_track.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-                item_track.setForeground(QColor("#f8fafc"))
+                item_track.setForeground(QColor("#cbd5cc"))
                 item_track.setFlags(item_track.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item_track.setToolTip(f"{display_name}\n(Click row for full breakdown)")
                 self.table.setItem(row, 0, item_track)
@@ -879,7 +882,7 @@ class CrossPlaylistComparisonDialog(QDialog):
                 self.table.setCellWidget(row, 1, None)
                 item_pls = QTableWidgetItem(pls_str)
                 item_pls.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-                item_pls.setForeground(QColor("#38bdf8"))
+                item_pls.setForeground(QColor(self.theme_colors["accent"]))
                 item_pls.setFlags(item_pls.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item_pls.setToolTip(f"{pls_str}\n(Click row for full breakdown)")
                 self.table.setItem(row, 1, item_pls)
@@ -896,15 +899,15 @@ class CrossPlaylistComparisonDialog(QDialog):
                 btn_link.setFixedSize(120, 28)
                 btn_link.setStyleSheet("""
                     QPushButton {
-                        background-color: #2563eb;
-                        color: #ffffff;
+                        background-color: #14271a;
+                        color: #a6efb4;
                         border: none;
-                        border-radius: 5px;
+                        border-radius: 0px;
                         padding: 0px;
                         font-size: 11px;
                         font-weight: bold;
                     }
-                    QPushButton:hover { background-color: #1d4ed8; }
+                    QPushButton:hover { background-color: #1a3422; }
                 """)
                 btn_link.clicked.connect(lambda _, u=track_url: QDesktopServices.openUrl(QUrl(u)))
                 btn_layout.addWidget(btn_link)
@@ -917,7 +920,7 @@ class CrossPlaylistComparisonDialog(QDialog):
                 disp_name = item.get('display_name') or f"{item.get('artist', '')} - {item.get('title', '')}".strip(" -")
                 item_track = QTableWidgetItem(disp_name)
                 item_track.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-                item_track.setForeground(QColor("#f8fafc"))
+                item_track.setForeground(QColor("#cbd5cc"))
                 item_track.setFlags(item_track.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item_track.setToolTip(disp_name)
                 self.table.setItem(row, 0, item_track)
@@ -933,7 +936,7 @@ class CrossPlaylistComparisonDialog(QDialog):
                     self.table.setCellWidget(row, 1, None)
                     item_missing_a = QTableWidgetItem(f"— Not in {target_a} —")
                     item_missing_a.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter)
-                    item_missing_a.setForeground(QColor("#64748b"))
+                    item_missing_a.setForeground(QColor(self.theme_colors["text_dim"]))
                     item_missing_a.setFlags(item_missing_a.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     self.table.setItem(row, 1, item_missing_a)
 
@@ -948,7 +951,7 @@ class CrossPlaylistComparisonDialog(QDialog):
                     self.table.setCellWidget(row, 2, None)
                     item_missing_b = QTableWidgetItem(f"— Not in {target_b} —")
                     item_missing_b.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter)
-                    item_missing_b.setForeground(QColor("#64748b"))
+                    item_missing_b.setForeground(QColor(self.theme_colors["text_dim"]))
                     item_missing_b.setFlags(item_missing_b.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     self.table.setItem(row, 2, item_missing_b)
 
@@ -965,15 +968,15 @@ class CrossPlaylistComparisonDialog(QDialog):
                 btn_link.setFixedSize(110, 28)
                 btn_link.setStyleSheet("""
                     QPushButton {
-                        background-color: #2563eb;
-                        color: #ffffff;
+                        background-color: #14271a;
+                        color: #a6efb4;
                         border: none;
-                        border-radius: 5px;
+                        border-radius: 0px;
                         padding: 0px;
                         font-size: 11px;
                         font-weight: bold;
                     }
-                    QPushButton:hover { background-color: #1d4ed8; }
+                    QPushButton:hover { background-color: #1a3422; }
                 """)
                 btn_link.clicked.connect(lambda _, u=track_url: QDesktopServices.openUrl(QUrl(u)))
                 btn_layout.addWidget(btn_link)
@@ -988,7 +991,7 @@ class CrossPlaylistComparisonDialog(QDialog):
 
                 item_track = QTableWidgetItem(display_name)
                 item_track.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-                item_track.setForeground(QColor("#f8fafc"))
+                item_track.setForeground(QColor("#cbd5cc"))
                 item_track.setFlags(item_track.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item_track.setToolTip(f"{display_name}\n(Click row for full breakdown)")
                 self.table.setItem(row, 0, item_track)
@@ -996,7 +999,7 @@ class CrossPlaylistComparisonDialog(QDialog):
                 self.table.setCellWidget(row, 1, None)
                 item_pls = QTableWidgetItem(pls_str)
                 item_pls.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-                item_pls.setForeground(QColor("#10b981"))
+                item_pls.setForeground(QColor(self.theme_colors["accent_fill"]))
                 item_pls.setFlags(item_pls.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item_pls.setToolTip(f"{pls_str}\n(Click row for full breakdown)")
                 self.table.setItem(row, 1, item_pls)
@@ -1013,15 +1016,15 @@ class CrossPlaylistComparisonDialog(QDialog):
                 btn_link.setFixedSize(120, 28)
                 btn_link.setStyleSheet("""
                     QPushButton {
-                        background-color: #2563eb;
-                        color: #ffffff;
+                        background-color: #14271a;
+                        color: #a6efb4;
                         border: none;
-                        border-radius: 5px;
+                        border-radius: 0px;
                         padding: 0px;
                         font-size: 11px;
                         font-weight: bold;
                     }
-                    QPushButton:hover { background-color: #1d4ed8; }
+                    QPushButton:hover { background-color: #1a3422; }
                 """)
                 btn_link.clicked.connect(lambda _, u=track_url: QDesktopServices.openUrl(QUrl(u)))
                 btn_layout.addWidget(btn_link)
@@ -1113,4 +1116,4 @@ class CrossPlaylistComparisonDialog(QDialog):
                 lines.append(f"{i}. {display_name}\n   Shared across {len(pls)} playlists: {', '.join(pls)}\n   Link: {url}")
 
         QApplication.clipboard().setText("\n\n".join(lines))
-        QMessageBox.information(self, "Copied", "Comparison results copied to clipboard!")
+        QMessageBox.information(self, "Copied", "Comparison results copied to clipboard.")

@@ -40,13 +40,13 @@ class LogViewerDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
             QTabWidget::pane {
-                border: 1px solid #334155;
-                background-color: #0f172a;
-                border-radius: 8px;
+                border: 1px solid #354a38;
+                background-color: #080d09;
+                border-radius: 0px;
             }
             QTabBar::tab {
-                background: #1e293b;
-                color: #94a3b8;
+                background: #0d150f;
+                color: #aab7aa;
                 padding: 8px 18px;
                 margin-right: 4px;
                 border-top-left-radius: 6px;
@@ -55,9 +55,9 @@ class LogViewerDialog(QDialog):
                 font-size: 12px;
             }
             QTabBar::tab:selected {
-                background: #0f172a;
-                color: #38bdf8;
-                border-bottom: 2px solid #38bdf8;
+                background: #080d09;
+                color: #b5f2bf;
+                border-bottom: 2px solid #91e5a3;
             }
         """)
 
@@ -87,15 +87,15 @@ class LogViewerDialog(QDialog):
         self.user_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.user_table.setStyleSheet("""
             QTableWidget {
-                background-color: #0b1329;
-                color: #f8fafc;
-                border: 1px solid #1e293b;
-                border-radius: 6px;
-                gridline-color: #1e293b;
+                background-color: #080d09;
+                color: #cbd5cc;
+                border: 1px solid #354a38;
+                border-radius: 0px;
+                gridline-color: #354a38;
             }
             QHeaderView::section {
-                background-color: #1e293b;
-                color: #94a3b8;
+                background-color: #0d150f;
+                color: #aab7aa;
                 padding: 6px;
                 border: none;
                 font-weight: bold;
@@ -103,7 +103,7 @@ class LogViewerDialog(QDialog):
             }
         """)
         user_layout.addWidget(self.user_table)
-        self.tabs.addTab(self.user_tab, "📋 User Logs")
+        self.tabs.addTab(self.user_tab, "Activity")
 
         # ─── TAB 2: DEVELOPER RAW LOGS ───
         self.dev_tab = QWidget()
@@ -118,10 +118,10 @@ class LogViewerDialog(QDialog):
         self.text_edit.setFont(font)
         self.text_edit.setStyleSheet("""
             QPlainTextEdit {
-                background-color: #080d1a;
-                color: #cbd5e1;
-                border: 1px solid #1e293b;
-                border-radius: 6px;
+                background-color: #080d09;
+                color: #cbd5cc;
+                border: 1px solid #354a38;
+                border-radius: 0px;
                 padding: 10px;
                 font-family: 'Consolas', 'Courier New', monospace;
                 font-size: 11px;
@@ -129,7 +129,7 @@ class LogViewerDialog(QDialog):
             }
         """)
         dev_layout.addWidget(self.text_edit)
-        self.tabs.addTab(self.dev_tab, "⚙️ Developer Logs (Raw)")
+        self.tabs.addTab(self.dev_tab, "Raw Logs")
 
         main_layout.addWidget(self.tabs, 1)
 
@@ -218,7 +218,7 @@ class LogViewerDialog(QDialog):
                     "event": f"Session: {sess_time}",
                     "status": "Session",
                     "summary": "Application session started",
-                    "color": "#38bdf8",
+                    "color": "#91e5a3",
                     "is_divider": True
                 })
                 continue
@@ -250,7 +250,7 @@ class LogViewerDialog(QDialog):
                     "event": m_fail.group(1),
                     "status": "Failed",
                     "summary": m_fail.group(2),
-                    "color": "#ef4444"
+                    "color": "#d98f86"
                 })
                 continue
 
@@ -265,7 +265,7 @@ class LogViewerDialog(QDialog):
                     "event": event_name,
                     "status": "Removed",
                     "summary": "Track was removed from YouTube by copyright holder or channel owner",
-                    "color": "#94a3b8"
+                    "color": "#aab7aa"
                 })
             elif "sign in to confirm your age" in low or "age-restricted" in low:
                 m_vid = re.search(r"\[youtube\]\s*([^:]+):", msg)
@@ -276,7 +276,7 @@ class LogViewerDialog(QDialog):
                     "event": event_name,
                     "status": "Cookies Required",
                     "summary": "YouTube age restriction — cookies needed for direct download",
-                    "color": "#f59e0b"
+                    "color": "#d9b66d"
                 })
             elif "already downloaded" in low or "skipped" in low:
                 event_name = track_tag or "Playlist Sync"
@@ -285,7 +285,7 @@ class LogViewerDialog(QDialog):
                     "event": event_name,
                     "status": "Up to Date",
                     "summary": "Track already verified and present on local disk",
-                    "color": "#38bdf8"
+                    "color": "#91e5a3"
                 })
             elif "[winerror" in low:
                 event_name = track_tag or "Artwork Notice"
@@ -294,7 +294,7 @@ class LogViewerDialog(QDialog):
                     "event": event_name,
                     "status": "Handled",
                     "summary": "Cover conversion notice handled automatically by internal embedder",
-                    "color": "#94a3b8"
+                    "color": "#aab7aa"
                 })
             elif "error:" in low:
                 clean_err = re.sub(r"^ERROR:\s*", "", msg)
@@ -305,7 +305,7 @@ class LogViewerDialog(QDialog):
                     "event": event_name,
                     "status": "Notice",
                     "summary": clean_err[:140],
-                    "color": "#ef4444"
+                    "color": "#d98f86"
                 })
             elif "new session:" in low:
                 records.append({
@@ -313,7 +313,7 @@ class LogViewerDialog(QDialog):
                     "event": "App Session Started",
                     "status": "Info",
                     "summary": "Application opened and initialized",
-                    "color": "#38bdf8"
+                    "color": "#91e5a3"
                 })
 
         return list(reversed(records)) # Latest events first
@@ -323,25 +323,25 @@ class LogViewerDialog(QDialog):
         for row, rec in enumerate(records):
             is_divider = rec.get("is_divider", False)
             item_time = QTableWidgetItem(rec.get("time", ""))
-            item_time.setForeground(QColor("#64748b"))
+            item_time.setForeground(QColor("#849184"))
             item_time.setFlags(item_time.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
             item_event = QTableWidgetItem(rec.get("event", ""))
             item_event.setFlags(item_event.flags() & ~Qt.ItemFlag.ItemIsEditable)
             if is_divider:
-                item_event.setForeground(QColor("#38bdf8"))
+                item_event.setForeground(QColor("#91e5a3"))
                 f = item_event.font()
                 f.setBold(True)
                 item_event.setFont(f)
             else:
-                item_event.setForeground(QColor("#f8fafc"))
+                item_event.setForeground(QColor("#cbd5cc"))
 
             item_status = QTableWidgetItem(rec.get("status", ""))
-            item_status.setForeground(QColor(rec.get("color", "#94a3b8")))
+            item_status.setForeground(QColor(rec.get("color", "#aab7aa")))
             item_status.setFlags(item_status.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
             item_summary = QTableWidgetItem(rec.get("summary", ""))
-            item_summary.setForeground(QColor("#cbd5e1" if not is_divider else "#64748b"))
+            item_summary.setForeground(QColor("#cbd5cc" if not is_divider else "#849184"))
             item_summary.setFlags(item_summary.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
             self.user_table.setItem(row, 0, item_time)
@@ -366,7 +366,7 @@ class LogViewerDialog(QDialog):
         if text:
             clipboard = QApplication.clipboard()
             clipboard.setText(text)
-            self.btn_copy.setText("Copied!")
+            self.btn_copy.setText("Copied")
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(2000, lambda: self.btn_copy.setText("Copy All Logs"))
 

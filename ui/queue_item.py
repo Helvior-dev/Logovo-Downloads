@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QProgress
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QPixmap
 import requests
+from ui.styles import get_theme_colors
 
 class ThumbnailFetcher(QThread):
     finished = pyqtSignal(QPixmap)
@@ -92,18 +93,19 @@ class QueueItemWidget(QWidget):
     def format_type(self) -> str:
         return self.item_data.get('format', 'Audio')
 
-    def __init__(self, item_data, settings=None, parent=None):
+    def __init__(self, item_data, settings=None, parent=None, theme_name="green"):
         super().__init__(parent)
         self.item_data = item_data
         self.settings = settings
+        self.theme_colors = get_theme_colors(theme_name)
         self.status_state = "Pending"
         self.is_retry = False
         self.fetcher = None
         self.enricher = None
         
         self.setObjectName("QueueItemCard")
-        self.setMinimumHeight(92)
-        self.setMaximumHeight(120)
+        self.setMinimumHeight(110)
+        self.setMaximumHeight(130)
         
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 8, 10, 8)
@@ -111,7 +113,7 @@ class QueueItemWidget(QWidget):
         
         self.thumbnail_label = QLabel()
         self.thumbnail_label.setFixedSize(100, 60)
-        self.thumbnail_label.setStyleSheet("background-color: #1e293b; border-radius: 4px;")
+        self.thumbnail_label.setStyleSheet("background-color: #0b120d; border-radius: 0px;")
         self.thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.btn_load_preview = QPushButton("Preview")
@@ -119,18 +121,18 @@ class QueueItemWidget(QWidget):
         self.btn_load_preview.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_load_preview.setStyleSheet("""
             QPushButton {
-                background: rgba(30, 41, 59, 0.9);
-                color: #e2e8f0;
-                border: 1px solid #94a3b8;
-                border-radius: 4px;
+                background: rgba(11, 18, 13, 0.9);
+                color: #cbd5cc;
+                border: 1px solid #aab7aa;
+                border-radius: 0px;
                 font-weight: bold;
                 font-size: 11px;
                 padding: 2px 0px;
             }
             QPushButton:hover {
-                background: #334155;
-                color: #ffffff;
-                border: 1px solid #cbd5e1;
+                background: #354a38;
+                color: #cbd5cc;
+                border: 1px solid #cbd5cc;
             }
         """)
         
@@ -145,7 +147,7 @@ class QueueItemWidget(QWidget):
         details_layout.setSpacing(5)
         
         self.title_label = QLabel(item_data.get('title', 'Unknown Title'))
-        self.title_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #f8fafc;")
+        self.title_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #cbd5cc;")
         self.title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.title_label.setMinimumWidth(50)
         self.title_label.setWordWrap(False)
@@ -171,12 +173,12 @@ class QueueItemWidget(QWidget):
         # Include author/channel
         author = item_data.get('uploader') or item_data.get('channel') or item_data.get('artist') or "Unknown Author"
         self.subtitle_label = QLabel(f"{platform}{dur_str} • {author}")
-        self.subtitle_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        self.subtitle_label.setStyleSheet("color: #aab7aa; font-size: 12px;")
         self.subtitle_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.subtitle_label.setMinimumWidth(50)
         
         self.status_label = QLabel("Pending")
-        self.status_label.setStyleSheet("color: #cbd5e1; font-size: 12px;")
+        self.status_label.setStyleSheet("color: #cbd5cc; font-size: 12px;")
         self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.status_label.setMinimumWidth(50)
         
@@ -186,13 +188,13 @@ class QueueItemWidget(QWidget):
         self.progress_bar.setValue(0)
         self.progress_bar.setStyleSheet("""
             QProgressBar {
-                background-color: #1e293b;
+                background-color: #080d09;
                 border: none;
-                border-radius: 3px;
+                border-radius: 0px;
             }
             QProgressBar::chunk {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #38bdf8, stop:1 #2563eb);
-                border-radius: 3px;
+                background-color: #65c77e;
+                border-radius: 0px;
             }
         """)
         self.progress_bar.hide()
@@ -211,18 +213,29 @@ class QueueItemWidget(QWidget):
         
         btn_top_row = QHBoxLayout()
         btn_top_row.addStretch()
-        self.btn_remove = QPushButton("✕")
-        self.btn_remove.setFixedSize(22, 22)
+        self.btn_remove = QPushButton("×")
+        self.btn_remove.setToolTip("Remove this item from the queue (downloaded files are kept)")
+        self.btn_remove.setAccessibleName("Remove item from queue")
+        self.btn_remove.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_remove.setFixedSize(26, 26)
         self.btn_remove.setStyleSheet("""
             QPushButton {
-                background: transparent;
-                color: #94a3b8;
-                border: none;
+                background-color: #1b1010;
+                color: #e3aaa3;
+                border: 1px solid #70413d;
+                border-radius: 0px;
                 font-weight: bold;
-                font-size: 14px;
+                font-size: 18px;
             }
             QPushButton:hover {
-                color: #ef4444;
+                background-color: #422121;
+                color: #ffe0db;
+                border-color: #d98f86;
+            }
+            QPushButton:disabled {
+                background-color: #0b120d;
+                color: #59675a;
+                border-color: #202c22;
             }
         """)
         self.btn_remove.clicked.connect(self._on_remove)
@@ -505,27 +518,35 @@ class QueueItemWidget(QWidget):
             self.progress_bar.show()
             self.btn_remove.setEnabled(False)
             if state == "Retrying" or getattr(self, "is_retry", False):
-                self.status_label.setStyleSheet("color: #fbbf24; font-size: 12px; font-weight: 500;") # Yellow/Amber
+                self.status_label.setStyleSheet("color: #d9b66d; font-size: 12px; font-weight: 500;") # Yellow/Amber
             else:
-                self.status_label.setStyleSheet("color: #38bdf8; font-size: 12px;") # Cyan
+                self.status_label.setStyleSheet(f"color: {self.theme_colors['accent']}; font-size: 12px;")
         elif state in ["Success", "Error"]:
             self.progress_bar.hide()
             self.btn_remove.setEnabled(True)
             if state == "Success":
-                self.status_label.setStyleSheet("color: #10b981; font-size: 12px; font-weight: 500;") # Green
+                self.status_label.setStyleSheet(
+                    f"color: {self.theme_colors['accent_fill']}; font-size: 12px; font-weight: 500;"
+                )
             else:
-                self.status_label.setStyleSheet("color: #ef4444; font-size: 12px; font-weight: 500;") # Red
+                self.status_label.setStyleSheet("color: #d98f86; font-size: 12px; font-weight: 500;") # Red
         elif state == "Unavailable":
             self.progress_bar.hide()
             self.btn_remove.setEnabled(True)
-            self.status_label.setStyleSheet("color: #94a3b8; font-size: 12px; font-weight: 500;") # Slate neutral
+            self.status_label.setStyleSheet(
+                f"color: {self.theme_colors['text_secondary']}; font-size: 12px; font-weight: 500;"
+            )
         elif state == "Pending":
             self.progress_bar.hide()
             self.btn_remove.setEnabled(True)
             if getattr(self, "is_retry", False):
-                self.status_label.setStyleSheet("color: #fbbf24; font-size: 12px; font-weight: 500;")
+                self.status_label.setStyleSheet("color: #d9b66d; font-size: 12px; font-weight: 500;")
             else:
-                self.status_label.setStyleSheet("color: #cbd5e1; font-size: 12px;")
+                self.status_label.setStyleSheet("color: #cbd5cc; font-size: 12px;")
+
+    def set_theme(self, theme_name):
+        self.theme_colors = get_theme_colors(theme_name)
+        self.set_status(self.status_label.text(), self.status_state)
 
     def update_progress(self, percent, speed_clean, eta_clean):
         try:
@@ -538,6 +559,6 @@ class QueueItemWidget(QWidget):
         prefix = "Retrying... " if getattr(self, 'is_retry', False) else "Downloading... "
         self.status_label.setText(f"{prefix}{percent}% | {speed_clean} | ETA: {eta_clean}")
         if getattr(self, 'is_retry', False):
-            self.status_label.setStyleSheet("color: #fbbf24; font-size: 12px; font-weight: 500;")
+            self.status_label.setStyleSheet("color: #d9b66d; font-size: 12px; font-weight: 500;")
         else:
-            self.status_label.setStyleSheet("color: #38bdf8; font-size: 12px;")
+            self.status_label.setStyleSheet(f"color: {self.theme_colors['accent']}; font-size: 12px;")

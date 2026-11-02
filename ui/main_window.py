@@ -17,15 +17,14 @@ from PyQt6.QtWidgets import (
     QComboBox, QMessageBox, QTabWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QCheckBox, QFileDialog, QFormLayout,
     QApplication, QRadioButton, QButtonGroup, QGroupBox, QScrollArea, QDialog,
-    QSystemTrayIcon, QMenu, QSpinBox, QSlider, QFrame, QGraphicsDropShadowEffect,
-    QTextEdit, QGraphicsBlurEffect, QTabBar, QLayout
+    QSystemTrayIcon, QMenu, QSpinBox, QSlider, QFrame,
+    QTextEdit, QTabBar, QLayout
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QObject, QEvent, QMimeData, QPropertyAnimation, QPoint, QEasingCurve, QRectF
 from PyQt6.QtGui import QPixmap, QDesktopServices, QAction, QIcon, QColor, QPainter, QPen, QDrag, QPainterPath, QFont
 
 from core.preview import get_video_preview
 from core.downloader import (
-    MediaDownloader,
     friendly_error,
     is_platform_unavailable,
     is_rate_limited,
@@ -51,32 +50,72 @@ from core.downloader import (
     translit_ru_to_en,
     extract_significant_version_tags,
     _author_and_title_match,
-    build_local_files_index,
-    is_entry_in_index,
-    detect_online_playlist_duplicates,
-    detect_orphan_files_in_folder,
     read_kept_orphans,
-    add_kept_orphans,
     clear_kept_orphans,
-    autoheal_orphans_and_missing,
 )
 from core.constants import APP_VERSION
 from core.utils import clean_filename_for_all_devices
 from core.settings import SettingsManager, get_app_data_dir
-from core.history import HistoryManager
+from core.queue_state import load_pending_queue, save_pending_queue
+from core.history import (
+    HistoryManager,
+    get_retryable_error_entries,
+    is_retryable_error,
+    sanitize_download_options,
+    snapshot_download_settings,
+)
 from core.taskbar import taskbar_manager
 from core.backup import export_backup, import_backup
 from core.playlists_manager import PlaylistsManager
 from core.updater import (
-    get_installed_ytdlp_version,
     check_latest_ytdlp_version,
     CheckUpdateThread,
     UpgradeWorker,
 )
-from ui.styles import get_stylesheet, get_resource_path
+from ui.styles import (
+    configure_combo_popup,
+    get_resource_path,
+    get_stylesheet,
+    get_theme_colors,
+    normalize_theme,
+    square_combo_popup,
+    theme_stylesheet,
+)
+from ui.dialogs import (
+    OnlineDuplicatesDialog,
+    PlaylistFormatMismatchDialog,
+    PlaylistSyncPreviewDialog,
+    PlaylistUpToDateDialog,
+    SafeModeDialog,
+    UnavailableTracksDialog,
+    detect_and_prompt_orphans,
+)
+from ui.storage_cleanup_dialog import StorageCleanupDialog
+from ui.workers import (
+    ApplyPlaylistSyncWorker,
+    CheckAppUpdateWorker,
+    DownloadSettingsOverlay,
+    FetchPreviewWorker,
+    NetworkDiagnosticsWorker,
+    ReindexPlaylistWorker,
+    SelfDiagnosticsWorker,
+    StartupPlaylistCheckWorker,
+    SyncPlaylistWorker,
+    WorkerThread,
+)
 from ui.queue_item import QueueItemWidget
 from ui.log_viewer_dialog import LogViewerDialog
 from ui.playlist_comparison_dialog import CrossPlaylistComparisonDialog
+
+
+def _resolve_queue_media_type(selected_media_type, saved_options, item_data):
+    """Prefer the format visible on the queue item over a stale retry snapshot."""
+    return (
+        selected_media_type
+        or saved_options.get('media_type')
+        or item_data.get('media_type')
+        or 'Audio (Best)'
+    )
 
 
 def estimate_track_size_mb(item_data: dict) -> float:
@@ -112,339 +151,19 @@ def format_time(seconds: float) -> str:
     return f"{s}s"
 
 
-class WorkerThread(QThread):
-    progress_signal = pyqtSignal(dict)
-    finished_signal = pyqtSignal(bool, str, bool)
-
-    def __init__(
-        self,
-        url,
-        media_type,
-        output_dir,
-        quality,
-        cookies,
-        subtitles,
-        playlist_index=None,
-        playlist_count=None,
-        title=None,
-        author=None,
-        speed_limit=None,
-        naming_pattern=None,
-        settings=None,
-        thumbnail=None,
-        format_compat=None,
-    ):
-        super().__init__()
-        self.url = url
-        self.media_type = media_type
-        self.output_dir = output_dir
-        self.quality = quality
-        self.cookies = cookies
-        self.subtitles = subtitles
-        self.playlist_index = playlist_index
-        self.playlist_count = playlist_count
-        self.title = title
-        self.author = author
-        self.speed_limit = speed_limit
-        self.naming_pattern = naming_pattern
-        self.settings = settings
-        self.thumbnail = thumbnail
-        self.format_compat = format_compat
-
-    def run(self):
-        downloader = MediaDownloader(output_dir=self.output_dir, settings=self.settings, format_compat=self.format_compat)
-
-        def progress_callback(*args, **kwargs):
-            if args and isinstance(args[0], dict):
-                d = args[0]
-            else:
-                pct = args[0] if len(args) > 0 else 100.0
-                status_txt = args[1] if len(args) > 1 else ""
-                speed = args[2] if len(args) > 2 else ""
-                eta = args[3] if len(args) > 3 else ""
-                d = {
-                    "status": "downloading" if pct < 100 else "finished",
-                    "_percent_str": f"{pct:.1f}%",
-                    "_speed_str": speed,
-                    "_eta_str": eta,
-                    "status_text": status_txt,
-                }
-            self.progress_signal.emit(d)
-
-        success, error_msg, was_skipped = downloader.download(
-            self.url,
-            media_type=self.media_type,
-            quality=self.quality,
-            cookies=self.cookies,
-            subtitles=self.subtitles,
-            progress_callback=progress_callback,
-            playlist_index=self.playlist_index,
-            playlist_count=self.playlist_count,
-            title=self.title,
-            author=self.author,
-            speed_limit=self.speed_limit,
-            naming_pattern=self.naming_pattern,
-            thumbnail=self.thumbnail,
-            format_compat=self.format_compat,
-        )
-        self.finished_signal.emit(success, error_msg, was_skipped)
-
-
-class FetchPreviewWorker(QThread):
-    finished_signal = pyqtSignal(dict, object)
-    error_signal = pyqtSignal(str, object)
-
-    def __init__(self, url, context=None, cookies=None):
-        super().__init__()
-        self.url = url
-        self.context = context
-        self.cookies = cookies
-
-    def run(self):
-        try:
-            preview = get_video_preview(self.url, cookies=self.cookies)
-            if preview:
-                self.finished_signal.emit(preview, self.context)
-            else:
-                platform = detect_platform_name(self.url)
-                self.error_signal.emit(f"Could not fetch media metadata from {platform}.", self.context)
-        except Exception as e:
-            self.error_signal.emit(str(e), self.context)
-
-
-class CheckAppUpdateWorker(QThread):
-    finished_signal = pyqtSignal(bool, str, str, str)  # has_update, latest_ver, release_url, release_notes
-
-    def __init__(self, current_ver: str, repo: str = "Helvior-dev/Logovo-Downloads"):
-        super().__init__()
-        self.current_ver = current_ver
-        self.repo = repo
-
-    def run(self):
-        import requests
-        import re
-        try:
-            headers = {
-                "User-Agent": f"Logovo-Downloads/{self.current_ver}",
-                "Accept": "application/vnd.github.v3+json"
-            }
-            url = f"https://api.github.com/repos/{self.repo}/releases/latest"
-            r = requests.get(url, headers=headers, timeout=6)
-            if r.status_code == 200:
-                data = r.json()
-                tag = data.get("tag_name", "")
-                rel_url = data.get("html_url", f"https://github.com/{self.repo}/releases/latest")
-                body = data.get("body", "") or ""
-
-                def parse_v(v_str):
-                    clean = str(v_str).lstrip("v").strip()
-                    parts = [int(p) for p in re.findall(r"\d+", clean)]
-                    return parts or [0]
-
-                has_update = parse_v(tag) > parse_v(self.current_ver)
-                clean_tag = tag.lstrip("v")
-                self.finished_signal.emit(has_update, clean_tag, rel_url, body)
-            else:
-                self.finished_signal.emit(False, "", "", "")
-        except Exception:
-            self.finished_signal.emit(False, "", "", "")
-
-
-class StartupPlaylistCheckWorker(QThread):
-    finished_signal = pyqtSignal()
-
-    def __init__(self, playlists_mgr, cookies=None):
-        super().__init__()
-        self.playlists_mgr = playlists_mgr
-        self.cookies = cookies
-
-    def run(self):
-        from core.logger import get_logger
-        logger = get_logger("logovo.startup_check")
-        try:
-            valid_media_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac", ".mp4", ".mkv", ".webm"}
-            items = self.playlists_mgr.get_all()
-            for p in items:
-                out_dir = p.get('folder_path')
-                url = p.get('url')
-                if not out_dir or not url or not os.path.exists(out_dir):
-                    continue
-
-                preview = get_video_preview(url, cookies=self.cookies)
-                if not preview or not preview.get('entries'):
-                    continue
-
-                is_audio = (p.get('media_type', 'Audio') == 'Audio')
-                combined_vid_set, title_index, local_cnt = build_local_files_index(out_dir, is_audio=is_audio)
-
-                missing_cnt = 0
-                for entry in preview.get('entries', []):
-                    if entry.get('is_unavailable') or "unavailable / deleted" in str(entry.get('title', '')).lower():
-                        continue
-                    vid = entry.get('url', '').split('v=')[-1].split('&')[0]
-                    author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
-                    title = entry.get('title') or ""
-
-                    already = is_entry_in_index(vid, title, author, combined_vid_set, title_index)
-                    if not already:
-                        missing_cnt += 1
-
-                dupes = detect_online_playlist_duplicates(preview.get('entries', []))
-                dupes_cnt = len(dupes)
-                unavail_cnt = sum(1 for entry in preview.get('entries', []) if entry.get('is_unavailable') or "unavailable / deleted" in str(entry.get('title', '')).lower())
-                total_cnt = preview.get('count', 0)
-                orphans = detect_orphan_files_in_folder(out_dir, preview.get('entries', []), is_audio=is_audio)
-                orphans_cnt = len(orphans)
-
-                p['unavailable_count'] = unavail_cnt
-                p['duplicates_count'] = dupes_cnt
-                p['track_count'] = total_cnt
-                p['new_tracks_count'] = missing_cnt
-                p['removed_tracks_count'] = orphans_cnt
-
-            self.playlists_mgr.save()
-            self.finished_signal.emit()
-        except Exception as e:
-            try:
-                from core.logger import get_logger
-                get_logger("logovo.startup_check").exception("StartupPlaylistCheckWorker failed: %s", e)
-            except Exception:
-                pass
-
-
-class SyncPlaylistWorker(QThread):
-    finished_signal = pyqtSignal(dict, dict, list, int, list, list, list)
-    error_signal = pyqtSignal(str, dict)
-
-    def __init__(self, p_dict: dict, settings, cookies=None, format_compat: str = None):
-        super().__init__()
-        self.p_dict = p_dict
-        self.settings = settings
-        self.cookies = cookies
-        self.format_compat = format_compat
-
-    def run(self):
-        try:
-            url = self.p_dict.get('url')
-            out_dir = self.p_dict.get('folder_path')
-            media_type_category = self.p_dict.get('media_type', 'Audio')
-
-            preview = get_video_preview(url, cookies=self.cookies)
-            if not preview or not preview.get('is_playlist'):
-                platform = detect_platform_name(url)
-                self.error_signal.emit(f"Invalid playlist response from {platform}.", self.p_dict)
-                return
-
-            count = preview.get('count', 0)
-            if not os.path.exists(out_dir):
-                os.makedirs(out_dir, exist_ok=True)
-
-            # Cleanup orphan files and leftover raw .mp4 before sync
-            cleanup_orphan_files(out_dir, is_audio_playlist=(media_type_category == "Audio"))
-
-            cover_mode = self.settings.get('playlist_cover_mode', 'both') if self.settings else 'both'
-            if preview.get('thumbnail') and cover_mode != 'none':
-                apply_playlist_cover_settings(out_dir, preview.get('thumbnail'), mode=cover_mode)
-
-            if self.settings and self.settings.get('create_nomedia_file', False):
-                ensure_nomedia_file(out_dir)
-
-            # Restore dates from .playlist_order.json if needed
-            restore_dates_from_order(out_dir)
-
-            # 1. Build local index
-            combined_vid_set, title_index, local_cnt = build_local_files_index(
-                out_dir, is_audio=(media_type_category == "Audio")
-            )
-
-            # 2. Check each online entry
-            missing_entries = []
-            unavailable_entries = []
-            for i, entry in enumerate(preview.get('entries', [])):
-                entry['playlist_output_dir'] = out_dir
-                entry['playlist_index'] = count - i
-                entry['playlist_count'] = count
-                entry['media_type_category'] = media_type_category
-                entry['media_type'] = "Audio (Best)" if media_type_category == "Audio" else "Video (Best)"
-                if self.format_compat:
-                    entry['format_compat'] = self.format_compat
-
-                vid = entry.get('url', '').split('v=')[-1].split('&')[0]
-                author = entry.get('uploader') or entry.get('channel') or entry.get('artist') or ""
-                title = entry.get('title') or ""
-
-                if entry.get('is_unavailable') or "unavailable / deleted" in str(title).lower():
-                    unavailable_entries.append((entry, "Removed from online platform / Copyright Claim"))
-                    continue
-
-                already = is_entry_in_index(vid, title, author, combined_vid_set, title_index)
-                if not already:
-                    missing_entries.append(entry)
-
-            # 3. Duplicate detection in online playlist
-            online_duplicates = detect_online_playlist_duplicates(preview.get('entries', []))
-
-            # 4. Check for orphan/removed files in local folder
-            orphaned_files = detect_orphan_files_in_folder(
-                out_dir,
-                preview.get('entries', []),
-                is_audio=(media_type_category == "Audio")
-            )
-
-            # 5. Safe Auto-healing between orphans and missing entries (strict 1-to-1 matching)
-            orphaned_files, missing_entries = autoheal_orphans_and_missing(
-                out_dir,
-                orphaned_files,
-                missing_entries
-            )
-
-            self.finished_signal.emit(
-                preview,
-                self.p_dict,
-                missing_entries,
-                local_cnt,
-                online_duplicates,
-                unavailable_entries,
-                orphaned_files
-            )
-        except Exception as e:
-            self.error_signal.emit(str(e), self.p_dict)
-
-
-class ReindexPlaylistWorker(QThread):
-    finished_signal = pyqtSignal(dict, int)
-    error_signal = pyqtSignal(str)
-
-    def __init__(self, p_dict: dict, settings, cookies=None):
-        super().__init__()
-        self.p_dict = p_dict
-        self.settings = settings
-        self.cookies = cookies
-
-    def run(self):
-        try:
-            url = self.p_dict.get('url')
-            out_dir = self.p_dict.get('folder_path')
-            preview = get_video_preview(url, cookies=self.cookies)
-            if not preview or not preview.get('is_playlist'):
-                platform = detect_platform_name(url)
-                self.error_signal.emit(f"Could not load playlist from {platform}.")
-                return
-            entries = preview.get('entries', [])
-            reindex_existing_playlist_files(out_dir, entries, settings=self.settings)
-            self.finished_signal.emit(self.p_dict, len(entries))
-        except Exception as e:
-            self.error_signal.emit(str(e))
-
-
 class SpinnerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(40, 40)
+        self.accent_color = get_theme_colors()["accent"]
         self.angle = 0
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.rotate)
         self.timer.start(30)
+
+    def set_theme(self, theme_name: str):
+        self.accent_color = get_theme_colors(theme_name)["accent"]
+        self.update()
 
     def rotate(self):
         self.angle = (self.angle + 15) % 360
@@ -455,7 +174,7 @@ class SpinnerWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.translate(self.width() / 2, self.height() / 2)
         painter.rotate(self.angle)
-        pen = QPen(QColor("#38bdf8"), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        pen = QPen(QColor(self.accent_color), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         painter.drawArc(-15, -15, 30, 30, 0, 270 * 16)
         painter.end()
@@ -475,9 +194,9 @@ class LoadingOverlay(QWidget):
         card.setFixedSize(400, 210)
         card.setStyleSheet("""
             QFrame#LoadingCard {
-                background-color: #1e293b;
-                border: 1px solid #38bdf8;
-                border-radius: 12px;
+                background-color: #0b120d;
+                border: 1px solid #91e5a3;
+                border-radius: 0px;
             }
         """)
 
@@ -488,16 +207,16 @@ class LoadingOverlay(QWidget):
 
         self.spinner = SpinnerWidget()
         self.title_label = QLabel("Syncing Playlist...")
-        self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #f8fafc;")
+        self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #cbd5cc;")
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.msg_label = QLabel("Connecting to service...")
-        self.msg_label.setStyleSheet("font-size: 12px; color: #94a3b8;")
+        self.msg_label.setStyleSheet("font-size: 12px; color: #aab7aa;")
         self.msg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.msg_label.setWordWrap(True)
 
         self.sub_label = QLabel("Fetching media information in the background...")
-        self.sub_label.setStyleSheet("font-size: 11px; color: #64748b; font-style: italic;")
+        self.sub_label.setStyleSheet("font-size: 11px; color: #849184;")
         self.sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sub_label.setWordWrap(True)
 
@@ -510,7 +229,7 @@ class LoadingOverlay(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(15, 23, 42, 200))
+        painter.fillRect(self.rect(), QColor(8, 11, 9, 200))
         painter.end()
 
     def show_loading(self, title="Loading Media...", message="Connecting to service..."):
@@ -523,875 +242,6 @@ class LoadingOverlay(QWidget):
 
     def hide_loading(self):
         self.hide()
-
-
-class OrphanFilesDialog(QDialog):
-    def __init__(self, orphan_items: list[dict], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Removed Tracks Detected")
-        self.setStyleSheet("QDialog { background-color: #0b0e14; }")
-        self.setMinimumSize(700, 440)
-        self.resize(700, 440)
-        self.deleted_files = []
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-
-        header = QLabel(f"<h3>Found {len(orphan_items)} track(s) removed from online playlist</h3>")
-        header.setStyleSheet("color: #f8fafc;")
-        desc = QLabel(
-            "The following files were downloaded previously, but are no longer present in the online YouTube playlist.\n"
-            "Review the list below and choose whether to delete them locally or keep them on your disk:"
-        )
-        desc.setStyleSheet("color: #94a3b8; font-size: 12px;")
-        desc.setWordWrap(True)
-
-        layout.addWidget(header)
-        layout.addWidget(desc)
-
-        self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Track / Filename", "Video ID", "YouTube Link"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(2, 140)
-        self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(50)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setStyleSheet("""
-            QTableWidget {
-                background-color: #0f172a;
-                border: 1px solid #1e293b;
-                border-radius: 8px;
-                color: #f1f5f9;
-                gridline-color: transparent;
-                outline: none;
-            }
-            QTableWidget::item {
-                padding: 0px 8px;
-                border-bottom: 1px solid #1e293b;
-            }
-            QHeaderView::section {
-                background-color: #1e293b;
-                color: #94a3b8;
-                font-weight: bold;
-                font-size: 12px;
-                padding: 6px;
-                border: none;
-                border-bottom: 1px solid #334155;
-            }
-        """)
-        self.table.setRowCount(len(orphan_items))
-
-        for row, item in enumerate(orphan_items):
-            fn = item.get('filename', '')
-            vid = item.get('vid', 'Unknown')
-            url = item.get('url', '')
-
-            item_fn = QTableWidgetItem(fn)
-            item_fn.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-            item_fn.setFlags(item_fn.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item_fn.setFlags(item_fn.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            item_fn.setCheckState(Qt.CheckState.Checked)
-            self.table.setItem(row, 0, item_fn)
-
-            item_vid = QTableWidgetItem(vid)
-            item_vid.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-            item_vid.setForeground(QColor("#38bdf8"))
-            item_vid.setFlags(item_vid.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(row, 1, item_vid)
-
-            if url:
-                btn_widget = QWidget()
-                btn_widget.setStyleSheet("background: transparent;")
-                btn_layout = QHBoxLayout(btn_widget)
-                btn_layout.setContentsMargins(0, 0, 0, 0)
-                btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-                btn_link = QPushButton("Open Link ↗")
-                btn_link.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn_link.setFixedSize(110, 28)
-                btn_link.setStyleSheet("""
-                    QPushButton {
-                        background-color: #2563eb;
-                        color: #ffffff;
-                        border: none;
-                        border-radius: 5px;
-                        padding: 0px;
-                        font-size: 11px;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #1d4ed8;
-                    }
-                    QPushButton:pressed {
-                        background-color: #1e40af;
-                    }
-                """)
-                btn_link.clicked.connect(lambda _, u=url: QDesktopServices.openUrl(QUrl(u)))
-                btn_layout.addWidget(btn_link)
-                self.table.setCellWidget(row, 2, btn_widget)
-            else:
-                self.table.setItem(row, 2, QTableWidgetItem("-"))
-
-        layout.addWidget(self.table)
-
-        sel_box = QHBoxLayout()
-        btn_sel_all = QPushButton("Select All")
-        btn_desel_all = QPushButton("Deselect All")
-        btn_sel_all.clicked.connect(self._select_all)
-        btn_desel_all.clicked.connect(self._deselect_all)
-        sel_box.addWidget(btn_sel_all)
-        sel_box.addWidget(btn_desel_all)
-        sel_box.addStretch()
-        layout.addLayout(sel_box)
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-
-        self.btn_keep = QPushButton("Keep All (Do Not Delete)")
-        self.btn_keep.clicked.connect(self.reject)
-
-        self.btn_delete = QPushButton("Delete Selected")
-        self.btn_delete.setStyleSheet("""
-            QPushButton {
-                background-color: #dc2626;
-                color: #ffffff;
-                font-weight: bold;
-                padding: 6px 14px;
-                border-radius: 6px;
-            }
-            QPushButton:hover {
-                background-color: #ef4444;
-            }
-        """)
-        self.btn_delete.clicked.connect(self._on_delete_selected)
-
-        btn_row.addWidget(self.btn_keep)
-        btn_row.addWidget(self.btn_delete)
-        layout.addLayout(btn_row)
-
-    def _select_all(self):
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            if item: item.setCheckState(Qt.CheckState.Checked)
-
-    def _deselect_all(self):
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            if item: item.setCheckState(Qt.CheckState.Unchecked)
-
-    def _on_delete_selected(self):
-        self.deleted_files = []
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            if item and item.checkState() == Qt.CheckState.Checked:
-                self.deleted_files.append(item.text())
-        self.accept()
-
-
-def detect_and_prompt_orphans(parent, out_dir: str, preview: dict) -> list[str]:
-    """Detect truly orphaned files with known video IDs no longer in online playlist and prompt user with interactive details dialog."""
-    local_files = [f for f in os.listdir(out_dir) if os.path.isfile(os.path.join(out_dir, f)) and not f.startswith('.')]
-    archived_ids = read_archive_ids(out_dir)
-    stem_all_vids = read_stem_all_vids_map(out_dir)
-    stem_map = read_stem_vid_map(out_dir)
-    kept_items = read_kept_orphans(out_dir)
-
-    playlist_ids = set()
-    for e in preview.get('entries', []):
-        vid = e.get('id')
-        if not vid:
-            url = e.get('url', '')
-            if 'v=' in url: vid = url.split('v=')[-1].split('&')[0]
-            elif 'youtu.be/' in url: vid = url.split('youtu.be/')[-1].split('?')[0]
-        if vid:
-            playlist_ids.add(vid)
-
-    orphan_ids = archived_ids - playlist_ids
-    if not orphan_ids or not local_files:
-        return []
-
-    valid_exts = ('.mp3', '.mp4', '.webm', '.m4a', '.wav', '.flac', '.opus', '.ogg', '.mkv', '.avi')
-    orphan_items = []
-
-    for f in local_files:
-        f_lower = f.lower()
-        if not f_lower.endswith(valid_exts):
-            continue
-        stem = os.path.splitext(f)[0]
-        if f in kept_items or stem in kept_items:
-            continue
-
-        mapped_vids = stem_all_vids.get(stem, set())
-        if mapped_vids and any(v in playlist_ids for v in mapped_vids):
-            continue
-
-        mapped_vid = stem_map.get(stem)
-
-        # STRICT CHECK: Only flag if mapped_vid is explicitly in orphan_ids and NOT in online playlist_ids
-        if mapped_vid and (mapped_vid in orphan_ids) and (mapped_vid not in playlist_ids):
-            url = f"https://www.youtube.com/watch?v={mapped_vid}"
-            orphan_items.append({
-                'filename': f,
-                'vid': mapped_vid,
-                'url': url,
-                'title': stem
-            })
-
-    if not orphan_items:
-        return []
-
-    dlg = OrphanFilesDialog(orphan_items, parent=parent)
-    res = dlg.exec()
-    if res == QDialog.DialogCode.Accepted and dlg.deleted_files:
-        deleted = []
-        for fn in dlg.deleted_files:
-            try:
-                os.remove(os.path.join(out_dir, fn))
-                deleted.append(fn)
-                if hasattr(parent, 'history'):
-                    stem = Path(fn).stem
-                    parts = stem.split(" - ", 1)
-                    t_author = parts[1] if len(parts) > 1 else ""
-                    t_title = parts[0]
-                    parent.history.add_entry(
-                        t_title, 
-                        t_author, 
-                        platform="YouTube", 
-                        status="Deleted (Removed from playlist)", 
-                        url="", 
-                        media_type="Audio"
-                    )
-            except Exception:
-                pass
-        kept_fns = [it.get('filename') for it in orphan_items if it.get('filename') not in dlg.deleted_files]
-        if kept_fns:
-            add_kept_orphans(out_dir, kept_fns)
-        return deleted
-    else:
-        add_kept_orphans(out_dir, [it.get('filename') for it in orphan_items if it.get('filename')])
-        return []
-
-
-class OnlineDuplicatesDialog(QDialog):
-    def __init__(self, duplicate_items: list[dict], playlist_title: str = "Playlist", parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Online Duplicates Detected")
-        self.setStyleSheet("QDialog { background-color: #0b0e14; }")
-        self.setMinimumSize(840, 460)
-        self.resize(840, 460)
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-
-        header = QLabel(f"<h3>Found {len(duplicate_items)} duplicate track(s) in '{playlist_title}'</h3>")
-        header.setStyleSheet("color: #f8fafc;")
-        desc = QLabel(
-            "The following tracks are added multiple times in your online YouTube playlist.\n"
-            "You can open the duplicate links below to locate and remove them directly from YouTube Music:"
-        )
-        desc.setStyleSheet("color: #94a3b8; font-size: 12px;")
-        desc.setWordWrap(True)
-
-        layout.addWidget(header)
-        layout.addWidget(desc)
-
-        self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Original Track in Playlist", "Duplicate Track Found", "Action"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(2, 160)
-        self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(50)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setStyleSheet("""
-            QTableWidget {
-                background-color: #0f172a;
-                border: 1px solid #1e293b;
-                border-radius: 8px;
-                color: #f1f5f9;
-                gridline-color: transparent;
-                outline: none;
-            }
-            QTableWidget::item {
-                padding: 0px 8px;
-                border-bottom: 1px solid #1e293b;
-            }
-            QHeaderView::section {
-                background-color: #1e293b;
-                color: #94a3b8;
-                font-weight: bold;
-                font-size: 12px;
-                padding: 6px;
-                border: none;
-                border-bottom: 1px solid #334155;
-            }
-        """)
-        self.table.setRowCount(len(duplicate_items))
-
-        for row, item in enumerate(duplicate_items):
-            title = item.get('title', 'Unknown')
-            author = item.get('author', '')
-            dupe_idx = item.get('dupe_index', '')
-            dupe_display = f"#{dupe_idx} • {author} - {title}" if author else f"#{dupe_idx} • {title}"
-
-            orig_t = item.get('orig_title') or title
-            orig_a = item.get('orig_author') or ''
-            orig_idx = item.get('orig_index', '')
-            orig_display = f"#{orig_idx} • {orig_a} - {orig_t}" if orig_a else f"#{orig_idx} • {orig_t}"
-            dupe_url = item.get('dupe_url', '') or item.get('orig_url', '')
-
-            item_orig = QTableWidgetItem(orig_display)
-            item_orig.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-            item_orig.setForeground(QColor("#10b981"))
-            item_orig.setFlags(item_orig.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(row, 0, item_orig)
-
-            item_dupe = QTableWidgetItem(dupe_display)
-            item_dupe.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-            item_dupe.setForeground(QColor("#38bdf8"))
-            item_dupe.setFlags(item_dupe.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(row, 1, item_dupe)
-
-            if dupe_url:
-                btn_widget = QWidget()
-                btn_widget.setStyleSheet("background: transparent;")
-                btn_layout = QHBoxLayout(btn_widget)
-                btn_layout.setContentsMargins(0, 0, 0, 0)
-                btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-                btn_link = QPushButton("Open Duplicate ↗")
-                btn_link.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn_link.setFixedSize(135, 28)
-                btn_link.setStyleSheet("""
-                    QPushButton {
-                        background-color: #2563eb;
-                        color: #ffffff;
-                        border: none;
-                        border-radius: 5px;
-                        padding: 0px;
-                        font-size: 11px;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #1d4ed8;
-                    }
-                    QPushButton:pressed {
-                        background-color: #1e40af;
-                    }
-                """)
-                btn_link.clicked.connect(lambda _, u=dupe_url: QDesktopServices.openUrl(QUrl(u)))
-                btn_layout.addWidget(btn_link)
-                self.table.setCellWidget(row, 2, btn_widget)
-
-        self.duplicate_items = duplicate_items
-        layout.addWidget(self.table)
-
-        btn_box = QHBoxLayout()
-        btn_copy = QPushButton("📋 Copy Duplicates List")
-        btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_copy.setStyleSheet("background-color: #3b82f6; color: white; border-radius: 6px; padding: 6px 14px; font-weight: bold; font-size: 12px;")
-        btn_copy.clicked.connect(self._copy_list)
-        btn_box.addWidget(btn_copy)
-        btn_box.addStretch()
-
-        btn_close = QPushButton("Close")
-        btn_close.setFixedWidth(100)
-        btn_close.setStyleSheet("background-color: #334155; color: white; border-radius: 6px; padding: 6px 14px; font-weight: bold; font-size: 12px;")
-        btn_close.clicked.connect(self.accept)
-        btn_box.addWidget(btn_close)
-        layout.addLayout(btn_box)
-
-    def _copy_list(self):
-        lines = []
-        for i, item in enumerate(self.duplicate_items, 1):
-            title = item.get('title', 'Unknown')
-            author = item.get('author', '')
-            dupe_idx = item.get('dupe_index', '')
-            dupe_display = f"{author} - {title}" if author else title
-
-            orig_t = item.get('orig_title') or title
-            orig_a = item.get('orig_author') or ''
-            orig_idx = item.get('orig_index', '')
-            orig_display = f"{orig_a} - {orig_t}" if orig_a else orig_t
-            dupe_url = item.get('dupe_url', '') or item.get('orig_url', '')
-
-            lines.append(f"{i}. Duplicate #{dupe_idx}: {dupe_display}\n   Original  #{orig_idx}: {orig_display}\n   URL: {dupe_url}")
-        QApplication.clipboard().setText("\n\n".join(lines))
-        QMessageBox.information(self, "Copied", "Duplicates list copied to clipboard!")
-
-
-class PlaylistUpToDateDialog(QDialog):
-    def __init__(self, title: str, count: int, local_files_count: Optional[int] = None, duplicates: Optional[list] = None, unavailable: Optional[list] = None, parent=None):
-        super().__init__(parent)
-        self.duplicates = duplicates or []
-        self.unavailable = unavailable or []
-        self.playlist_title = title
-        self.local_files_count = local_files_count
-        self.setWindowTitle("Sync Complete")
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        extra_btns = (1 if self.duplicates else 0) + (1 if self.unavailable else 0)
-        h = 280 + extra_btns * 45
-        self.setFixedSize(500, h)
-
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-
-        card = QFrame(self)
-        card.setObjectName("UpToDateCard")
-        card.setStyleSheet("""
-            QFrame#UpToDateCard {
-                background-color: #0f172a;
-                border: 1px solid #10b981;
-                border-radius: 14px;
-            }
-        """)
-
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(25)
-        shadow.setColor(QColor(16, 185, 129, 50))
-        shadow.setOffset(0, 6)
-        card.setGraphicsEffect(shadow)
-
-        layout = QVBoxLayout(card)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setSpacing(10)
-        layout.setContentsMargins(20, 18, 20, 18)
-
-        icon_lbl = QLabel("✓")
-        icon_lbl.setStyleSheet("font-size: 42px; color: #10b981; font-weight: bold; background: transparent;")
-        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        h_lbl = QLabel("Up to Date!")
-        h_lbl.setStyleSheet("font-size: 18px; font-weight: bold; color: #10b981; background: transparent;")
-        h_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        dupes_cnt = len(self.duplicates) if self.duplicates else 0
-        unavail_cnt = len(self.unavailable) if self.unavailable else 0
-
-        details_parts = []
-        if unavail_cnt > 0:
-            details_parts.append(f"{unavail_cnt} removed on YouTube")
-        if dupes_cnt > 0:
-            details_parts.append(f"{dupes_cnt} internal duplicate{'s' if dupes_cnt > 1 else ''}")
-
-        details_str = f"<br><span style='font-size: 11px; color: #94a3b8;'>({', '.join(details_parts)})</span>" if details_parts else ""
-
-        if self.local_files_count is not None and self.local_files_count < count:
-            desc_text = f"<b>{self.local_files_count}</b> of <b>{count}</b> tracks in playlist<br><span style='color: #e2e8f0; font-size: 14px;'>{title}</span><br>are downloaded.{details_str}"
-        else:
-            desc_text = f"All <b>{count}</b> tracks in playlist<br><span style='color: #e2e8f0; font-size: 14px;'>{title}</span><br>are already verified and downloaded.{details_str}"
-
-        desc_lbl = QLabel(desc_text)
-        desc_lbl.setStyleSheet("font-size: 13px; color: #94a3b8; line-height: 1.4; background: transparent;")
-        desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        desc_lbl.setWordWrap(True)
-
-        layout.addWidget(icon_lbl)
-        layout.addWidget(h_lbl)
-        layout.addWidget(desc_lbl)
-
-        if self.duplicates:
-            btn_dupes = QPushButton(f"📋 {len(self.duplicates)} Playlist Duplicate(s) — View List", card)
-            btn_dupes.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn_dupes.setStyleSheet("""
-                QPushButton {
-                    background-color: #1e293b;
-                    color: #38bdf8;
-                    border: 1px solid #0284c7;
-                    border-radius: 6px;
-                    font-weight: bold;
-                    font-size: 12px;
-                    padding: 6px 14px;
-                }
-                QPushButton:hover {
-                    background-color: #0284c7;
-                    color: #ffffff;
-                }
-            """)
-            btn_dupes.clicked.connect(self._show_duplicates)
-            layout.addWidget(btn_dupes, 0, Qt.AlignmentFlag.AlignCenter)
-
-        if self.unavailable:
-            btn_unavail = QPushButton(f"⚠️ {len(self.unavailable)} Unavailable Track(s) — View List", card)
-            btn_unavail.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn_unavail.setStyleSheet("""
-                QPushButton {
-                    background-color: #1e293b;
-                    color: #fbbf24;
-                    border: 1px solid #d97706;
-                    border-radius: 6px;
-                    font-weight: bold;
-                    font-size: 12px;
-                    padding: 6px 14px;
-                }
-                QPushButton:hover {
-                    background-color: #d97706;
-                    color: #ffffff;
-                }
-            """)
-            btn_unavail.clicked.connect(self._show_unavailable)
-            layout.addWidget(btn_unavail, 0, Qt.AlignmentFlag.AlignCenter)
-
-        btn_ok = QPushButton("Awesome", card)
-        btn_ok.setFixedSize(140, 36)
-        btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_ok.setDefault(True)
-        btn_ok.setAutoDefault(True)
-        btn_ok.setStyleSheet("""
-            QPushButton {
-                background-color: #10b981;
-                color: #ffffff;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 13px;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: #059669;
-            }
-            QPushButton:pressed {
-                background-color: #047857;
-            }
-        """)
-        btn_ok.clicked.connect(self.accept)
-
-        layout.addSpacing(4)
-        layout.addWidget(btn_ok, 0, Qt.AlignmentFlag.AlignCenter)
-        
-        main_layout.addWidget(card)
-
-    def _show_duplicates(self):
-        OnlineDuplicatesDialog(self.duplicates, playlist_title=self.playlist_title, parent=self).exec()
-
-    def _show_unavailable(self):
-        UnavailableTracksDialog(self.unavailable, parent=self).exec()
-
-
-class UnavailableTracksDialog(QDialog):
-    def __init__(self, items: list[tuple[dict, str]], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Unavailable Tracks on YouTube")
-        self.setMinimumSize(660, 520)
-        self.setStyleSheet("""
-            QDialog { background-color: #0b1120; color: #f8fafc; }
-            QTextEdit { background-color: #0f172a; border: 1px solid #1e293b; border-radius: 8px; color: #cbd5e1; font-family: monospace; font-size: 12px; padding: 10px; }
-            QPushButton { background-color: #3b82f6; color: white; border-radius: 6px; padding: 8px 18px; font-weight: bold; font-size: 12px; }
-            QPushButton:hover { background-color: #2563eb; }
-        """)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-
-        h_lbl = QLabel(f"⚠️ {len(items)} track(s) removed or unavailable on YouTube")
-        h_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #f59e0b;")
-        layout.addWidget(h_lbl)
-
-        desc_lbl = QLabel(
-            "These tracks cannot be downloaded because they were removed by copyright, set to private, or deleted from YouTube by the uploader.\n\n"
-            "You can copy this list to find and remove them from your online playlist:"
-        )
-        desc_lbl.setWordWrap(True)
-        desc_lbl.setStyleSheet("font-size: 12px; color: #94a3b8; line-height: 1.4;")
-        layout.addWidget(desc_lbl)
-
-        self.text_area = QTextEdit()
-        self.text_area.setReadOnly(True)
-        lines = []
-        for i, (item_data, reason) in enumerate(items, 1):
-            t = item_data.get('title', 'Unknown Title')
-            a = item_data.get('uploader') or item_data.get('artist') or item_data.get('channel') or 'Unknown Artist'
-            u = item_data.get('url', '')
-            clean_reason = reason.strip()
-            if "copyright" in clean_reason.lower():
-                clean_reason = "Removed by copyright"
-            elif "not available" in clean_reason.lower() or "video unavailable" in clean_reason.lower():
-                clean_reason = "Deleted / Video unavailable"
-            lines.append(f"{i}. {a} - {t}\n   URL: {u}\n   Status: {clean_reason}\n")
-        self.text_area.setPlainText("\n".join(lines))
-        layout.addWidget(self.text_area, 1)
-
-        # Step-by-step guide banner
-        guide_box = QFrame()
-        guide_box.setStyleSheet("""
-            QFrame {
-                background-color: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 8px;
-            }
-        """)
-        guide_layout = QVBoxLayout(guide_box)
-        guide_layout.setContentsMargins(12, 10, 12, 10)
-        guide_layout.setSpacing(6)
-
-        guide_title = QLabel("💡 <b>How to remove unavailable videos from your YouTube playlist:</b>")
-        guide_title.setStyleSheet("color: #38bdf8; font-size: 12px; font-weight: bold; background: transparent; border: none;")
-        
-        guide_body = QLabel(
-            "1. Open your playlist on YouTube or YouTube Music.<br>"
-            "2. Click the <b>three dots menu (⋮)</b> under the playlist title/cover and select <b>'Show unavailable videos'</b>.<br>"
-            "3. The hidden/deleted items will appear grayed out in your playlist.<br>"
-            "4. Click the <b>three dots (⋮)</b> next to each unavailable video and choose <b>'Remove from playlist'</b>."
-        )
-        guide_body.setWordWrap(True)
-        guide_body.setStyleSheet("color: #cbd5e1; font-size: 11px; line-height: 1.45; background: transparent; border: none;")
-
-        guide_layout.addWidget(guide_title)
-        guide_layout.addWidget(guide_body)
-        layout.addWidget(guide_box)
-
-        btn_box = QHBoxLayout()
-        btn_copy = QPushButton("📋 Copy List to Clipboard")
-        btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_copy.clicked.connect(self.copy_list)
-
-        btn_close = QPushButton("Close")
-        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_close.setStyleSheet("background-color: #334155; color: white;")
-        btn_close.clicked.connect(self.accept)
-
-        btn_box.addWidget(btn_copy)
-        btn_box.addStretch()
-        btn_box.addWidget(btn_close)
-        layout.addLayout(btn_box)
-
-    def copy_list(self):
-        QApplication.clipboard().setText(self.text_area.toPlainText())
-        QMessageBox.information(self, "Copied", "Unavailable tracks list copied to clipboard!")
-
-
-class SafeModeDialog(QDialog):
-    def __init__(self, count: int, concurrency: int, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Large Queue Optimization")
-        self.setFixedWidth(480)
-        self.setStyleSheet("""
-            QDialog { background-color: #0b1120; color: #f8fafc; }
-            QPushButton { border-radius: 6px; padding: 9px 16px; font-weight: bold; font-size: 12px; }
-            QCheckBox { color: #94a3b8; font-size: 11px; }
-        """)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 22, 22, 22)
-        layout.setSpacing(14)
-
-        icon_lbl = QLabel("🛡️")
-        icon_lbl.setStyleSheet("font-size: 32px;")
-        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(icon_lbl)
-
-        title_lbl = QLabel(f"Large Download Queue ({count} tracks)")
-        title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #38bdf8;")
-        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_lbl)
-
-        desc_lbl = QLabel(
-            f"You have <b>{count}</b> tracks in queue with <b>{concurrency} concurrent threads</b>.<br><br>"
-            "Downloading huge playlists at maximum speed may trigger temporary <b>YouTube rate-limiting</b>.<br><br>"
-            "<b>Safe Mode</b> uses <b>3 threads</b> with smart pacing to ensure 100% reliable downloads without bans or interruptions."
-        )
-        desc_lbl.setWordWrap(True)
-        desc_lbl.setStyleSheet("font-size: 12px; color: #cbd5e1; line-height: 1.45;")
-        layout.addWidget(desc_lbl)
-
-        self.chk_remember = QCheckBox("Remember choice for this session")
-        layout.addWidget(self.chk_remember)
-
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(10)
-
-        self.btn_full = QPushButton(f"🚀 Full Speed ({concurrency} Threads)")
-        self.btn_full.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_full.setStyleSheet("""
-            QPushButton {
-                background-color: #334155;
-                color: #f1f5f9;
-                border: 1px solid #475569;
-            }
-            QPushButton:hover { background-color: #475569; }
-        """)
-        self.btn_full.clicked.connect(self._choose_full)
-
-        self.btn_safe = QPushButton("🛡️ Enable Safe Mode (Recommended)")
-        self.btn_safe.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_safe.setStyleSheet("""
-            QPushButton {
-                background-color: #10b981;
-                color: #ffffff;
-                border: none;
-            }
-            QPushButton:hover { background-color: #059669; }
-        """)
-        self.btn_safe.clicked.connect(self._choose_safe)
-
-        btn_layout.addWidget(self.btn_full)
-        btn_layout.addWidget(self.btn_safe)
-        layout.addLayout(btn_layout)
-
-        self.enable_safe_mode = True
-
-    def _choose_safe(self):
-        self.enable_safe_mode = True
-        self.accept()
-
-    def _choose_full(self):
-        self.enable_safe_mode = False
-        self.accept()
-
-
-class PlaylistFormatMismatchDialog(QDialog):
-    def __init__(self, parent=None, pl_title: str = "Playlist", pl_format: str = "unix", settings_format: str = "windows"):
-        super().__init__(parent)
-        self.setWindowTitle("Format Compatibility Mismatch")
-        self.setFixedWidth(560)
-        self.setStyleSheet("""
-            QDialog { background-color: #0b1120; color: #f8fafc; }
-            QPushButton { border-radius: 6px; padding: 10px 16px; font-weight: bold; font-size: 12px; }
-        """)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-
-        icon_lbl = QLabel("⚠️")
-        icon_lbl.setStyleSheet("font-size: 36px;")
-        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(icon_lbl)
-
-        title_lbl = QLabel("File Format Compatibility Mismatch")
-        title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #f59e0b;")
-        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_lbl)
-
-        pl_fmt_label = "UNIX" if pl_format == "unix" else ("Windows" if pl_format == "windows" else "Unix/Win")
-        set_fmt_label = "Windows" if settings_format == "windows" else "UNIX"
-
-        desc_lbl = QLabel(
-            f"Your application settings currently use <b>{set_fmt_label}</b> format compatibility, "
-            f"while the playlist <b>\"{pl_title}\"</b> was previously downloaded using <b>{pl_fmt_label}</b> format.<br><br>"
-            "How would you like to proceed with this synchronization?"
-        )
-        desc_lbl.setWordWrap(True)
-        desc_lbl.setStyleSheet("font-size: 12px; color: #cbd5e1; line-height: 1.5;")
-        layout.addWidget(desc_lbl)
-
-        self.choice = None
-
-        # Option 1: Keep playlist format
-        opt1_box = QVBoxLayout()
-        opt1_box.setSpacing(4)
-        btn_keep = QPushButton(f"📁 Continue in Playlist Format ({pl_fmt_label})")
-        btn_keep.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_keep.setStyleSheet("""
-            QPushButton {
-                background-color: #2563eb;
-                color: #ffffff;
-                border: none;
-                text-align: left;
-                padding: 10px 16px;
-                font-size: 12px;
-                font-weight: bold;
-                border-radius: 6px;
-            }
-            QPushButton:hover { background-color: #1d4ed8; }
-        """)
-        btn_keep.clicked.connect(self._choose_keep)
-        opt1_box.addWidget(btn_keep)
-
-        hint_keep = QLabel(f"• Downloads missing tracks using the original {pl_fmt_label} format. The badge remains {pl_fmt_label}.")
-        hint_keep.setWordWrap(True)
-        hint_keep.setStyleSheet("font-size: 11px; color: #94a3b8; padding-left: 14px;")
-        opt1_box.addWidget(hint_keep)
-        layout.addLayout(opt1_box)
-
-        # Option 2: Switch to settings format (mixed)
-        opt2_box = QVBoxLayout()
-        opt2_box.setSpacing(4)
-        btn_settings = QPushButton(f"🔀 Download New Tracks in {set_fmt_label} (Mix Formats)")
-        btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_settings.setStyleSheet("""
-            QPushButton {
-                background-color: #d97706;
-                color: #ffffff;
-                border: none;
-                text-align: left;
-                padding: 10px 16px;
-                font-size: 12px;
-                font-weight: bold;
-                border-radius: 6px;
-            }
-            QPushButton:hover { background-color: #b45309; }
-        """)
-        btn_settings.clicked.connect(self._choose_settings)
-        opt2_box.addWidget(btn_settings)
-
-        hint_settings = QLabel(f"• Only new tracks will be saved in {set_fmt_label} format. Existing files are kept as-is, and the badge becomes Unix/Win.")
-        hint_settings.setWordWrap(True)
-        hint_settings.setStyleSheet("font-size: 11px; color: #94a3b8; padding-left: 14px;")
-        opt2_box.addWidget(hint_settings)
-        layout.addLayout(opt2_box)
-
-        # Option 3: Re-download from scratch in settings format
-        opt3_box = QVBoxLayout()
-        opt3_box.setSpacing(4)
-        btn_redownload = QPushButton(f"🔄 Re-download from Scratch in {set_fmt_label}")
-        btn_redownload.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_redownload.setStyleSheet("""
-            QPushButton {
-                background-color: #7c3aed;
-                color: #ffffff;
-                border: none;
-                text-align: left;
-                padding: 10px 16px;
-                font-size: 12px;
-                font-weight: bold;
-                border-radius: 6px;
-            }
-            QPushButton:hover { background-color: #6d28d9; }
-        """)
-        btn_redownload.clicked.connect(self._choose_redownload)
-        opt3_box.addWidget(btn_redownload)
-
-        hint_redownload = QLabel(f"• Removes existing tracks in this playlist folder and re-downloads all tracks cleanly from scratch in {set_fmt_label} format. The badge updates to {set_fmt_label}.")
-        hint_redownload.setWordWrap(True)
-        hint_redownload.setStyleSheet("font-size: 11px; color: #94a3b8; padding-left: 14px;")
-        opt3_box.addWidget(hint_redownload)
-        layout.addLayout(opt3_box)
-
-        # Cancel
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_cancel.setStyleSheet("""
-            QPushButton {
-                background-color: #334155;
-                color: #cbd5e1;
-                border: 1px solid #475569;
-                font-size: 12px;
-                font-weight: 500;
-                border-radius: 6px;
-                padding: 8px 16px;
-            }
-            QPushButton:hover { background-color: #475569; color: #ffffff; }
-        """)
-        btn_cancel.clicked.connect(self.reject)
-        layout.addWidget(btn_cancel)
-
-    def _choose_keep(self):
-        self.choice = 'keep'
-        self.accept()
-
-    def _choose_settings(self):
-        self.choice = 'settings'
-        self.accept()
-
-    def _choose_redownload(self):
-        self.choice = 'redownload'
-        self.accept()
 
 
 class DraggablePlaylistCard(QWidget):
@@ -1444,7 +294,10 @@ class DraggablePlaylistCard(QWidget):
         if event.mimeData().hasText() and event.mimeData().text().isdigit():
             event.acceptProposedAction()
             # Apply border strictly to the outer PlaylistCard container only
-            self.setStyleSheet("QWidget#PlaylistCard { border: 2px solid #38bdf8 !important; background-color: #273549; }")
+            self.setStyleSheet(theme_stylesheet(
+                "QWidget#PlaylistCard { border: 2px solid #91e5a3; background-color: #0b120d; }",
+                self.property("_ui_theme"),
+            ))
 
     def dragLeaveEvent(self, event):
         self.setStyleSheet("")
@@ -1469,10 +322,15 @@ class CustomTabBar(QTabBar):
         self.pl_has_new = False
         self.pl_has_removed = False
         self.spinner_angle = 0
+        self.theme_colors = get_theme_colors()
 
         self._spinner_timer = QTimer(self)
         self._spinner_timer.setInterval(30)
         self._spinner_timer.timeout.connect(self._on_spinner_tick)
+
+    def set_theme(self, theme_name: str):
+        self.theme_colors = get_theme_colors(theme_name)
+        self.update()
 
     def set_pl_syncing(self, syncing: bool):
         self.pl_syncing = syncing
@@ -1496,6 +354,10 @@ class CustomTabBar(QTabBar):
         self.spinner_angle = (self.spinner_angle + 16) % 360
         self.update()
 
+    def wheelEvent(self, event):
+        # Keep wheel scrolling from changing the current section.
+        event.accept()
+
     def paintEvent(self, event):
         super().paintEvent(event)
         # Custom centered spinner & badge overlays for PLAYLISTS tab (tab index 1)
@@ -1509,10 +371,14 @@ class CustomTabBar(QTabBar):
                 overlay_rect = rect.adjusted(4, 4, -4, -4)
                 p.setPen(Qt.PenStyle.NoPen)
                 if self.currentIndex() == 1:
-                    p.setBrush(QColor(30, 41, 59, 235))
+                    overlay_color = QColor(self.theme_colors["card_bg"])
+                    overlay_color.setAlpha(235)
+                    p.setBrush(overlay_color)
                 else:
-                    p.setBrush(QColor(11, 14, 20, 210))
-                p.drawRoundedRect(QRectF(overlay_rect), 6, 6)
+                    overlay_color = QColor(self.theme_colors["root_bg"])
+                    overlay_color.setAlpha(210)
+                    p.setBrush(overlay_color)
+                p.drawRect(QRectF(overlay_rect))
 
                 # Centered spinning loader circle directly in the middle of the tab
                 cx = rect.center().x()
@@ -1520,7 +386,7 @@ class CustomTabBar(QTabBar):
                 p.save()
                 p.translate(cx, cy)
                 p.rotate(self.spinner_angle)
-                pen = QPen(QColor("#38bdf8"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+                pen = QPen(QColor(self.theme_colors["accent"]), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
                 p.setPen(pen)
                 p.drawArc(QRectF(-7, -7, 14, 14), 0, 270 * 16)
                 p.restore()
@@ -1530,31 +396,31 @@ class CustomTabBar(QTabBar):
                 if self.pl_has_new and self.pl_has_removed:
                     bw = 25
                     bx = rect.right() - bw - 4
-                    p.setPen(QPen(QColor("#0284c7"), 1))
-                    p.setBrush(QColor("#0f172a"))
-                    p.drawRoundedRect(QRectF(bx, by, bw, 14), 3, 3)
-                    p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-                    p.setPen(QColor("#10b981"))
+                    p.setPen(QPen(QColor(self.theme_colors["accent_fill"]), 1))
+                    p.setBrush(QColor(self.theme_colors["root_bg"]))
+                    p.drawRect(QRectF(bx, by, bw, 14))
+                    p.setFont(QFont("Cascadia Mono", 8, QFont.Weight.Bold))
+                    p.setPen(QColor(self.theme_colors["accent_fill"]))
                     p.drawText(QRectF(bx + 1, by, 11, 14), Qt.AlignmentFlag.AlignCenter, "+")
-                    p.setPen(QColor("#f87171"))
+                    p.setPen(QColor("#d98f86"))
                     p.drawText(QRectF(bx + 12, by, 11, 14), Qt.AlignmentFlag.AlignCenter, "-")
                 elif self.pl_has_new:
                     bw = 14
                     bx = rect.right() - bw - 5
-                    p.setPen(QPen(QColor("#10b981"), 1))
-                    p.setBrush(QColor("#064e3b"))
-                    p.drawRoundedRect(QRectF(bx, by, bw, 14), 3, 3)
-                    p.setPen(QColor("#10b981"))
-                    p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+                    p.setPen(QPen(QColor(self.theme_colors["accent_fill"]), 1))
+                    p.setBrush(QColor(self.theme_colors["new_badge_bg"]))
+                    p.drawRect(QRectF(bx, by, bw, 14))
+                    p.setPen(QColor(self.theme_colors["accent_fill"]))
+                    p.setFont(QFont("Cascadia Mono", 8, QFont.Weight.Bold))
                     p.drawText(QRectF(bx, by, bw, 14), Qt.AlignmentFlag.AlignCenter, "+")
                 elif self.pl_has_removed:
                     bw = 14
                     bx = rect.right() - bw - 5
-                    p.setPen(QPen(QColor("#f87171"), 1))
-                    p.setBrush(QColor("#450a0a"))
-                    p.drawRoundedRect(QRectF(bx, by, bw, 14), 3, 3)
-                    p.setPen(QColor("#f87171"))
-                    p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+                    p.setPen(QPen(QColor("#d98f86"), 1))
+                    p.setBrush(QColor("#281715"))
+                    p.drawRect(QRectF(bx, by, bw, 14))
+                    p.setPen(QColor("#d98f86"))
+                    p.setFont(QFont("Cascadia Mono", 8, QFont.Weight.Bold))
                     p.drawText(QRectF(bx, by, bw, 14), Qt.AlignmentFlag.AlignCenter, "-")
             p.end()
 
@@ -1566,22 +432,16 @@ class SideNotificationToast(QFrame):
         self.setFixedWidth(330)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
-        self._accent_color = "#38bdf8" if level != "error" else "#ef4444"
+        self._accent_color = "#91e5a3" if level != "error" else "#d98f86"
 
         # Match app's dark slate card theme perfectly
         self.setStyleSheet("""
             QFrame#SideNotificationToast {
-                background-color: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 8px;
+                background-color: #0b120d;
+                border: 1px solid #354a38;
+                border-radius: 0px;
             }
         """)
-
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(20)
-        shadow.setColor(QColor(0, 0, 0, 180))
-        shadow.setOffset(0, 4)
-        self.setGraphicsEffect(shadow)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
@@ -1591,29 +451,25 @@ class SideNotificationToast(QFrame):
         h_row = QHBoxLayout()
         h_row.setSpacing(8)
 
-        icon_char = "🍪" if "cookie" in title.lower() else ("🚀" if "update" in title.lower() or "version" in title.lower() else ("⚠️" if level == "warning" else ("❌" if level == "error" else "ℹ️")))
-        icon_lbl = QLabel(icon_char)
-        icon_lbl.setStyleSheet("font-size: 15px; background: transparent;")
-        h_row.addWidget(icon_lbl)
-
         title_lbl = QLabel(title)
-        title_lbl.setStyleSheet("font-size: 13px; font-weight: bold; color: #f8fafc; background: transparent;")
+        title_lbl.setStyleSheet("font-size: 13px; font-weight: bold; color: #cbd5cc; background: transparent;")
         h_row.addWidget(title_lbl, 1)
 
-        btn_close = QPushButton("✕")
+        btn_close = QPushButton("x")
+        btn_close.setToolTip("Dismiss notification")
         btn_close.setFixedSize(18, 18)
         btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_close.setStyleSheet("""
             QPushButton {
                 background: transparent;
-                color: #64748b;
+                color: #849184;
                 border: none;
                 font-size: 11px;
                 font-weight: bold;
                 padding: 0px;
             }
             QPushButton:hover {
-                color: #ffffff;
+                color: #cbd5cc;
             }
         """)
         btn_close.clicked.connect(self.close_animated)
@@ -1623,7 +479,7 @@ class SideNotificationToast(QFrame):
         # Message
         msg_lbl = QLabel(message)
         msg_lbl.setWordWrap(True)
-        msg_lbl.setStyleSheet("font-size: 11px; color: #94a3b8; background: transparent; line-height: 1.35;")
+        msg_lbl.setStyleSheet("font-size: 11px; color: #aab7aa; background: transparent; line-height: 1.35;")
         layout.addWidget(msg_lbl)
 
         # Action Buttons Row
@@ -1636,17 +492,17 @@ class SideNotificationToast(QFrame):
             btn_action.setCursor(Qt.CursorShape.PointingHandCursor)
             btn_action.setStyleSheet("""
                 QPushButton {
-                    background-color: #0284c7;
-                    color: #ffffff;
-                    border: 1px solid #38bdf8;
-                    border-radius: 6px;
+                    background-color: #14271a;
+                    color: #a6efb4;
+                    border: 1px solid #91e5a3;
+                    border-radius: 0px;
                     font-size: 11px;
                     font-weight: bold;
                     padding: 2px 12px;
                 }
                 QPushButton:hover {
-                    background-color: #0369a1;
-                    border-color: #7dd3fc;
+                    background-color: #1a3422;
+                    border-color: #b5f2bf;
                 }
             """)
             def _on_action():
@@ -1749,8 +605,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Logovo Downloads")
-        self.setMinimumSize(880, 720)
-        self.setStyleSheet(get_stylesheet())
+        self.setMinimumSize(880, 640)
+        self.settings = SettingsManager()
+        self.ui_theme = normalize_theme(self.settings.get("ui_theme", "green"))
+        self.theme_colors = get_theme_colors(self.ui_theme)
+        self.setStyleSheet(get_stylesheet(self.ui_theme))
 
         icon_path = get_resource_path("media/icon.ico")
         if icon_path.exists():
@@ -1758,7 +617,6 @@ class MainWindow(QMainWindow):
 
         self.setup_tray()
 
-        self.settings = SettingsManager()
         self.history = HistoryManager()
         self.playlists_mgr = PlaylistsManager()
 
@@ -1775,7 +633,13 @@ class MainWindow(QMainWindow):
         self.unavailable_queue = [] # List of (item_data, error_msg)
         self.active_workers = {}  # widget -> WorkerThread
         self.widget_start_times = {} # widget -> timestamp
+        self._diagnostics_worker = None
         self.is_downloading = False
+        self._stop_requested = False
+        self._pause_requested = False
+        self._closing_after_pause = False
+        self._close_confirmed = False
+        self._ending_workers = []
         self._pl_dirty = True  # Flag: playlists tab needs refresh
         self._current_pl_sort = self.settings.get('playlist_sort_mode', 'custom')
 
@@ -1792,6 +656,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.custom_tab_bar = CustomTabBar(self.tabs)
+        self.custom_tab_bar.set_theme(self.ui_theme)
         self.tabs.setTabBar(self.custom_tab_bar)
         self.layout.addWidget(self.tabs)
 
@@ -1800,6 +665,11 @@ class MainWindow(QMainWindow):
         self.setup_history_tab()
         self.setup_settings_tab()
         self.setup_about_tab()
+
+        self._apply_ui_theme(self.ui_theme)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -1820,6 +690,7 @@ class MainWindow(QMainWindow):
 
         # Loading overlay for smooth non-blocking operations
         self.loading_overlay = LoadingOverlay(self)
+        self.loading_overlay.spinner.set_theme(self.ui_theme)
         self.loading_overlay.hide()
 
         # Check cookies configuration on startup
@@ -1828,6 +699,167 @@ class MainWindow(QMainWindow):
         # Check Logovo Downloads app updates on startup
         if self.settings.get('check_app_updates_on_startup', True):
             QTimer.singleShot(1800, self.check_app_update_background)
+        QTimer.singleShot(0, self._offer_queue_restore)
+
+    def _save_queue(self):
+        if getattr(self, "_restoring_queue", False):
+            return
+        items = []
+        for widget in self.download_queue:
+            if widget.status_state not in ("Success", "Error", "Unavailable"):
+                data = dict(widget.item_data)
+                data["media_type"] = widget.format_combo.currentText()
+                if not data.get("download_options"):
+                    media_type = data["media_type"]
+                    is_audio = media_type.startswith("Audio")
+                    specific_subs = data.get("specific_subs")
+                    if not specific_subs or specific_subs in ("Default", "Global", "Default (Settings)"):
+                        subtitles = {
+                            "download": self.settings.get("download_audio_lyrics" if is_audio else "download_subtitles", False),
+                            "langs": self.settings.get("lyrics_langs" if is_audio else "subtitles_langs", "orig"),
+                        }
+                    else:
+                        subtitles = {"download": specific_subs != "None", "langs": specific_subs}
+                    source_url = data.get("original_url") or data.get("url")
+                    data["download_options"] = {
+                        "source_url": source_url,
+                        "output_dir": str(data.get("playlist_output_dir") or self.settings.get("download_path")),
+                        "quality": self.settings.get_quality(detect_platform_name(source_url)),
+                        "subtitles": subtitles,
+                        "speed_limit": self.settings.get("speed_limit", "Unlimited"),
+                        "naming_pattern": self.settings.get("naming_pattern", "{artist} - {title}") if is_audio else self.settings.get("video_naming_pattern", "{title}"),
+                        "format_compat": data.get("format_compat"),
+                        "playlist_index": data.get("playlist_index"),
+                        "playlist_count": data.get("playlist_count"),
+                        "thumbnail": data.get("thumbnail"),
+                        "settings": snapshot_download_settings(self.settings),
+                    }
+                items.append(data)
+        if getattr(self, "_restore_deferred", False):
+            # A declined restore must survive new work in this session, even after
+            # the new queue finishes. Replaced entries should not reappear.
+            replaced = getattr(self, "_deferred_replaced_keys", set())
+            replaced.update((item.get("url"), item.get("media_type")) for item in items)
+            self._deferred_replaced_keys = replaced
+            items = [
+                item for item in load_pending_queue()
+                if (item.get("url"), item.get("media_type")) not in replaced
+            ] + items
+        try:
+            save_pending_queue(items)
+        except OSError as exc:
+            self.status_label.setText(f"Could not save download queue: {exc}")
+
+    def _offer_queue_restore(self):
+        saved = load_pending_queue()
+        if not saved:
+            return
+        choice = QMessageBox.question(
+            self, "Resume downloads",
+            f"Restore {len(saved)} unfinished download(s) from the previous session?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            # Leave the snapshot and fragments available on the next launch.
+            self._restore_deferred = True
+            return
+        self._restoring_queue = True
+        try:
+            for item in saved:
+                self._add_single_item_to_queue(item, batch=True, preserve_subtitle_defaults=True)
+        finally:
+            self._restoring_queue = False
+        self._save_queue()
+        self.update_queue_ui()
+        self.status_label.setText(f"Restored {len(saved)} unfinished download(s).")
+        self.start_queue()
+
+    def closeEvent(self, event):
+        if getattr(self, "upgrade_worker", None) is not None and self.upgrade_worker.isRunning():
+            event.ignore()
+            QMessageBox.information(self, "Update in progress", "Wait for the yt-dlp update to finish before exiting.")
+            return
+        if self.active_workers and not self._close_confirmed:
+            choice = QMessageBox.question(
+                self, "Exit during download?",
+                "A download is still in progress. Exit and save unfinished downloads for next launch?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self._close_confirmed = True
+        self._save_queue()
+        if self.active_workers:
+            event.ignore()
+            self._closing_after_pause = True
+            self.pause_download()
+            self.status_label.setText("Waiting for active downloads to pause before closing...")
+            return
+        if any(thread.isRunning() for thread in self._ending_workers):
+            event.ignore()
+            self._closing_after_pause = True
+            self._finish_close_if_ready()
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        super().closeEvent(event)
+
+    def _apply_ui_theme_to_widget(self, widget: QWidget):
+        widget.setProperty("_ui_theme", self.ui_theme)
+        if isinstance(widget, QComboBox):
+            configure_combo_popup(widget, self.ui_theme)
+
+        stylesheet = widget.styleSheet()
+        themed_stylesheet = theme_stylesheet(stylesheet, self.ui_theme)
+        if themed_stylesheet != stylesheet:
+            widget.setStyleSheet(themed_stylesheet)
+
+    def _apply_ui_theme(self, theme_name: str):
+        self.ui_theme = normalize_theme(theme_name)
+        self.theme_colors = get_theme_colors(self.ui_theme)
+        self.setStyleSheet(get_stylesheet(self.ui_theme))
+
+        self._apply_ui_theme_to_widget(self)
+        for widget in self.findChildren(QWidget):
+            self._apply_ui_theme_to_widget(widget)
+
+        if hasattr(self, "custom_tab_bar"):
+            self.custom_tab_bar.set_theme(self.ui_theme)
+        if hasattr(self, "loading_overlay"):
+            self.loading_overlay.spinner.set_theme(self.ui_theme)
+        for queue_item in self.findChildren(QueueItemWidget):
+            queue_item.set_theme(self.ui_theme)
+        if hasattr(self, "history_table"):
+            self.refresh_history()
+
+    def _on_ui_theme_changed(self, theme_name: str):
+        theme_name = normalize_theme(theme_name)
+        if theme_name == self.ui_theme:
+            return
+        self._apply_ui_theme(theme_name)
+        self.settings.set("ui_theme", theme_name)
+
+    def eventFilter(self, watched, event):
+        if (
+            hasattr(self, "settings_sections")
+            and watched is self.settings_sections.tabBar()
+            and event.type() == QEvent.Type.Wheel
+        ):
+            return True
+        if (
+            isinstance(watched, QFrame)
+            and watched.objectName() == "TerminalComboPopup"
+            and event.type() in (QEvent.Type.Show, QEvent.Type.Resize)
+        ):
+            square_combo_popup(watched)
+            QTimer.singleShot(0, lambda popup=watched: square_combo_popup(popup))
+        if event.type() == QEvent.Type.Show and isinstance(watched, QWidget):
+            self._apply_ui_theme_to_widget(watched)
+        return super().eventFilter(watched, event)
 
     def show_side_notification(self, title: str, message: str, level: str = "warning", action_text: str = None, action_callback = None):
         now = time.time()
@@ -1881,7 +913,7 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(3)  # SETTINGS tab
         if hasattr(self, 'cookies_file_input'):
             self.cookies_file_input.setFocus()
-            self.cookies_file_input.setStyleSheet("border: 2px solid #f59e0b; background-color: #1e293b;")
+            self.cookies_file_input.setStyleSheet("border: 2px solid #d9b66d; background-color: #0b120d;")
             QTimer.singleShot(2500, lambda: self.cookies_file_input.setStyleSheet("") if hasattr(self, 'cookies_file_input') else None)
 
     def _on_startup_playlists_check_finished(self):
@@ -1943,7 +975,7 @@ class MainWindow(QMainWindow):
         show_action.triggered.connect(self.showNormal)
 
         quit_action = QAction("Quit", self)
-        quit_action.triggered.connect(QApplication.instance().quit)
+        quit_action.triggered.connect(self.close)
 
         tray_menu.addAction(show_action)
         tray_menu.addSeparator()
@@ -1961,7 +993,10 @@ class MainWindow(QMainWindow):
 
     def setup_downloads_tab(self):
         self.downloads_tab = QWidget()
+        self.downloads_tab.setObjectName("DownloadsTab")
         layout = QVBoxLayout(self.downloads_tab)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(13)
 
         # Top Toolbar
         toolbar = QHBoxLayout()
@@ -2037,6 +1072,7 @@ class MainWindow(QMainWindow):
         self.update_main_subs_combo_state()
 
         self.btn_add_queue = QPushButton("Add to queue")
+        self.btn_add_queue.setObjectName("PrimaryButton")
         self.btn_add_queue.clicked.connect(self.add_to_queue_action)
         self.btn_add_queue.setMinimumHeight(30)
         queue_layout.addWidget(self.btn_add_queue)
@@ -2045,7 +1081,7 @@ class MainWindow(QMainWindow):
 
         # Status Label below Queue Area
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("color: #94a3b8; font-style: italic;")
+        self.status_label.setStyleSheet("color: #aab7aa;")
         layout.addWidget(self.status_label)
 
         # Global Progress Bar
@@ -2056,13 +1092,13 @@ class MainWindow(QMainWindow):
         self.global_progress.setValue(0)
         self.global_progress.setStyleSheet("""
             QProgressBar {
-                background-color: #1e293b;
+                background-color: #080d09;
                 border: none;
-                border-radius: 3px;
+                border-radius: 0px;
             }
             QProgressBar::chunk {
-                background-color: #38bdf8;
-                border-radius: 3px;
+                background-color: #91e5a3;
+                border-radius: 0px;
             }
         """)
         layout.addWidget(self.global_progress)
@@ -2080,17 +1116,22 @@ class MainWindow(QMainWindow):
         bottom_actions.addStretch()
 
         self.btn_download_all = QPushButton("Download")
+        self.btn_download_all.setObjectName("PrimaryButton")
         self.btn_download_all.setEnabled(False)
         self.btn_download_all.clicked.connect(self.start_queue)
 
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self.stop_download)
+        self.btn_pause = QPushButton("Pause")
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.clicked.connect(self.pause_download)
 
         self.btn_clear_completed = QPushButton("Clear Completed")
         self.btn_clear_completed.clicked.connect(self.clear_completed)
 
         bottom_actions.addWidget(self.btn_clear_completed)
+        bottom_actions.addWidget(self.btn_pause)
         bottom_actions.addWidget(self.btn_stop)
         bottom_actions.addWidget(self.btn_download_all)
 
@@ -2101,39 +1142,43 @@ class MainWindow(QMainWindow):
 
     def setup_playlists_tab(self):
         self.playlists_tab = QWidget()
+        self.playlists_tab.setObjectName("PlaylistsTab")
         layout = QVBoxLayout(self.playlists_tab)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(13)
 
         # Top Bar
         top_bar = QHBoxLayout()
         btn_track_new = QPushButton("+ Track New Playlist")
-        btn_compare = QPushButton("🔍 Compare Playlists")
+        btn_track_new.setObjectName("PrimaryButton")
+        btn_compare = QPushButton("Compare Playlists")
         btn_compare.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_compare.setStyleSheet("""
             QPushButton {
-                background-color: #1e293b;
-                color: #38bdf8;
-                border: 1px solid #0284c7;
-                border-radius: 6px;
+                background-color: #0b120d;
+                color: #91e5a3;
+                border: 1px solid #65c77e;
+                border-radius: 0px;
                 padding: 6px 14px;
                 font-size: 13px;
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #0369a1;
-                color: #ffffff;
+                background-color: #1a3422;
+                color: #cbd5cc;
             }
         """)
 
         lbl_sort = QLabel("Sort:")
-        lbl_sort.setStyleSheet("font-size: 12px; color: #94a3b8; font-weight: bold; margin-left: 10px;")
+        lbl_sort.setStyleSheet("font-size: 12px; color: #aab7aa; font-weight: bold; margin-left: 10px;")
 
         self.combo_playlist_sort = QComboBox()
         self.combo_playlist_sort.setStyleSheet("""
             QComboBox {
-                background-color: #1e293b;
-                color: #f8fafc;
-                border: 1px solid #334155;
-                border-radius: 6px;
+                background-color: #0b120d;
+                color: #cbd5cc;
+                border: 1px solid #354a38;
+                border-radius: 0px;
                 padding: 5px 12px;
                 font-size: 12px;
                 font-weight: 500;
@@ -2142,10 +1187,10 @@ class MainWindow(QMainWindow):
                 border: none;
             }
             QComboBox QAbstractItemView {
-                background-color: #0f172a;
-                color: #f8fafc;
-                selection-background-color: #3b82f6;
-                selection-color: #ffffff;
+                background-color: #080b09;
+                color: #cbd5cc;
+                selection-background-color: #1a3020;
+                selection-color: #cbd5cc;
             }
         """)
         self.combo_playlist_sort.blockSignals(True)
@@ -2170,7 +1215,7 @@ class MainWindow(QMainWindow):
         self.combo_playlist_sort.currentIndexChanged.connect(self._on_playlist_sort_changed)
 
         self.lbl_playlists_count = QLabel("Tracked Playlists: 0")
-        self.lbl_playlists_count.setStyleSheet("font-size: 12px; color: #94a3b8;")
+        self.lbl_playlists_count.setStyleSheet("font-size: 12px; color: #aab7aa;")
 
         btn_track_new.clicked.connect(self.track_new_playlist_dialog)
         btn_compare.clicked.connect(self.open_playlist_comparison_dialog)
@@ -2198,7 +1243,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.playlists_scroll)
 
         self.lbl_pl_stats = QLabel("")
-        self.lbl_pl_stats.setStyleSheet("color: #475569; font-size: 11px; padding: 4px 8px;")
+        self.lbl_pl_stats.setStyleSheet("color: #354a38; font-size: 11px; padding: 4px 8px;")
         self.lbl_pl_stats.setAlignment(Qt.AlignmentFlag.AlignRight)
         layout.addWidget(self.lbl_pl_stats)
 
@@ -2272,7 +1317,7 @@ class MainWindow(QMainWindow):
         if not items:
             empty_lbl = QLabel("No playlists tracked yet.\nClick '+ Track New Playlist' to save and sync playlists in 1 click.")
             empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            empty_lbl.setStyleSheet("color: #64748b; font-size: 14px; margin-top: 60px;")
+            empty_lbl.setStyleSheet("color: #849184; font-size: 14px; margin-top: 60px;")
             self.playlists_container_layout.addWidget(empty_lbl)
             return
 
@@ -2293,31 +1338,31 @@ class MainWindow(QMainWindow):
             btn_up.setEnabled(i > 0)
             btn_up.setStyleSheet("""
                 QPushButton {
-                    background-color: #1e293b;
-                    color: #94a3b8;
-                    border: 1px solid #334155;
-                    border-radius: 4px;
+                    background-color: #0b120d;
+                    color: #aab7aa;
+                    border: 1px solid #354a38;
+                    border-radius: 0px;
                     font-size: 10px;
                     padding: 0px;
                 }
                 QPushButton:hover:enabled {
-                    background-color: #3b82f6;
-                    color: #ffffff;
-                    border-color: #3b82f6;
+                    background-color: #23442c;
+                    color: #cbd5cc;
+                    border-color: #65c77e;
                 }
                 QPushButton:disabled {
-                    color: #475569;
-                    background-color: #0f172a;
-                    border-color: #1e293b;
+                    color: #354a38;
+                    background-color: #080b09;
+                    border-color: #0b120d;
                 }
             """)
             card.btn_up = btn_up
             btn_up.clicked.connect(lambda _, c=card: self._move_playlist_item(c.index, c.index - 1))
 
-            drag_hint = QLabel("☰")
+            drag_hint = QLabel("::")
             drag_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
             drag_hint.setToolTip("Drag & drop with mouse to reorder")
-            drag_hint.setStyleSheet("color: #64748b; font-size: 13px; font-weight: bold;")
+            drag_hint.setStyleSheet("color: #849184; font-size: 13px; font-weight: bold;")
 
             btn_down = QPushButton("▼")
             btn_down.setFixedSize(24, 20)
@@ -2325,22 +1370,22 @@ class MainWindow(QMainWindow):
             btn_down.setEnabled(i < len(items) - 1)
             btn_down.setStyleSheet("""
                 QPushButton {
-                    background-color: #1e293b;
-                    color: #94a3b8;
-                    border: 1px solid #334155;
-                    border-radius: 4px;
+                    background-color: #0b120d;
+                    color: #aab7aa;
+                    border: 1px solid #354a38;
+                    border-radius: 0px;
                     font-size: 10px;
                     padding: 0px;
                 }
                 QPushButton:hover:enabled {
-                    background-color: #3b82f6;
-                    color: #ffffff;
-                    border-color: #3b82f6;
+                    background-color: #23442c;
+                    color: #cbd5cc;
+                    border-color: #65c77e;
                 }
                 QPushButton:disabled {
-                    color: #475569;
-                    background-color: #0f172a;
-                    border-color: #1e293b;
+                    color: #354a38;
+                    background-color: #080b09;
+                    border-color: #0b120d;
                 }
             """)
             card.btn_down = btn_down
@@ -2354,7 +1399,7 @@ class MainWindow(QMainWindow):
             # Thumbnail
             thumb_lbl = QLabel()
             thumb_lbl.setFixedSize(64, 64)
-            thumb_lbl.setStyleSheet("background-color: #0f172a; border-radius: 6px;")
+            thumb_lbl.setStyleSheet("background-color: #080b09; border-radius: 0px;")
             thumb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             folder_str = p.get('folder_path', '')
@@ -2401,7 +1446,7 @@ class MainWindow(QMainWindow):
                     self._pl_loaders = []
                 self._pl_loaders.append(loader)
             else:
-                thumb_lbl.setText("🎵")
+                thumb_lbl.setText(p.get('media_type', 'Audio'))
 
             card_layout.addWidget(thumb_lbl)
 
@@ -2412,7 +1457,7 @@ class MainWindow(QMainWindow):
             title_row.setContentsMargins(0, 0, 0, 0)
             title_row.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             title_lbl = QLabel(p.get('title', 'Untitled Playlist'))
-            title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #f8fafc;")
+            title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #cbd5cc;")
             title_row.addWidget(title_lbl)
 
             # Format Badge (Windows, UNIX, Unix/Win)
@@ -2428,27 +1473,27 @@ class MainWindow(QMainWindow):
             if pl_format in ('unix/win', 'mixed'):
                 badge_lbl.setText("Unix/Win")
                 badge_lbl.setStyleSheet(
-                    "background-color: #d97706; color: #ffffff; font-size: 10px; font-weight: bold; "
-                    "padding: 2px 7px; border-radius: 4px;"
+                    "background-color: #2b2414; color: #d9b66d; font-size: 10px; font-weight: bold; "
+                    "padding: 2px 7px; border-radius: 0px;"
                 )
             elif pl_format == 'unix':
                 badge_lbl.setText("UNIX")
                 badge_lbl.setStyleSheet(
-                    "background-color: #7c3aed; color: #ffffff; font-size: 10px; font-weight: bold; "
-                    "padding: 2px 7px; border-radius: 4px;"
+                    "background-color: #2b2414; color: #d9b66d; font-size: 10px; font-weight: bold; "
+                    "padding: 2px 7px; border-radius: 0px;"
                 )
             else:
                 badge_lbl.setText("Windows")
                 badge_lbl.setStyleSheet(
-                    "background-color: #0284c7; color: #ffffff; font-size: 10px; font-weight: bold; "
-                    "padding: 2px 7px; border-radius: 4px;"
+                    "background-color: #14271a; color: #a6efb4; font-size: 10px; font-weight: bold; "
+                    "padding: 2px 7px; border-radius: 0px;"
                 )
             title_row.addWidget(badge_lbl)
             title_row.addStretch()
             info_layout.addLayout(title_row)
 
-            path_lbl = QLabel(f"📁 {p.get('folder_path', '')}")
-            path_lbl.setStyleSheet("font-size: 11px; color: #94a3b8;")
+            path_lbl = QLabel(p.get('folder_path', ''))
+            path_lbl.setStyleSheet("font-size: 11px; color: #aab7aa;")
 
             media_exts = {".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac", ".mp4", ".mkv", ".webm", ".avi", ".mov"}
             downloaded_count = 0
@@ -2475,17 +1520,17 @@ class MainWindow(QMainWindow):
                     notes.append(f"{duplicates_count} duplicate{'s' if duplicates_count > 1 else ''}")
 
                 if notes:
-                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks <span style='color: #94a3b8;'>(Up to date — {', '.join(notes)})</span>"
+                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks <span style='color: #aab7aa;'>(Up to date — {', '.join(notes)})</span>"
                 else:
-                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks <span style='color: #94a3b8;'>(Up to date)</span>"
-                status_color = "#10b981"
+                    count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks <span style='color: #aab7aa;'>(Up to date)</span>"
+                status_color = "#65c77e"
                 new_cnt = 0
                 if p.get('new_tracks_count', 0) != 0:
                     p['new_tracks_count'] = 0
                     self.playlists_mgr.save()
             else:
                 count_str = f"<b>{downloaded_count}</b> / <b>{pl_track_count}</b> tracks"
-                status_color = "#38bdf8"
+                status_color = "#91e5a3"
                 raw_new = p.get('new_tracks_count', 0)
                 missing_upper_bound = max(0, available_track_count - downloaded_count)
                 new_cnt = min(raw_new, missing_upper_bound) if raw_new > 0 else 0
@@ -2493,16 +1538,16 @@ class MainWindow(QMainWindow):
                     p['new_tracks_count'] = new_cnt
                     self.playlists_mgr.save()
 
-            badge_html = f"  <span style='color: #38bdf8; font-weight: bold; background-color: #0f172a; padding: 2px 6px; border-radius: 4px; border: 1px solid #0284c7;'>+{new_cnt} new</span>" if new_cnt > 0 else ""
+            badge_html = f"  <span style='color: #91e5a3; font-weight: bold; background-color: #080b09; padding: 2px 6px; border-radius: 0px; border: 1px solid #65c77e;'>+{new_cnt} new</span>" if new_cnt > 0 else ""
             raw_removed = p.get('removed_tracks_count', 0)
-            badge_removed_html = f"  <span style='color: #f87171; font-weight: bold; background-color: #450a0a; padding: 2px 6px; border-radius: 4px; border: 1px solid #b91c1c;'>-{raw_removed} removed</span>" if raw_removed > 0 else ""
+            badge_removed_html = f"  <span style='color: #d98f86; font-weight: bold; background-color: #281715; padding: 2px 6px; border-radius: 0px; border: 1px solid #70413d;'>-{raw_removed} removed</span>" if raw_removed > 0 else ""
 
             kept_set = read_kept_orphans(folder_str) if folder_str and os.path.exists(folder_str) else set()
             kept_count = len({Path(f).name for f in kept_set if (Path(folder_str) / f).is_file()}) if folder_str else 0
-            badge_kept_html = f"  <span style='color: #c084fc; font-weight: bold; background-color: #2e1065; padding: 2px 6px; border-radius: 4px; border: 1px solid #7e22ce;'>{kept_count} kept</span>" if kept_count > 0 else ""
+            badge_kept_html = f"  <span style='color: #d9b66d; font-weight: bold; background-color: #2b2414; padding: 2px 6px; border-radius: 0px; border: 1px solid #6e5a29;'>{kept_count} kept</span>" if kept_count > 0 else ""
 
             last_sync_str = p.get('last_synced', 'Never')
-            meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}{badge_removed_html}{badge_kept_html}  <span style='color: #475569;'>•</span>  <span style='color: #94a3b8;'>Synced: {last_sync_str}</span>")
+            meta_lbl = QLabel(f"In Folder: {count_str}{badge_html}{badge_removed_html}{badge_kept_html}  <span style='color: #354a38;'>•</span>  <span style='color: #aab7aa;'>Synced: {last_sync_str}</span>")
             meta_lbl.setTextFormat(Qt.TextFormat.RichText)
             meta_lbl.setStyleSheet(f"font-size: 11px; color: {status_color}; font-weight: 500; background: transparent;")
             meta_lbl.setWordWrap(True)
@@ -2527,17 +1572,17 @@ class MainWindow(QMainWindow):
                 btn_kept.setToolTip("Click to reset kept tracks list and re-evaluate them on next sync")
                 btn_kept.setStyleSheet("""
                     QPushButton {
-                        background-color: #2e1065;
-                        color: #c084fc;
-                        border: 1px solid #7e22ce;
-                        border-radius: 6px;
+                        background-color: #2b2414;
+                        color: #d9b66d;
+                        border: 1px solid #6e5a29;
+                        border-radius: 0px;
                         font-size: 11px;
                         font-weight: bold;
                         padding: 0px;
                     }
                     QPushButton:hover {
-                        background-color: #581c87;
-                        color: #ffffff;
+                        background-color: #433619;
+                        color: #cbd5cc;
                     }
                 """)
                 def _on_reset_kept(folder=folder_str, pl_title=p.get('title'), k_cnt=kept_count):
@@ -2583,23 +1628,23 @@ class MainWindow(QMainWindow):
 
             card.customContextMenuRequested.connect(_show_card_context_menu)
 
-            btn_remove = QPushButton("✕")
+            btn_remove = QPushButton("x")
             btn_remove.setFixedSize(32, 32)
             btn_remove.setToolTip("Remove from tracking")
             btn_remove.setStyleSheet("""
                 QPushButton {
-                    background-color: #1e293b;
-                    color: #ef4444;
-                    border: 1px solid #334155;
-                    border-radius: 6px;
+                    background-color: #0b120d;
+                    color: #d98f86;
+                    border: 1px solid #354a38;
+                    border-radius: 0px;
                     font-size: 15px;
                     font-weight: bold;
                     padding: 0px;
                 }
                 QPushButton:hover {
-                    background-color: #ef4444;
-                    color: #ffffff;
-                    border: 1px solid #ef4444;
+                    background-color: #522723;
+                    color: #cbd5cc;
+                    border: 1px solid #d98f86;
                 }
             """)
             btn_remove.clicked.connect(lambda _, u=p.get('url'): self.remove_tracked_playlist(u))
@@ -2675,7 +1720,7 @@ class MainWindow(QMainWindow):
 
         btn_box = QHBoxLayout()
         btn_box.addStretch()
-        btn_ok = QPushButton("Save & Track")
+        btn_ok = QPushButton("Save Playlist")
         btn_cancel = QPushButton("Cancel")
 
         def _validate_playlist_form():
@@ -2741,7 +1786,15 @@ class MainWindow(QMainWindow):
             self.playlists_mgr.remove_playlist(url)
             self.refresh_playlists_ui()
 
-    def sync_tracked_playlist(self, p_dict: dict):
+    def sync_tracked_playlist(
+        self,
+        p_dict: dict,
+        *,
+        format_compat_override: str = None,
+        playlist_format_update: str = None,
+        redownload_from_scratch: bool = False,
+        skip_format_dialog: bool = False,
+    ):
         url = p_dict.get('url')
         out_dir = p_dict.get('folder_path')
         if not url or not out_dir:
@@ -2755,7 +1808,7 @@ class MainWindow(QMainWindow):
         title = p_dict.get('title', 'Playlist')
 
         # Check format compatibility mismatch
-        from core.downloader import read_playlist_format, write_playlist_format
+        from core.downloader import read_playlist_format
         pl_format = p_dict.get('format_compat')
         if not pl_format and out_dir:
             pl_format = read_playlist_format(out_dir)
@@ -2763,9 +1816,9 @@ class MainWindow(QMainWindow):
             pl_format = 'windows'
 
         global_format = self.settings.get('filename_compat', 'windows')
-        chosen_format = pl_format
+        chosen_format = format_compat_override or pl_format
 
-        if pl_format != global_format:
+        if pl_format != global_format and not skip_format_dialog:
             dlg = PlaylistFormatMismatchDialog(self, pl_title=title, pl_format=pl_format, settings_format=global_format)
             if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.choice:
                 return  # User cancelled sync
@@ -2773,10 +1826,7 @@ class MainWindow(QMainWindow):
                 chosen_format = pl_format
             elif dlg.choice == 'settings':
                 chosen_format = global_format
-                p_dict['format_compat'] = 'unix/win'
-                self.playlists_mgr.set_playlist_format(url, 'unix/win')
-                write_playlist_format(out_dir, 'unix/win')
-                self.refresh_playlists_ui()
+                playlist_format_update = 'unix/win'
             elif dlg.choice == 'redownload':
                 set_fmt_label = "Windows" if global_format == "windows" else "UNIX"
                 reply = QMessageBox.question(
@@ -2790,29 +1840,8 @@ class MainWindow(QMainWindow):
                     return
 
                 chosen_format = global_format
-                from core.constants import MEDIA_EXTS
-                if out_dir and os.path.isdir(out_dir):
-                    try:
-                        for fname in os.listdir(out_dir):
-                            fpath = os.path.join(out_dir, fname)
-                            if os.path.isfile(fpath):
-                                ext = os.path.splitext(fname)[1].lower()
-                                if ext in MEDIA_EXTS or ext in ('.lrc', '.vtt', '.srt'):
-                                    try:
-                                        os.remove(fpath)
-                                    except Exception:
-                                        pass
-                    except Exception:
-                        pass
-
-                from core.downloader import clear_kept_orphans
-                clear_kept_orphans(out_dir)
-
-                p_dict['format_compat'] = global_format
-                p_dict['track_count'] = 0
-                self.playlists_mgr.set_playlist_format(url, global_format)
-                write_playlist_format(out_dir, global_format)
-                self.refresh_playlists_ui()
+                playlist_format_update = global_format
+                redownload_from_scratch = True
 
         self._active_sync_urls.add(url)
 
@@ -2820,16 +1849,21 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Syncing playlist '{title}' in background...")
         self.loading_overlay.show_loading(f"Syncing '{title}'...", f"Connecting to {platform} and comparing tracks...")
 
-        worker = SyncPlaylistWorker(p_dict, self.settings, cookies=self.get_cookies_config(), format_compat=chosen_format)
-        worker.finished_signal.connect(self._on_sync_playlist_finished)
+        worker = SyncPlaylistWorker(
+            p_dict,
+            self.settings,
+            cookies=self.get_cookies_config(),
+            format_compat=chosen_format,
+            playlist_format_update=playlist_format_update,
+            redownload_from_scratch=redownload_from_scratch,
+        )
+        worker.finished_signal.connect(self._on_sync_playlist_plan_ready)
         worker.error_signal.connect(self._on_sync_playlist_error)
         if not hasattr(self, '_sync_workers'):
             self._sync_workers = []
         self._sync_workers.append(worker)
 
         def _cleanup():
-            if hasattr(self, '_active_sync_urls'):
-                self._active_sync_urls.discard(url)
             if worker in self._sync_workers:
                 self._sync_workers.remove(worker)
 
@@ -2872,7 +1906,7 @@ class MainWindow(QMainWindow):
         title = pl.get('title', 'Playlist')
         global_format = self.settings.get('filename_compat', 'windows')
         pl_format = pl.get('format_compat')
-        from core.downloader import read_playlist_format, write_playlist_format
+        from core.downloader import read_playlist_format
         if not pl_format and out_dir:
             pl_format = read_playlist_format(out_dir)
         if not pl_format:
@@ -2886,11 +1920,12 @@ class MainWindow(QMainWindow):
                 chosen_format = pl_format
             elif dlg.choice == 'settings':
                 chosen_format = global_format
-                pl['format_compat'] = 'unix/win'
-                self.playlists_mgr.set_playlist_format(url, 'unix/win')
-                write_playlist_format(out_dir, 'unix/win')
-                self.refresh_playlists_ui()
-                self.sync_tracked_playlist(pl)
+                self.sync_tracked_playlist(
+                    pl,
+                    format_compat_override=chosen_format,
+                    playlist_format_update='unix/win',
+                    skip_format_dialog=True,
+                )
                 return
             elif dlg.choice == 'redownload':
                 chosen_format = global_format
@@ -2908,41 +1943,23 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        from core.constants import MEDIA_EXTS
-        if out_dir and os.path.isdir(out_dir):
-            try:
-                for fname in os.listdir(out_dir):
-                    fpath = os.path.join(out_dir, fname)
-                    if os.path.isfile(fpath):
-                        ext = os.path.splitext(fname)[1].lower()
-                        if ext in MEDIA_EXTS or ext in ('.lrc', '.vtt', '.srt'):
-                            try:
-                                os.remove(fpath)
-                            except Exception:
-                                pass
-            except Exception:
-                pass
-
-        from core.downloader import clear_kept_orphans
-        clear_kept_orphans(out_dir)
-
-        pl['format_compat'] = chosen_format
-        pl['track_count'] = 0
-        self.playlists_mgr.set_playlist_format(url, chosen_format)
-        write_playlist_format(out_dir, chosen_format)
-        self.refresh_playlists_ui()
-
-        self.sync_tracked_playlist(pl)
+        self.sync_tracked_playlist(
+            pl,
+            format_compat_override=chosen_format,
+            playlist_format_update=chosen_format,
+            redownload_from_scratch=True,
+            skip_format_dialog=True,
+        )
 
     def _on_reindex_playlist_finished(self, pl: dict, count: int):
         self.loading_overlay.hide_loading()
         title = pl.get('title', 'Playlist')
-        self.status_label.setText(f"Successfully re-indexed {count} tracks in '{title}'.")
+        self.status_label.setText(f"Reindexed {count} tracks in '{title}'.")
         self.refresh_playlists_ui()
         QMessageBox.information(
             self,
             "Re-indexing Complete",
-            f"Successfully updated track numbers (1..{count}) and metadata tags for all files in '{title}'.\n\nAll track numbers now strictly match the online playlist without gaps."
+            f"Updated track numbers (1..{count}) and metadata in '{title}'."
         )
 
     def _on_reindex_playlist_error(self, err_msg: str):
@@ -2953,75 +1970,165 @@ class MainWindow(QMainWindow):
     def _on_sync_playlist_error(self, err_msg: str, p_dict: dict):
         self.loading_overlay.hide_loading()
         title = p_dict.get('title', 'Playlist') if p_dict else 'Playlist'
+        if p_dict and hasattr(self, '_active_sync_urls'):
+            self._active_sync_urls.discard(p_dict.get('url'))
         platform = detect_platform_name(p_dict.get('url') if p_dict else '')
         self.status_label.setText(f"Sync error for '{title}'.")
         QMessageBox.warning(self, "Sync Error", f"Could not fetch playlist metadata from {platform}:\n{err_msg}")
 
-    def _on_sync_playlist_finished(self, preview: dict, p_dict: dict, missing_entries: list, local_cnt: int, online_duplicates: list = None, unavailable_entries: list = None, orphaned_files: list = None):
+    def _on_sync_playlist_plan_ready(self, plan):
         self.loading_overlay.hide_loading()
-        url = p_dict.get('url')
-        out_dir = p_dict.get('folder_path')
-        count = preview.get('count', 0)
+        url = plan.playlist.get('url')
+        title = plan.playlist.get('title', 'Playlist')
+        if not (
+            plan.missing_entries or plan.orphaned_files or plan.autoheal_pairs
+            or plan.cleanup_actions or plan.redownload_from_scratch
+            or plan.redownload_files or plan.playlist_format_update
+        ):
+            if hasattr(self, '_active_sync_urls'):
+                self._active_sync_urls.discard(url)
+            count = plan.preview.get('count') or len(plan.preview.get('entries', []))
+            unavailable_count = len(plan.unavailable_entries)
+            duplicates_count = len(plan.online_duplicates)
+            self.playlists_mgr.update_sync_info(
+                url, track_count=count, status='synced',
+                unavailable_count=unavailable_count,
+                duplicates_count=duplicates_count, removed_tracks_count=0,
+            )
+            self.refresh_playlists_ui()
+            self.status_label.setText(f"Playlist '{title}' is up to date. No changes needed.")
+            PlaylistUpToDateDialog(
+                title, count, local_files_count=plan.local_count,
+                duplicates=plan.online_duplicates,
+                unavailable=plan.unavailable_entries, parent=self,
+            ).exec()
+            return
+        dialog = PlaylistSyncPreviewDialog(plan, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            if hasattr(self, '_active_sync_urls'):
+                self._active_sync_urls.discard(url)
+            self.status_label.setText(f"Synchronization of '{title}' cancelled. No changes were made.")
+            return
+
+        selected_files = dialog.selected_files_to_delete()
+        if selected_files:
+            preview_names = "\n".join(f"- {name}" for name in selected_files[:5])
+            remainder = f"\n... and {len(selected_files) - 5} more" if len(selected_files) > 5 else ""
+            reply = QMessageBox.question(
+                self, "Delete local files?",
+                f"Sync will permanently delete {len(selected_files)} selected local file(s). "
+                "They will not go to the Recycle Bin.\n\n"
+                f"{preview_names}{remainder}\n\nContinue with sync?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                if hasattr(self, '_active_sync_urls'):
+                    self._active_sync_urls.discard(url)
+                self.status_label.setText(f"Synchronization of '{title}' cancelled. No changes were made.")
+                return
+
+        self.status_label.setText(f"Applying sync plan for '{title}'...")
+        self.loading_overlay.show_loading(f"Applying '{title}' sync...", "Updating local files and playlist metadata...")
+        worker = ApplyPlaylistSyncWorker(
+            plan,
+            selected_files,
+            self.settings,
+        )
+        worker.finished_signal.connect(self._on_sync_playlist_committed)
+        worker.error_signal.connect(self._on_sync_playlist_commit_error)
+        if not hasattr(self, '_sync_commit_workers'):
+            self._sync_commit_workers = []
+        self._sync_commit_workers.append(worker)
+
+        def _cleanup():
+            if worker in self._sync_commit_workers:
+                self._sync_commit_workers.remove(worker)
+
+        worker.finished.connect(_cleanup)
+        worker.start()
+
+    def _on_sync_playlist_commit_error(self, err_msg: str, p_dict: dict):
+        self.loading_overlay.hide_loading()
+        url = p_dict.get('url') if p_dict else None
+        if hasattr(self, '_active_sync_urls'):
+            self._active_sync_urls.discard(url)
+        title = p_dict.get('title', 'Playlist') if p_dict else 'Playlist'
+        self.status_label.setText(f"Sync failed while applying changes to '{title}'.")
+        QMessageBox.warning(self, "Sync Error", f"Could not apply the playlist sync plan:\n{err_msg}")
+
+    def _on_sync_playlist_committed(self, result: dict):
+        self.loading_overlay.hide_loading()
+        plan = result['plan']
+        preview = result['preview']
+        url = plan.playlist.get('url')
+        if hasattr(self, '_active_sync_urls'):
+            self._active_sync_urls.discard(url)
+
+        p_dict = next(
+            (item for item in self.playlists_mgr.get_all() if item.get('url') == url),
+            plan.playlist,
+        )
+        count = result['count']
+        missing_entries = result['missing_entries']
+        online_duplicates = result['online_duplicates']
+        unavailable_entries = result['unavailable_entries']
+        unavailable_count = len(unavailable_entries)
+        duplicates_count = len(online_duplicates)
+
         p_dict['track_count'] = count
+        p_dict['unavailable_count'] = unavailable_count
+        p_dict['duplicates_count'] = duplicates_count
+        p_dict['removed_tracks_count'] = 0
         if preview.get('thumbnail'):
-            p_dict['thumbnail'] = preview.get('thumbnail')
-        unavail_cnt = len(unavailable_entries) if unavailable_entries else 0
-        p_dict['unavailable_count'] = unavail_cnt
-        dupes_cnt = len(online_duplicates) if online_duplicates else 0
-        p_dict['duplicates_count'] = dupes_cnt
+            p_dict['thumbnail'] = preview['thumbnail']
 
-        # Prompt user if files were removed from online playlist
-        remaining_orphans = len(orphaned_files) if orphaned_files else 0
-        if orphaned_files:
-            dlg = OrphanFilesDialog(orphaned_files, parent=self)
-            res = dlg.exec()
-            if res == QDialog.DialogCode.Accepted and dlg.deleted_files:
-                for fn in dlg.deleted_files:
-                    fp = os.path.join(out_dir, fn)
-                    try:
-                        if os.path.exists(fp):
-                            os.remove(fp)
-                            local_cnt = max(0, local_cnt - 1)
-                            # Log deleted file to history and app logs
-                            stem = Path(fn).stem
-                            parts = stem.split(" - ", 1)
-                            t_author = parts[1] if len(parts) > 1 else ""
-                            t_title = parts[0]
-                            self.history.add_entry(
-                                t_title, 
-                                t_author, 
-                                platform="YouTube", 
-                                status="Deleted (Removed from playlist)", 
-                                url=url, 
-                                media_type=p_dict.get('media_type', 'Audio')
-                            )
-                    except Exception:
-                        pass
-                kept_fns = [it.get('filename') for it in orphaned_files if it.get('filename') not in dlg.deleted_files]
-                if kept_fns:
-                    add_kept_orphans(out_dir, kept_fns)
-                remaining_orphans = 0
-                self.refresh_playlists_ui()
-            else:
-                add_kept_orphans(out_dir, [it.get('filename') for it in orphaned_files if it.get('filename')])
-                remaining_orphans = 0
-                self.refresh_playlists_ui()
+        for filename in result['deleted_files']:
+            stem = Path(filename).stem
+            parts = stem.split(" - ", 1)
+            self.history.add_entry(
+                parts[0],
+                parts[1] if len(parts) > 1 else "",
+                platform=detect_platform_name(url),
+                status="Deleted (Removed from playlist)",
+                url=url,
+                media_type=p_dict.get('media_type', 'Audio'),
+            )
 
-        p_dict['removed_tracks_count'] = remaining_orphans
+        status = 'pending' if missing_entries else 'synced'
+        self.playlists_mgr.update_sync_info(
+            url,
+            track_count=count,
+            status=status,
+            unavailable_count=unavailable_count,
+            duplicates_count=duplicates_count,
+            removed_tracks_count=0,
+            format_compat=plan.playlist_format_update,
+        )
 
-        # Always re-index and update track numbers/tags for existing files in folder to match the current online list (1..N)
-        reindex_existing_playlist_files(out_dir, preview.get('entries', []), settings=self.settings)
-        if self.settings and self.settings.get('create_nomedia_file', False):
-            ensure_nomedia_file(out_dir)
+        if result['delete_failures']:
+            failed_names = "\n".join(result['delete_failures'])
+            QMessageBox.warning(
+                self,
+                "Some Files Could Not Be Deleted",
+                f"These selected files could not be deleted and were kept locally:\n{failed_names}",
+            )
 
         if not missing_entries:
-            self.playlists_mgr.update_sync_info(url, track_count=count, status='synced', unavailable_count=unavail_cnt, duplicates_count=dupes_cnt, removed_tracks_count=remaining_orphans)
             self.refresh_playlists_ui()
-            self.status_label.setText(f"No new media to sync. All {count - unavail_cnt - dupes_cnt} available tracks in '{p_dict.get('title')}' are up to date.")
-            PlaylistUpToDateDialog(p_dict.get('title', 'Playlist'), count, local_files_count=local_cnt, duplicates=online_duplicates, unavailable=unavailable_entries, parent=self).exec()
+            available_count = max(0, count - unavailable_count - duplicates_count)
+            self.status_label.setText(
+                f"No new media to sync. All {available_count} available tracks in '{p_dict.get('title')}' are up to date."
+            )
+            PlaylistUpToDateDialog(
+                p_dict.get('title', 'Playlist'),
+                count,
+                local_files_count=result['local_count'],
+                duplicates=online_duplicates,
+                unavailable=unavailable_entries,
+                parent=self,
+            ).exec()
             return
-        else:
-            self.playlists_mgr.update_sync_info(url, track_count=count, status='pending', unavailable_count=unavail_cnt, duplicates_count=dupes_cnt, removed_tracks_count=remaining_orphans)
 
         # Auto-clear previous completed/finished queue if not downloading
         if self.download_queue and not self.is_downloading:
@@ -3033,6 +2140,7 @@ class MainWindow(QMainWindow):
         for entry in missing_entries:
             self._add_single_item_to_queue(entry, batch=True)
         self.queue_container.setUpdatesEnabled(True)
+        self._save_queue()
 
         media_type = p_dict.get('media_type', 'Audio')
         self.format_combo.blockSignals(True)
@@ -3063,15 +2171,25 @@ class MainWindow(QMainWindow):
 
     def setup_history_tab(self):
         self.history_tab = QWidget()
+        self.history_tab.setObjectName("HistoryTab")
         layout = QVBoxLayout(self.history_tab)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
 
         toolbar = QHBoxLayout()
+        btn_retry_selected = QPushButton("Retry Selected Error")
+        btn_retry_selected.setObjectName("PrimaryButton")
+        btn_retry_errors = QPushButton("Retry All Errors")
         btn_refresh = QPushButton("Refresh")
         btn_clear_hist = QPushButton("Clear History")
 
+        btn_retry_selected.clicked.connect(self.retry_selected_history_error)
+        btn_retry_errors.clicked.connect(self.retry_history_errors)
         btn_refresh.clicked.connect(self.refresh_history)
         btn_clear_hist.clicked.connect(self.clear_history)
 
+        toolbar.addWidget(btn_retry_selected)
+        toolbar.addWidget(btn_retry_errors)
         toolbar.addStretch()
         toolbar.addWidget(btn_refresh)
         toolbar.addWidget(btn_clear_hist)
@@ -3096,24 +2214,24 @@ class MainWindow(QMainWindow):
 
         self.history_table.verticalHeader().setVisible(False)
         self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.history_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.history_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.history_table.setShowGrid(False)
         self.history_table.setAlternatingRowColors(True)
         self.history_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.history_table.setStyleSheet("""
             QTableWidget {
-                background-color: #0b1329;
-                color: #cbd5e1;
-                border: 1px solid #1e293b;
-                border-radius: 8px;
-                gridline-color: #1e293b;
-                selection-background-color: #1e293b;
+                background-color: #080d09;
+                color: #cbd5cc;
+                border: 1px solid #354a38;
+                border-radius: 0px;
+                gridline-color: #354a38;
+                selection-background-color: #1a3020;
                 font-size: 12px;
             }
             QHeaderView::section {
-                background-color: #1e293b;
-                color: #94a3b8;
+                background-color: #0d150f;
+                color: #aab7aa;
                 padding: 10px;
                 border: none;
                 font-weight: bold;
@@ -3121,7 +2239,7 @@ class MainWindow(QMainWindow):
             }
             QTableWidget::item {
                 padding: 6px 8px;
-                border-bottom: 1px solid #1e293b;
+                border-bottom: 1px solid #354a38;
             }
         """)
         layout.addWidget(self.history_table)
@@ -3137,26 +2255,47 @@ class MainWindow(QMainWindow):
     def setup_settings_tab(self):
         self.settings_tab = QWidget()
         self.settings_tab.setObjectName("SettingsTab")
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setObjectName("SettingsScrollArea")
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.settings_sections = QTabWidget(self.settings_tab)
+        self.settings_sections.setObjectName("SettingsSections")
 
-        scroll_wrapper = QWidget()
-        scroll_wrapper.setObjectName("SettingsScrollWrapper")
-        outer_h_layout = QHBoxLayout(scroll_wrapper)
-        outer_h_layout.setContentsMargins(0, 10, 0, 20)
+        def add_settings_page(name, description):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setObjectName("SettingsScrollArea")
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            wrapper = QWidget()
+            wrapper.setObjectName("SettingsScrollWrapper")
+            outer = QHBoxLayout(wrapper)
+            outer.setContentsMargins(0, 10, 0, 20)
+            content = QWidget()
+            content.setObjectName("SettingsContainer")
+            content.setMaximumWidth(820)
+            page_layout = QVBoxLayout(content)
+            page_layout.setSpacing(16)
+            page_layout.setContentsMargins(18, 14, 18, 16)
+            heading = QLabel(name)
+            heading.setStyleSheet("font-size: 18px; font-weight: bold; color: #cbd5cc;")
+            page_layout.addWidget(heading)
+            hint = QLabel(description)
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: #aab7aa; font-size: 12px;")
+            page_layout.addWidget(hint)
+            outer.addStretch(1)
+            outer.addWidget(content)
+            outer.addStretch(1)
+            scroll.setWidget(wrapper)
+            self.settings_sections.addTab(scroll, name.upper())
+            return page_layout
 
-        content = QWidget()
-        content.setObjectName("SettingsContainer")
-        content.setMaximumWidth(820)
-        layout = QVBoxLayout(content)
-        layout.setSpacing(14)
-        layout.setContentsMargins(15, 10, 15, 15)
-
-        outer_h_layout.addStretch(1)
-        outer_h_layout.addWidget(content)
-        outer_h_layout.addStretch(1)
+        pages = {
+            "General": add_settings_page("General", "Appearance, download location, and general behavior."),
+            "Audio": add_settings_page("Audio", "Audio naming, artwork, lyrics, and metadata."),
+            "Video": add_settings_page("Video", "Video naming, codecs, subtitles, and metadata."),
+            "Quality": add_settings_page("Quality", "Default quality for each platform."),
+            "Access": add_settings_page("Access", "YouTube authentication and cookie source."),
+            "Maintenance": add_settings_page("Maintenance", "Updates, diagnostics, storage cleanup, and backups."),
+        }
+        layout = pages["General"]
 
         def make_combo(items=None, min_width=None):
             cb = QComboBox()
@@ -3168,6 +2307,29 @@ class MainWindow(QMainWindow):
                 cb.addItems(items)
             return cb
 
+        # 0. Appearance
+        appearance_layout = QHBoxLayout()
+        appearance_layout.addWidget(QLabel("Color Theme:"))
+        self.ui_theme_combo = make_combo(min_width=180)
+        self.ui_theme_combo.addItem("Green Terminal", "green")
+        self.ui_theme_combo.addItem("Blue Terminal", "blue")
+        self.ui_theme_combo.addItem("Pink Terminal", "pink")
+        self.ui_theme_combo.addItem("Red Terminal", "red")
+        self.ui_theme_combo.addItem("Amber Terminal", "amber")
+        self.ui_theme_combo.addItem("Cyan Terminal", "cyan")
+        self.ui_theme_combo.addItem("Violet Terminal", "violet")
+        theme_index = self.ui_theme_combo.findData(self.ui_theme)
+        self.ui_theme_combo.setCurrentIndex(theme_index if theme_index >= 0 else 0)
+        self.ui_theme_combo.setToolTip("Choose and remember the application's accent color theme.")
+        self.ui_theme_combo.currentIndexChanged.connect(
+            lambda index: self._on_ui_theme_changed(self.ui_theme_combo.itemData(index))
+        )
+        appearance_layout.addWidget(self.ui_theme_combo)
+        appearance_layout.addStretch()
+        appearance_group = QGroupBox("Appearance")
+        appearance_group.setLayout(appearance_layout)
+        layout.addWidget(appearance_group)
+
         # 1. Download Folder
         folder_layout = QHBoxLayout()
         self.folder_input = QLineEdit(self.settings.get('download_path'))
@@ -3178,7 +2340,9 @@ class MainWindow(QMainWindow):
         folder_layout.addWidget(QLabel("Download Folder:"))
         folder_layout.addWidget(self.folder_input)
         folder_layout.addWidget(btn_browse)
-        layout.addLayout(folder_layout)
+        folder_group = QGroupBox("Download Location")
+        folder_group.setLayout(folder_layout)
+        layout.addWidget(folder_group)
 
         # 2. General Settings
         gen_grid = QGridLayout()
@@ -3237,7 +2401,7 @@ class MainWindow(QMainWindow):
         # Row 4: Cover Artwork Aspect Ratio (General setting for both audio and video)
         gen_grid.addWidget(QLabel("Cover Aspect Ratio:"), 4, 0)
         self.cover_style_combo = make_combo()
-        self.cover_style_combo.addItem("Smart (Auto-detect sidebars: crop 1:1 if pillarboxed, keep 16:9 if full frame) - Default", "smart")
+        self.cover_style_combo.addItem("Automatic (crop sidebars; preserve full-frame covers)", "smart")
         self.cover_style_combo.addItem("Original Aspect Ratio (16:9 / No Cropping)", "original")
         self.cover_style_combo.addItem("Square (1:1 Force Center-Crop)", "square")
         cur_cover_style = self.settings.get('cover_aspect_ratio') or self.settings.get('audio_cover_style', 'smart')
@@ -3258,9 +2422,12 @@ class MainWindow(QMainWindow):
         gen_grid.addWidget(self.chk_nomedia, 5, 0, 1, 2)
 
         gen_grid.setColumnStretch(1, 1)
-        layout.addLayout(gen_grid)
+        general_group = QGroupBox("Download Behavior")
+        general_group.setLayout(gen_grid)
+        layout.addWidget(general_group)
 
         # 3. Audio & Music Settings GroupBox
+        layout = pages["Audio"]
         audio_group = QGroupBox("Audio & Music Settings")
         audio_layout = QVBoxLayout(audio_group)
         audio_layout.setSpacing(10)
@@ -3364,7 +2531,7 @@ class MainWindow(QMainWindow):
 
         # Metadata Tags Section
         meta_section_lbl = QLabel("Embedded Audio Metadata Tags:")
-        meta_section_lbl.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 6px;")
+        meta_section_lbl.setStyleSheet("font-weight: bold; color: #aab7aa; margin-top: 6px;")
         audio_layout.addWidget(meta_section_lbl)
 
         self.chk_embed_all_meta = QCheckBox("Embed all audio metadata (Recommended)")
@@ -3417,6 +2584,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(audio_group)
 
         # 4. Video Settings GroupBox
+        layout = pages["Video"]
         video_group = QGroupBox("Video Settings")
         video_layout = QVBoxLayout(video_group)
         video_layout.setSpacing(10)
@@ -3507,7 +2675,7 @@ class MainWindow(QMainWindow):
 
         # Embedded Video Metadata Tags Section
         v_meta_section_lbl = QLabel("Embedded Video Metadata Tags:")
-        v_meta_section_lbl.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 6px;")
+        v_meta_section_lbl.setStyleSheet("font-weight: bold; color: #aab7aa; margin-top: 6px;")
         video_layout.addWidget(v_meta_section_lbl)
 
         self.chk_embed_all_v_meta = QCheckBox("Embed all video metadata (Recommended)")
@@ -3557,8 +2725,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(video_group)
 
         # 5. Application & Core Engine Updates
+        layout = pages["Maintenance"]
         lbl_core = QLabel("Updates & Maintenance")
-        lbl_core.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 8px; margin-bottom: 2px;")
+        lbl_core.setStyleSheet("font-weight: bold; color: #aab7aa; margin-top: 8px; margin-bottom: 2px;")
         layout.addWidget(lbl_core)
 
         # App updates row
@@ -3596,9 +2765,42 @@ class MainWindow(QMainWindow):
         core_layout.addStretch()
         layout.addLayout(core_layout)
 
+        diagnostics_label = QLabel("Diagnostics")
+        diagnostics_label.setStyleSheet("font-weight: bold; color: #aab7aa; margin-top: 8px; margin-bottom: 2px;")
+        layout.addWidget(diagnostics_label)
+
+        diagnostics_layout = QHBoxLayout()
+        self.btn_self_diagnostics = QPushButton("Run Self-Diagnostics")
+        self.btn_self_diagnostics.setToolTip("Check local app components and configuration. Does not access the network.")
+        self.btn_self_diagnostics.clicked.connect(self.run_self_diagnostics)
+        self.btn_network_diagnostics = QPushButton("Check Network")
+        self.btn_network_diagnostics.setToolTip("Separately test access to YouTube, PyPI, and GitHub.")
+        self.btn_network_diagnostics.clicked.connect(self.run_network_diagnostics)
+        diagnostics_note = QLabel("Local checks and network checks are run separately.")
+        diagnostics_note.setStyleSheet("color: #849184; font-size: 11px;")
+        diagnostics_layout.addWidget(self.btn_self_diagnostics)
+        diagnostics_layout.addWidget(self.btn_network_diagnostics)
+        diagnostics_layout.addWidget(diagnostics_note, 1)
+        diagnostics_layout.addStretch()
+        layout.addLayout(diagnostics_layout)
+
+        cleanup_group = QGroupBox("Storage Cleanup")
+        cleanup_layout = QVBoxLayout(cleanup_group)
+        cleanup_note = QLabel(
+            "Review .part files and old yt-dlp backups with their sizes and dates. "
+            "Nothing is removed automatically."
+        )
+        cleanup_note.setWordWrap(True)
+        cleanup_layout.addWidget(cleanup_note)
+        btn_storage_cleanup = QPushButton("Review Files...")
+        btn_storage_cleanup.clicked.connect(self.open_storage_cleanup)
+        cleanup_layout.addWidget(btn_storage_cleanup, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(cleanup_group)
+
         # 6. Quality Settings
+        layout = pages["Quality"]
         lbl_quality = QLabel("Quality Settings")
-        lbl_quality.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 8px; margin-bottom: 2px;")
+        lbl_quality.setStyleSheet("font-weight: bold; color: #aab7aa; margin-top: 8px; margin-bottom: 2px;")
         layout.addWidget(lbl_quality)
         quality_grid = QGridLayout()
         quality_grid.setHorizontalSpacing(20)
@@ -3626,8 +2828,9 @@ class MainWindow(QMainWindow):
         layout.addLayout(quality_grid)
 
         # 7. YouTube Authentication (Cookies)
+        layout = pages["Access"]
         lbl_cookies = QLabel("YouTube Authentication & Cookies")
-        lbl_cookies.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 10px; margin-bottom: 2px;")
+        lbl_cookies.setStyleSheet("font-weight: bold; color: #aab7aa; margin-top: 10px; margin-bottom: 2px;")
         layout.addWidget(lbl_cookies)
 
         cookies_group = QWidget()
@@ -3636,9 +2839,9 @@ class MainWindow(QMainWindow):
         cookies_layout.setSpacing(10)
         cookies_group.setStyleSheet("""
             QWidget#CookiesGroup {
-                background-color: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 8px;
+                background-color: #0b120d;
+                border: 1px solid #354a38;
+                border-radius: 0px;
             }
         """)
         cookies_group.setObjectName("CookiesGroup")
@@ -3648,7 +2851,7 @@ class MainWindow(QMainWindow):
             "private, and high-quality YouTube Music tracks without errors."
         )
         cookies_desc.setWordWrap(True)
-        cookies_desc.setStyleSheet("font-size: 12px; color: #94a3b8; line-height: 1.4;")
+        cookies_desc.setStyleSheet("font-size: 12px; color: #aab7aa; line-height: 1.4;")
         cookies_layout.addWidget(cookies_desc)
 
         # Source Selection (None / File cookies.txt / Browser)
@@ -3692,9 +2895,9 @@ class MainWindow(QMainWindow):
         file_widget_layout.addLayout(file_row)
 
         file_instructions = QLabel(
-            "<b>📋 Step-by-Step Guide to Exporting cookies.txt:</b><br>"
+            "<b>Export cookies.txt:</b><br>"
             "1. Install a browser extension (e.g. <b>Get cookies.txt LOCALLY</b> or <b>Cookie-Editor</b> for Chrome / Firefox / Edge / Opera).<br>"
-            "2. Open <a href='https://music.youtube.com' style='color: #38bdf8;'>music.youtube.com</a> or <a href='https://youtube.com' style='color: #38bdf8;'>youtube.com</a> and make sure you are logged into your Google account.<br>"
+            "2. Open <a href='https://music.youtube.com' style='color: #91e5a3;'>music.youtube.com</a> or <a href='https://youtube.com' style='color: #91e5a3;'>youtube.com</a> and make sure you are logged into your Google account.<br>"
             "3. Click the extension icon in your browser toolbar and click <b>Export</b> (in <i>Netscape HTTP Cookie File</i> format).<br>"
             "4. Save the file (e.g. <code>music.youtube.com_cookies.txt</code>) on your computer.<br>"
             "5. Click <b>Browse...</b> above and select the saved file."
@@ -3702,12 +2905,12 @@ class MainWindow(QMainWindow):
         file_instructions.setOpenExternalLinks(True)
         file_instructions.setWordWrap(True)
         file_instructions.setStyleSheet("""
-            background-color: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 6px;
+            background-color: #080b09;
+            border: 1px solid #354a38;
+            border-radius: 0px;
             padding: 10px 12px;
             font-size: 11px;
-            color: #cbd5e1;
+            color: #cbd5cc;
             line-height: 1.5;
         """)
         file_widget_layout.addWidget(file_instructions)
@@ -3723,25 +2926,25 @@ class MainWindow(QMainWindow):
         b_row.setContentsMargins(0, 0, 0, 0)
         b_row.addWidget(QLabel("Browser:"))
         self.cookies_browser_combo = make_combo(["Firefox", "Opera", "Chrome", "Edge", "Brave", "Vivaldi"])
-        self.cookies_browser_combo.setCurrentText(self.settings.get('cookies_browser', 'Firefox').capitalize())
+        self.cookies_browser_combo.setCurrentText(self.settings.get('cookies_browser', 'chrome').capitalize())
         self.cookies_browser_combo.currentTextChanged.connect(lambda b: self.settings.set('cookies_browser', b.lower()))
         b_row.addWidget(self.cookies_browser_combo, 1)
         browser_widget_layout.addLayout(b_row)
 
         browser_warning = QLabel(
-            "<b>⚠️ Direct Browser Import Restriction:</b><br>"
-            "In modern versions of Windows and Chromium-based browsers (Google Chrome, Microsoft Edge, Opera, Brave, Vivaldi, etc.), direct cookie reading is blocked by system-level <b>App-Bound Encryption (DPAPI)</b> data protection.<br><br>"
-            "Direct cookie extraction is only supported for <b>Firefox</b>-based browsers, but this mode is experimental and has not been extensively tested.<br><br>"
-            "💡 <b>Recommendation:</b> Use the <b>«Cookies File (cookies.txt)»</b> mode — it is 100% reliable, safe, and fully supports YouTube Premium."
+            "<b>Browser cookie access:</b><br>"
+            "On Windows, Chromium-based browsers may block cookie extraction through <b>App-Bound Encryption</b>.<br><br>"
+            "<b>Firefox</b> cookie extraction may work, depending on the browser profile and permissions.<br><br>"
+            "If browser extraction fails, export cookies in Netscape format and select <b>Cookies File (cookies.txt)</b>. Treat this file as a credential; do not share it."
         )
         browser_warning.setWordWrap(True)
         browser_warning.setStyleSheet("""
-            background-color: #0f172a;
-            border: 1px solid #ef4444;
-            border-radius: 6px;
+            background-color: #080b09;
+            border: 1px solid #d98f86;
+            border-radius: 0px;
             padding: 10px 12px;
             font-size: 11px;
-            color: #fca5a5;
+            color: #e3aaa3;
             line-height: 1.5;
         """)
         browser_widget_layout.addWidget(browser_warning)
@@ -3759,8 +2962,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(cookies_group)
 
         # 8. Data Backup & Migration (Export / Import AppData)
+        layout = pages["Maintenance"]
         lbl_backup = QLabel("Data Backup & Migration")
-        lbl_backup.setStyleSheet("font-weight: bold; color: #94a3b8; margin-top: 10px; margin-bottom: 2px;")
+        lbl_backup.setStyleSheet("font-weight: bold; color: #aab7aa; margin-top: 10px; margin-bottom: 2px;")
         layout.addWidget(lbl_backup)
 
         backup_group = QWidget()
@@ -3769,9 +2973,9 @@ class MainWindow(QMainWindow):
         backup_layout.setSpacing(10)
         backup_group.setStyleSheet("""
             QWidget#BackupGroup {
-                background-color: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 8px;
+                background-color: #0b120d;
+                border: 1px solid #354a38;
+                border-radius: 0px;
             }
         """)
         backup_group.setObjectName("BackupGroup")
@@ -3780,7 +2984,7 @@ class MainWindow(QMainWindow):
             "Export or restore your tracked playlists, custom settings, and download history to transfer between PCs or create backups."
         )
         backup_desc.setWordWrap(True)
-        backup_desc.setStyleSheet("font-size: 12px; color: #94a3b8; line-height: 1.4;")
+        backup_desc.setStyleSheet("font-size: 12px; color: #aab7aa; line-height: 1.4;")
         backup_layout.addWidget(backup_desc)
 
         backup_btn_row = QHBoxLayout()
@@ -3798,13 +3002,31 @@ class MainWindow(QMainWindow):
         backup_layout.addLayout(backup_btn_row)
 
         layout.addWidget(backup_group)
-        layout.addStretch()
-
-        scroll.setWidget(scroll_wrapper)
+        for page_layout in pages.values():
+            page_layout.addStretch()
         main_tab_layout = QVBoxLayout(self.settings_tab)
         main_tab_layout.setContentsMargins(0, 0, 0, 0)
-        main_tab_layout.addWidget(scroll)
+        main_tab_layout.addWidget(self.settings_sections)
         self.tabs.addTab(self.settings_tab, "SETTINGS")
+
+    def open_storage_cleanup(self):
+        folders = [self.settings.get('download_path')]
+        folders.extend(p.get('folder_path') for p in self.playlists_mgr.get_all())
+
+        def busy():
+            workers = (
+                list(self.active_workers.values())
+                + list(getattr(self, '_ending_workers', []))
+                + list(getattr(self, '_sync_workers', []))
+                + list(getattr(self, '_sync_commit_workers', []))
+            )
+            upgrade = getattr(self, 'upgrade_worker', None)
+            if upgrade is not None:
+                workers.append(upgrade)
+            return (self.is_downloading or bool(getattr(self, '_active_sync_urls', set()))
+                    or any(worker.isRunning() for worker in workers))
+
+        StorageCleanupDialog(folders, get_app_data_dir(), busy, parent=self).exec()
 
     def export_app_data(self):
         now_date = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -3814,7 +3036,7 @@ class MainWindow(QMainWindow):
         if save_path:
             ok, msg = export_backup(save_path)
             if ok:
-                QMessageBox.information(self, "Backup Exported", f"Backup created successfully:\n{Path(save_path).name}")
+                QMessageBox.information(self, "Backup Exported", f"Backup created:\n{Path(save_path).name}")
             else:
                 QMessageBox.warning(self, "Export Failed", msg)
 
@@ -3831,12 +3053,25 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.StandardButton.Yes:
                 ok, msg = import_backup(zip_path)
                 if ok:
-                    self.settings.data = self.settings.load()
+                    self.settings.reload()
                     self.playlists_mgr.playlists = self.playlists_mgr.load()
                     self.history.history = self.history.load()
+                    current_tab = self.tabs.currentWidget()
+                    settings_was_current = current_tab is self.settings_tab
+                    settings_index = self.tabs.indexOf(self.settings_tab)
+                    self.tabs.removeTab(settings_index)
+                    self.settings_tab.deleteLater()
+                    self.setup_settings_tab()
+                    new_settings_index = self.tabs.indexOf(self.settings_tab)
+                    self.tabs.removeTab(new_settings_index)
+                    self.tabs.insertTab(settings_index, self.settings_tab, "SETTINGS")
+                    if settings_was_current:
+                        self.tabs.setCurrentWidget(self.settings_tab)
+                    elif current_tab is not None:
+                        self.tabs.setCurrentWidget(current_tab)
                     self.refresh_playlists_ui()
                     self.refresh_history()
-                    QMessageBox.information(self, "Backup Restored", "Data restored successfully! Your playlists and settings have been reloaded.")
+                    QMessageBox.information(self, "Backup Restored", "Backup restored. Playlists and settings reloaded.")
                 else:
                     QMessageBox.warning(self, "Restore Failed", msg)
 
@@ -3850,7 +3085,7 @@ class MainWindow(QMainWindow):
             idx = self.cookies_source_combo.findData('file')
             if idx >= 0:
                 self.cookies_source_combo.setCurrentIndex(idx)
-            QMessageBox.information(self, "Cookies Loaded", f"Successfully loaded cookies file:\n{Path(file).name}")
+            QMessageBox.information(self, "Cookies Loaded", f"Cookies file selected:\n{Path(file).name}")
 
     def clear_cookies_file(self):
         self.cookies_file_input.clear()
@@ -3865,7 +3100,7 @@ class MainWindow(QMainWindow):
             if c_file and os.path.exists(c_file):
                 return {'use': True, 'source': 'file', 'file': c_file}
         elif cookies_source == 'browser':
-            b_name = self.settings.get('cookies_browser', 'opera').lower()
+            b_name = self.settings.get('cookies_browser', 'chrome').lower()
             return {'use': True, 'source': 'browser', 'browser': b_name}
         return None
 
@@ -3945,20 +3180,21 @@ class MainWindow(QMainWindow):
 
     def setup_about_tab(self):
         self.about_tab = QWidget()
+        self.about_tab.setObjectName("AboutTab")
         layout = QVBoxLayout(self.about_tab)
         layout.addStretch()
         title = QLabel("Logovo Downloads")
-        title.setStyleSheet("font-size: 26px; font-weight: bold; color: #ffffff;")
+        title.setStyleSheet("font-size: 22px; font-weight: bold; color: #cbd5cc;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
         version = QLabel(f"Version {APP_VERSION}")
-        version.setStyleSheet("font-size: 13px; color: #38bdf8; font-weight: 600; margin-top: 2px; margin-bottom: 8px;")
+        version.setStyleSheet("font-size: 13px; color: #91e5a3; font-weight: 600; margin-top: 2px; margin-bottom: 8px;")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version)
 
-        desc = QLabel("Modern, High-Speed Media Downloader & Playlist Sync for Windows")
-        desc.setStyleSheet("font-size: 12px; color: #94a3b8; margin-bottom: 20px;")
+        desc = QLabel("Audio and video downloads. Playlist synchronization for Windows.")
+        desc.setStyleSheet("font-size: 12px; color: #aab7aa; margin-bottom: 20px;")
         desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(desc)
 
@@ -3968,16 +3204,16 @@ class MainWindow(QMainWindow):
         github.setMaximumWidth(250)
         github.setStyleSheet("""
             QPushButton {
-                background-color: #1e293b;
-                color: #f8fafc;
-                border: 1px solid #334155;
-                border-radius: 6px;
+                background-color: #0b120d;
+                color: #cbd5cc;
+                border: 1px solid #354a38;
+                border-radius: 0px;
                 padding: 8px 16px;
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #334155;
-                border-color: #38bdf8;
+                background-color: #354a38;
+                border-color: #91e5a3;
             }
         """)
         github.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/Helvior-dev/Logovo-Downloads")))
@@ -3989,6 +3225,77 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.about_tab, "ABOUT")
 
     # ─── UPDATER METHODS ───────────────────────────────────────────────────────
+
+    def _start_diagnostics_worker(self, worker, title: str, result_handler):
+        if self._diagnostics_worker is not None and self._diagnostics_worker.isRunning():
+            return
+
+        self._diagnostics_worker = worker
+        self.btn_self_diagnostics.setEnabled(False)
+        self.btn_network_diagnostics.setEnabled(False)
+        self.status_label.setText(f"Running {title.lower()}...")
+        worker.finished_signal.connect(result_handler)
+        worker.finished.connect(self._diagnostics_worker_finished)
+        worker.start()
+
+    def run_self_diagnostics(self):
+        self._start_diagnostics_worker(
+            SelfDiagnosticsWorker(self.settings),
+            "Self-Diagnostics",
+            self._on_self_diagnostics_results,
+        )
+
+    def run_network_diagnostics(self):
+        self._start_diagnostics_worker(
+            NetworkDiagnosticsWorker(),
+            "Network Check",
+            self._on_network_diagnostics_results,
+        )
+
+    def _diagnostics_worker_finished(self):
+        self._diagnostics_worker = None
+        self.btn_self_diagnostics.setEnabled(True)
+        self.btn_network_diagnostics.setEnabled(True)
+
+    def _on_self_diagnostics_results(self, results: list[dict]):
+        self._show_diagnostics_results("Self-Diagnostics", results)
+
+    def _on_network_diagnostics_results(self, results: list[dict]):
+        self._show_diagnostics_results("Network Check", results)
+
+    def _show_diagnostics_results(self, title: str, results: list[dict]):
+        results = results if isinstance(results, list) else []
+        counts = {
+            status: sum(1 for result in results if result.get('status') == status)
+            for status in ('OK', 'INFO', 'WARN', 'FAIL')
+        }
+        summary = (
+            f"{counts['OK']} OK, {counts['INFO']} informational, "
+            f"{counts['WARN']} warning(s), {counts['FAIL']} failure(s)."
+        )
+        details = "\n".join(
+            f"[{result.get('status', 'INFO')}] {result.get('name', 'Check')}: "
+            f"{result.get('details', '')}"
+            for result in results
+        ) or "No diagnostic results were produced."
+
+        if counts['FAIL']:
+            icon = QMessageBox.Icon.Critical
+            self.status_label.setText(f"{title} finished with failures.")
+        elif counts['WARN']:
+            icon = QMessageBox.Icon.Warning
+            self.status_label.setText(f"{title} finished with warnings.")
+        else:
+            icon = QMessageBox.Icon.Information
+            self.status_label.setText(f"{title} completed.")
+
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setIcon(icon)
+        box.setText(summary)
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setDetailedText(details)
+        box.exec()
 
     def on_startup_update_check_result(self, has_update: bool, current_ver: str, latest_ver: str):
         if has_update:
@@ -4012,7 +3319,7 @@ class MainWindow(QMainWindow):
             reply = QMessageBox.question(
                 self,
                 "Update Available",
-                f"New yt-dlp core version available!\n\nCurrent: {cur_v}\nLatest: {lat_v}\n\nUpgrade now?",
+                f"yt-dlp update available.\n\nCurrent: {cur_v}\nLatest: {lat_v}\n\nInstall update?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.Yes:
@@ -4022,6 +3329,11 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Downloader core is up to date.")
 
     def run_ytdlp_upgrade(self):
+        if getattr(self, "upgrade_worker", None) is not None and self.upgrade_worker.isRunning():
+            return
+        if self.active_workers:
+            QMessageBox.warning(self, "Downloads in progress", "Pause or finish active downloads before updating yt-dlp.")
+            return
         self.status_label.setText("Upgrading yt-dlp core in background...")
         self.upgrade_worker = UpgradeWorker()
         self.upgrade_worker.finished_signal.connect(self.on_upgrade_finished)
@@ -4029,10 +3341,8 @@ class MainWindow(QMainWindow):
 
     def on_upgrade_finished(self, success: bool, msg: str):
         if success:
-            new_v = get_installed_ytdlp_version()
-            self.lbl_ytdlp_ver.setText(f"Current Core Version: <b>{new_v}</b>")
-            QMessageBox.information(self, "Upgrade Complete", f"yt-dlp core successfully upgraded to v{new_v}!")
-            self.status_label.setText("Core upgrade completed successfully.")
+            QMessageBox.information(self, "Update Complete", msg)
+            self.status_label.setText("yt-dlp update ready. Restart the app to activate it.")
         else:
             QMessageBox.warning(self, "Upgrade Failed", f"Failed to upgrade yt-dlp core:\n\n{msg}")
             self.status_label.setText("Core upgrade failed.")
@@ -4055,7 +3365,7 @@ class MainWindow(QMainWindow):
         self._manual_app_update_worker = CheckAppUpdateWorker(APP_VERSION)
         def _on_manual_finished(has_update: bool, latest_ver: str, release_url: str, release_notes: str):
             if has_update:
-                self.status_label.setText(f"New version v{latest_ver} available on GitHub!")
+                self.status_label.setText(f"Version v{latest_ver} is available on GitHub.")
                 self.show_app_update_notification(latest_ver, release_url, release_notes)
             else:
                 self.status_label.setText(f"Latest version installed (v{APP_VERSION}).")
@@ -4068,7 +3378,7 @@ class MainWindow(QMainWindow):
         self._manual_app_update_worker.start()
 
     def show_app_update_notification(self, latest_ver: str, release_url: str, release_notes: str = ""):
-        msg = f"A new version (v{latest_ver}) of Logovo Downloads is available on GitHub!\n(Current: v{APP_VERSION})\nClick below to view the release and download."
+        msg = f"Version v{latest_ver} is available.\nInstalled: v{APP_VERSION}.\nRelease notes and downloads are on GitHub."
         self.show_side_notification(
             title=f"New Version Available: v{latest_ver}",
             message=msg,
@@ -4115,6 +3425,7 @@ class MainWindow(QMainWindow):
                         }, batch=True)
                         added_count += 1
                 self.queue_container.setUpdatesEnabled(True)
+                self._save_queue()
                 self.update_queue_ui()
                 self.status_label.setText(f"Added {added_count} links from file.")
             except Exception as e:
@@ -4123,12 +3434,13 @@ class MainWindow(QMainWindow):
 
     def clear_queue(self):
         for widget in list(self.download_queue):
-            if widget.status_state != "Downloading":
+            if widget.status_state != "Downloading" and widget not in self.active_workers:
                 if hasattr(self, '_queue_url_set'):
-                    self._queue_url_set.discard((widget.item_data.get('url'), widget.item_data.get('media_type')))
+                    self._queue_url_set.discard(getattr(widget, '_queue_key', (widget.item_data.get('url'), widget.item_data.get('media_type'))))
                 self.queue_container_layout.removeWidget(widget)
                 widget.deleteLater()
                 self.download_queue.remove(widget)
+        self._save_queue()
         self.update_queue_ui()
         self._update_taskbar_progress()
         self.status_label.setText("Queue cleared (except active downloads).")
@@ -4137,10 +3449,11 @@ class MainWindow(QMainWindow):
         for widget in list(self.download_queue):
             if widget.status_state in ["Success", "Error"]:
                 if hasattr(self, '_queue_url_set'):
-                    self._queue_url_set.discard((widget.item_data.get('url'), widget.item_data.get('media_type')))
+                    self._queue_url_set.discard(getattr(widget, '_queue_key', (widget.item_data.get('url'), widget.item_data.get('media_type'))))
                 self.queue_container_layout.removeWidget(widget)
                 widget.deleteLater()
                 self.download_queue.remove(widget)
+        self._save_queue()
         self.update_queue_ui()
         self._update_taskbar_progress()
         self.status_label.setText("Completed items removed from queue.")
@@ -4195,6 +3508,7 @@ class MainWindow(QMainWindow):
             for widget in self.download_queue:
                 if widget.status_state == "Pending" and hasattr(widget, 'set_media_category'):
                     widget.set_media_category(new_type)
+            self._save_queue()
 
     def on_main_subs_combo_changed(self, text):
         if text and text != "None" and hasattr(self, 'subs_combo') and not self.subs_combo.isHidden():
@@ -4240,6 +3554,7 @@ class MainWindow(QMainWindow):
 
         for i, entry in enumerate(entries):
             item_date = QTableWidgetItem(entry.get('timestamp', ''))
+            item_date.setData(Qt.ItemDataRole.UserRole, entry)
             item_author = QTableWidgetItem(entry.get('author', 'Unknown'))
             item_title = QTableWidgetItem(entry.get('title', 'Unknown'))
             item_plat = QTableWidgetItem(entry.get('platform', 'Unknown'))
@@ -4252,12 +3567,12 @@ class MainWindow(QMainWindow):
 
             if status in ["Completed", "Success"]:
                 completed += 1
-                item_status.setForeground(QColor("#10b981"))
+                item_status.setForeground(QColor(self.theme_colors["accent_fill"]))
             elif "Error" in status:
                 errors += 1
-                item_status.setForeground(QColor("#ef4444"))
+                item_status.setForeground(QColor("#d98f86"))
             elif status == "Skipped":
-                item_status.setForeground(QColor("#94a3b8"))
+                item_status.setForeground(QColor(self.theme_colors["text_secondary"]))
 
             self.history_table.setItem(i, 0, item_date)
             self.history_table.setItem(i, 1, item_author)
@@ -4271,15 +3586,151 @@ class MainWindow(QMainWindow):
         self.history.clear()
         self.refresh_history()
 
+    def _history_entry_to_queue_item(self, entry: dict) -> dict:
+        options = sanitize_download_options(entry.get('download_options')) or {}
+        source_url = options.get('source_url') or entry.get('url', '')
+        media_type = options.get('media_type') or entry.get('type') or 'Audio (Best)'
+        media_type_text = str(media_type)
+        if media_type_text.lower() == 'audio':
+            media_type_text = 'Audio (Best)'
+        elif media_type_text.lower() == 'video':
+            media_type_text = 'Video (Best)'
+        category = options.get('media_type_category')
+        if category not in ('Audio', 'Video'):
+            category = 'Video' if media_type_text.lower().startswith('video') else 'Audio'
+
+        item_data = {
+            'url': source_url,
+            'original_url': source_url,
+            'title': options.get('title') or entry.get('title') or 'Unknown',
+            'uploader': options.get('author') or entry.get('author') or 'Unknown',
+            'platform': entry.get('platform'),
+            'media_type': media_type_text,
+            'media_type_category': category,
+            'playlist_index': options.get('playlist_index'),
+            'playlist_count': options.get('playlist_count'),
+            'format_compat': options.get('format_compat'),
+            'thumbnail': options.get('thumbnail'),
+        }
+        if options:
+            item_data['download_options'] = options
+            if options.get('output_dir'):
+                item_data['playlist_output_dir'] = options['output_dir']
+        return item_data
+
+    @staticmethod
+    def _queue_item_source_url(item_data: dict) -> str:
+        options = item_data.get('download_options')
+        if isinstance(options, dict) and options.get('source_url'):
+            return options['source_url']
+        return item_data.get('original_url') or item_data.get('url', '')
+
+    def _queue_history_error_entry(self, entry: dict) -> bool:
+        if not is_retryable_error(entry):
+            return False
+
+        item_data = self._history_entry_to_queue_item(entry)
+        source_url = item_data['url']
+        media_type = item_data['media_type']
+
+        if getattr(self, 'failed_queue', None):
+            self.failed_queue = [
+                (failed_data, error)
+                for failed_data, error in self.failed_queue
+                if not (
+                    self._queue_item_source_url(failed_data) == source_url
+                    and failed_data.get('media_type', 'Audio (Best)') == media_type
+                )
+            ]
+
+        for widget in self.download_queue:
+            current_data = widget.item_data
+            current_url = self._queue_item_source_url(current_data)
+            current_media_type = current_data.get('media_type', 'Audio (Best)')
+            if current_url != source_url or current_media_type != media_type:
+                continue
+            if widget in self.active_workers or widget.status_state in ('Pending', 'Downloading', 'Retrying'):
+                return False
+
+            current_data.pop('specific_subs', None)
+            if 'download_options' not in item_data:
+                current_data.pop('download_options', None)
+                current_data.pop('playlist_output_dir', None)
+            current_data.update(item_data)
+            widget.is_retry = True
+            if widget.format_combo.findText(media_type) >= 0:
+                widget.format_combo.setCurrentText(media_type)
+            widget._populate_subs_combo()
+            widget.progress_bar.setValue(0)
+            widget.set_status('Retrying...', 'Pending')
+            self._save_queue()
+            self.update_queue_ui()
+            return True
+
+        previous_count = len(self.download_queue)
+        self._add_single_item_to_queue(
+            item_data,
+            batch=True,
+            preserve_subtitle_defaults=True,
+        )
+        self._save_queue()
+        return len(self.download_queue) > previous_count
+
+    def retry_selected_history_error(self):
+        row = self.history_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, 'Retry Download', 'Select an error entry in history first.')
+            return
+        item = self.history_table.item(row, 0)
+        entry = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if not is_retryable_error(entry):
+            QMessageBox.information(self, 'Retry Download', 'The selected history entry is not a retryable error.')
+            return
+        if not self._queue_history_error_entry(entry):
+            self.status_label.setText('This download is already queued or running.')
+            return
+        self.tabs.setCurrentIndex(0)
+        self.update_queue_ui()
+        self.start_queue()
+
+    def retry_history_errors(self):
+        errors = get_retryable_error_entries(self.history.get_all())
+        if not errors:
+            QMessageBox.information(self, 'Retry Errors', 'There are no retryable errors in history.')
+            return
+
+        reply = QMessageBox.question(
+            self,
+            'Retry All Errors',
+            f'Retry {len(errors)} failed history entry/entries? Unavailable tracks will not be retried.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        queued = 0
+        seen = set()
+        for entry in errors:
+            item_data = self._history_entry_to_queue_item(entry)
+            key = (item_data['url'], item_data['media_type'])
+            if key in seen:
+                continue
+            seen.add(key)
+            if self._queue_history_error_entry(entry):
+                queued += 1
+
+        if queued:
+            self.tabs.setCurrentIndex(0)
+            self.status_label.setText(f'Queued {queued} failed download(s) for retry.')
+            self.update_queue_ui()
+            self.start_queue()
+        else:
+            self.status_label.setText('All matching failed downloads are already queued or running.')
+
     def highlight_format_combo(self):
         if hasattr(self, '_pulse_timer') and self._pulse_timer.isActive():
             self._pulse_timer.stop()
-
-        shadow = QGraphicsDropShadowEffect(self.format_combo)
-        shadow.setColor(QColor(56, 189, 248, 220))
-        shadow.setBlurRadius(16)
-        shadow.setOffset(0, 0)
-        self.format_combo.setGraphicsEffect(shadow)
 
         self._pulse_step = 0
         self._pulse_timer = QTimer(self)
@@ -4289,32 +3740,33 @@ class MainWindow(QMainWindow):
             self._pulse_step += 1
             t = (math.sin(self._pulse_step * 0.3) + 1.0) / 2.0
             alpha = int(120 + 135 * t)
-            radius = int(8 + 14 * t)
-            shadow.setColor(QColor(56, 189, 248, alpha))
-            shadow.setBlurRadius(radius)
+            border_color = self.theme_colors["accent"] if alpha >= 188 else self.theme_colors["accent_hover"]
 
             self.format_combo.setStyleSheet("""
                 QComboBox {
-                    background-color: #1e293b;
-                    border: 2px solid #38bdf8;
-                    color: #38bdf8;
+                    background-color: %s;
+                    border: 1px solid %s;
+                    color: %s;
                     font-weight: bold;
-                    border-radius: 6px;
+                    border-radius: 0px;
                 }
-            """)
+            """ % (self.theme_colors["input_bg"], border_color, self.theme_colors["accent"]))
 
             if self._pulse_step >= 24:
                 self._pulse_timer.stop()
-                self.format_combo.setGraphicsEffect(None)
                 self.format_combo.setStyleSheet("""
                     QComboBox {
-                        background-color: #1e293b;
-                        border: 2px solid #38bdf8;
-                        color: #38bdf8;
+                        background-color: %s;
+                        border: 1px solid %s;
+                        color: %s;
                         font-weight: bold;
-                        border-radius: 6px;
+                        border-radius: 0px;
                     }
-                """)
+                """ % (
+                    self.theme_colors["input_bg"],
+                    self.theme_colors["accent"],
+                    self.theme_colors["accent"],
+                ))
 
         self._pulse_timer.timeout.connect(do_pulse)
         self._pulse_timer.start(50)
@@ -4322,7 +3774,6 @@ class MainWindow(QMainWindow):
     def clear_format_combo_highlight(self):
         if hasattr(self, '_pulse_timer') and self._pulse_timer.isActive():
             self._pulse_timer.stop()
-        self.format_combo.setGraphicsEffect(None)
         self.format_combo.setStyleSheet("")
 
     def add_to_queue_action(self):
@@ -4336,7 +3787,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, 
                 "Select Type", 
-                "Please select 'Audio' or 'Video' in the Type selector (highlighted in blue) before adding to queue."
+                "Please select 'Audio' or 'Video' in the Type selector (highlighted) before adding to queue."
             )
             return
 
@@ -4469,6 +3920,7 @@ class MainWindow(QMainWindow):
                     added_count += 1
 
                 self.queue_container.setUpdatesEnabled(True)
+                self._save_queue()
                 self.update_queue_ui()
                 self.status_label.setText(f"Added {added_count} tracks from playlist.")
             else:
@@ -4487,7 +3939,7 @@ class MainWindow(QMainWindow):
 
         self.btn_add_queue.setEnabled(True)
 
-    def _add_single_item_to_queue(self, info_dict, batch=False):
+    def _add_single_item_to_queue(self, info_dict, batch=False, preserve_subtitle_defaults=False):
         url = info_dict.get('url')
         selected_category = info_dict.get('media_type_category') or self.format_combo.currentText()
         if selected_category not in ("Audio", "Video"):
@@ -4506,28 +3958,33 @@ class MainWindow(QMainWindow):
             return
         self._queue_url_set.add(queue_key)
 
-        if hasattr(self, 'subs_combo') and not self.subs_combo.isHidden():
+        if not preserve_subtitle_defaults and hasattr(self, 'subs_combo') and not self.subs_combo.isHidden():
             chosen_subs = self.subs_combo.currentText()
         else:
             chosen_subs = "None"
         if chosen_subs and chosen_subs not in ("Default (Settings)", "", "None"):
             info_dict['specific_subs'] = chosen_subs
 
-        widget = QueueItemWidget(info_dict, settings=self.settings)
+        widget = QueueItemWidget(info_dict, settings=self.settings, theme_name=self.ui_theme)
+        widget._queue_key = queue_key
         widget.remove_requested.connect(self.remove_queue_item)
+        widget.format_combo.currentTextChanged.connect(lambda _: self._save_queue())
+        widget.subs_combo.currentIndexChanged.connect(lambda _: self._save_queue())
 
         self.queue_container_layout.addWidget(widget)
         self.download_queue.append(widget)
         if not batch:
+            self._save_queue()
             self.update_queue_ui()
 
     def remove_queue_item(self, widget):
-        if widget in self.download_queue:
+        if widget in self.download_queue and widget not in self.active_workers:
             if hasattr(self, '_queue_url_set'):
-                self._queue_url_set.discard((widget.item_data.get('url'), widget.item_data.get('media_type')))
+                self._queue_url_set.discard(getattr(widget, '_queue_key', (widget.item_data.get('url'), widget.item_data.get('media_type'))))
             self.queue_container_layout.removeWidget(widget)
             widget.deleteLater()
             self.download_queue.remove(widget)
+            self._save_queue()
             self.update_queue_ui()
 
     def update_queue_ui(self):
@@ -4568,8 +4025,8 @@ class MainWindow(QMainWindow):
                     time_str = f"~{eta_s}s"
 
             self.top_telemetry_label.setText(
-                f"<span style='color: #38bdf8;'>💾 {size_str}</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
-                f"<span style='color: #fbbf24;'>⏳ {time_str}</span>"
+                f"<span style='color: #91e5a3;'>Estimated size: {size_str}</span>&nbsp;&nbsp;&nbsp;&nbsp;"
+                f"<span style='color: #d9b66d;'>{time_str}</span>"
             )
 
             total_progress = 0
@@ -4639,28 +4096,75 @@ class MainWindow(QMainWindow):
         self.skipped_count = 0
         self.btn_download_all.setEnabled(False)
         self.btn_stop.setEnabled(True)
+        self.btn_pause.setEnabled(True)
+        self._pause_requested = False
+        self._stop_requested = False
 
         self.process_queue()
 
+    def pause_download(self):
+        if not self.is_downloading or self._pause_requested:
+            return
+        self._pause_requested = True
+        self.btn_pause.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+        self.btn_download_all.setEnabled(False)
+        for widget, worker in list(self.active_workers.items()):
+            worker.requestInterruption()
+            widget.set_status("Pausing...", "Downloading")
+        self.status_label.setText("Pausing active downloads...")
+        self._save_queue()
+        if not self.active_workers:
+            self.process_queue()
+
     def stop_download(self):
-        self.is_downloading = False
-        for worker in list(self.active_workers.values()):
+        if not self.is_downloading or self._stop_requested:
+            return
+
+        self._stop_requested = True
+        for widget, worker in list(self.active_workers.items()):
             try:
-                worker.disconnect()
+                worker.progress_signal.disconnect()
             except Exception:
                 pass
-        self.active_workers.clear()
-        self.widget_start_times.clear()
-
-        for w in self.download_queue:
-            if w.status_state in ("Downloading", "Retrying"):
-                w.set_status("Stopped", "Pending")
+            worker.requestInterruption()
+            widget.set_status("Stopping...", "Downloading")
 
         self.btn_stop.setEnabled(False)
-        self.status_label.setText("Download stopped.")
+        self.btn_pause.setEnabled(False)
+        if self.active_workers:
+            self.status_label.setText("Stopping active downloads...")
+        else:
+            self._stop_requested = False
+            self.is_downloading = False
+            self.btn_pause.setEnabled(False)
+            self.status_label.setText("Download stopped.")
         self.update_queue_ui()
 
     def process_queue(self):
+        if self._pause_requested:
+            if not self.active_workers:
+                self.is_downloading = False
+                self._pause_requested = False
+                self.btn_pause.setEnabled(False)
+                self.btn_stop.setEnabled(False)
+                self.status_label.setText("Queue paused. Press Download to resume.")
+                self._save_queue()
+                self.update_queue_ui()
+                if self._closing_after_pause:
+                    self._finish_close_if_ready()
+            return
+        if self._stop_requested:
+            if not self.active_workers:
+                self._stop_requested = False
+                self.is_downloading = False
+                self.btn_stop.setEnabled(False)
+                self.btn_pause.setEnabled(False)
+                self.global_progress.setValue(0)
+                self.status_label.setText("Download stopped.")
+            self.update_queue_ui()
+            return
+
         if not self.is_downloading:
             self.update_queue_ui()
             return
@@ -4680,6 +4184,7 @@ class MainWindow(QMainWindow):
                     # Entire queue finished
                     self.is_downloading = False
                     self.btn_stop.setEnabled(False)
+                    self.btn_pause.setEnabled(False)
                     self.global_progress.setValue(0)
 
                     has_errors = bool(self.failed_queue) or any(w.status_state == "Error" for w in self.download_queue)
@@ -4695,16 +4200,16 @@ class MainWindow(QMainWindow):
                             )
                     else:
                         if unavail_count > 0:
-                            self.status_label.setText(f"All available downloads finished! ({self.downloaded_count} downloaded, {unavail_count} removed from platform)")
+                            self.status_label.setText(f"Queue completed: {self.downloaded_count} downloaded, {unavail_count} unavailable.")
                         else:
-                            self.status_label.setText("All downloads finished successfully!")
+                            self.status_label.setText("Queue completed.")
                         if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
                             if self.downloaded_count > 0 and self.skipped_count > 0:
-                                msg = f"All downloads completed ({self.downloaded_count} downloaded, {self.skipped_count} skipped)!"
+                                msg = f"Queue completed: {self.downloaded_count} downloaded, {self.skipped_count} skipped."
                             elif self.downloaded_count > 0:
-                                msg = f"All downloads completed ({self.downloaded_count} succeeded)!"
+                                msg = f"Queue completed: {self.downloaded_count} downloaded."
                             else:
-                                msg = f"All downloads completed ({self.success_count} checked)!"
+                                msg = f"Queue completed: {self.success_count} checked."
                             self.tray_icon.showMessage(
                                 "Logovo Downloads",
                                 msg,
@@ -4717,7 +4222,7 @@ class MainWindow(QMainWindow):
                         p_dir = w.item_data.get('playlist_output_dir') or self.settings.get('download_path')
                         if p_dir: dirs_to_clean.add(os.path.normpath(p_dir))
                     for d in dirs_to_clean:
-                        cleanup_orphan_files(d)
+                        cleanup_orphan_files(d, is_audio_playlist=False, preserve_partials=True)
                         clear_failed_log_if_clean(d)
 
                     # Update playlists sync info if any playlist directory was downloaded
@@ -4737,6 +4242,7 @@ class MainWindow(QMainWindow):
                     self.playlists_mgr.save()
 
                     self.update_queue_ui()
+                    self._save_queue()
                     self.refresh_playlists_ui()
                     if getattr(self, 'unavailable_queue', None):
                         self.show_unavailable_summary()
@@ -4754,7 +4260,14 @@ class MainWindow(QMainWindow):
 
     def start_worker_for_widget(self, widget: QueueItemWidget):
         item_data = widget.item_data
-        url = item_data['url']
+        saved_options = sanitize_download_options(item_data.get('download_options')) or {}
+        has_saved_options = bool(saved_options)
+        source_url = (
+            saved_options.get('source_url')
+            or item_data.get('original_url')
+            or item_data['url']
+        )
+        url = source_url
         if "spotify.com" in str(url):
             title = item_data.get('title', '')
             author = item_data.get('uploader') or item_data.get('channel') or item_data.get('artist') or ''
@@ -4763,23 +4276,38 @@ class MainWindow(QMainWindow):
                 url = f"ytsearch1:{query}"
                 item_data['url'] = url
 
-        media_type = widget.format_combo.currentText() if hasattr(widget, 'format_combo') else item_data.get('media_type', 'Audio (Best)')
+        format_combo = getattr(widget, 'format_combo', None)
+        selected_media_type = format_combo.currentText() if format_combo is not None else None
+        media_type = _resolve_queue_media_type(selected_media_type, saved_options, item_data)
         item_data['media_type'] = media_type
-        output_dir = item_data.get('playlist_output_dir') or self.settings.get('download_path')
+        media_type_category = 'Video' if str(media_type).lower().startswith('video') else 'Audio'
+        item_data['media_type_category'] = media_type_category
+        if has_saved_options:
+            saved_options['media_type'] = media_type
+            saved_options['media_type_category'] = media_type_category
+            item_data['download_options'] = saved_options
+        output_dir = (
+            saved_options.get('output_dir')
+            if has_saved_options and 'output_dir' in saved_options
+            else item_data.get('playlist_output_dir') or self.settings.get('download_path')
+        )
 
-        platform = detect_platform_name(url)
-        quality = self.settings.get_quality(platform)
+        platform = detect_platform_name(source_url)
+        quality = (
+            saved_options.get('quality')
+            if has_saved_options and 'quality' in saved_options
+            else self.settings.get_quality(platform)
+        )
         
         is_audio = media_type.startswith("Audio")
         global_subs_enabled = self.settings.get('download_audio_lyrics', False) if is_audio else self.settings.get('download_subtitles', False)
         global_subs_lang = self.settings.get('lyrics_langs', 'orig') if is_audio else self.settings.get('subtitles_langs', 'orig')
 
         specific_subs = item_data.get('specific_subs')
-        if not specific_subs or specific_subs in ('Default', 'Global', 'Default (Settings)'):
-            subtitles_cfg = {
-                'download': global_subs_enabled,
-                'langs': global_subs_lang
-            }
+        if has_saved_options and isinstance(saved_options.get('subtitles'), dict):
+            subtitles_cfg = dict(saved_options['subtitles'])
+        elif not specific_subs or specific_subs in ('Default', 'Global', 'Default (Settings)'):
+            subtitles_cfg = {'download': global_subs_enabled, 'langs': global_subs_lang}
         elif specific_subs in ('None', 'none', 'Disabled', 'No Lyrics', 'No Subs'):
             subtitles_cfg = {'download': False, 'langs': 'none'}
         else:
@@ -4794,8 +4322,44 @@ class MainWindow(QMainWindow):
         else:
             cookies = None
 
-        speed_limit = self.settings.get('speed_limit', 'Unlimited')
-        naming_pattern = self.settings.get('naming_pattern', '{artist} - {title}') if is_audio else self.settings.get('video_naming_pattern', '{title}')
+        speed_limit = (
+            saved_options.get('speed_limit')
+            if has_saved_options and 'speed_limit' in saved_options
+            else self.settings.get('speed_limit', 'Unlimited')
+        )
+        naming_pattern = (
+            saved_options.get('naming_pattern')
+            if has_saved_options and 'naming_pattern' in saved_options
+            else self.settings.get('naming_pattern', '{artist} - {title}')
+            if is_audio else self.settings.get('video_naming_pattern', '{title}')
+        )
+        format_compat = (
+            saved_options.get('format_compat')
+            if has_saved_options and 'format_compat' in saved_options
+            else item_data.get('format_compat')
+        )
+        download_settings = self.settings
+        if has_saved_options and isinstance(saved_options.get('settings'), dict):
+            download_settings = DownloadSettingsOverlay(self.settings, saved_options['settings'])
+
+        if not has_saved_options:
+            item_data['download_options'] = {
+                'source_url': source_url,
+                'output_dir': str(output_dir) if output_dir is not None else None,
+                'media_type': media_type,
+                'media_type_category': media_type_category,
+                'quality': quality,
+                'subtitles': subtitles_cfg,
+                'speed_limit': speed_limit,
+                'naming_pattern': naming_pattern,
+                'format_compat': format_compat,
+                'playlist_index': item_data.get('playlist_index'),
+                'playlist_count': item_data.get('playlist_count'),
+                'title': item_data.get('title'),
+                'author': item_data.get('uploader') or item_data.get('channel') or item_data.get('artist') or item_data.get('author'),
+                'thumbnail': item_data.get('thumbnail'),
+                'settings': snapshot_download_settings(self.settings),
+            }
 
         thread = WorkerThread(
             url=url,
@@ -4804,23 +4368,38 @@ class MainWindow(QMainWindow):
             quality=quality,
             cookies=cookies,
             subtitles=subtitles_cfg,
-            playlist_index=item_data.get('playlist_index'),
-            playlist_count=item_data.get('playlist_count'),
+            playlist_index=saved_options.get('playlist_index', item_data.get('playlist_index')),
+            playlist_count=saved_options.get('playlist_count', item_data.get('playlist_count')),
             title=item_data.get('title'),
             author=item_data.get('uploader') or item_data.get('channel') or item_data.get('artist') or item_data.get('author'),
             speed_limit=speed_limit,
             naming_pattern=naming_pattern,
-            settings=self.settings,
-            thumbnail=item_data.get('thumbnail'),
-            format_compat=item_data.get('format_compat'),
+            settings=download_settings,
+            thumbnail=saved_options.get('thumbnail', item_data.get('thumbnail')),
+            format_compat=format_compat,
         )
 
         self.widget_start_times[widget] = time.time()
         self.active_workers[widget] = thread
+        widget.set_status("Starting download...", "Downloading")
         thread.progress_signal.connect(lambda d, w=widget: self.update_widget_progress(w, d))
-        thread.finished_signal.connect(lambda s, e, sk, w=widget: self.task_finished(w, s, e, sk))
+        thread.finished_signal.connect(lambda s, e, sk, cancelled, w=widget: self.task_finished(w, s, e, sk, cancelled))
+        thread.finished.connect(lambda worker=thread: self._worker_exited(worker))
         thread.start()
-        self.update_queue_ui()
+        self._save_queue()
+
+    def _worker_exited(self, worker):
+        self._ending_workers = [w for w in self._ending_workers if w.isRunning()]
+        self._finish_close_if_ready()
+
+    def _finish_close_if_ready(self):
+        if not self._closing_after_pause or self.active_workers:
+            return
+        if any(worker.isRunning() for worker in getattr(self, "_ending_workers", [])):
+            QTimer.singleShot(50, self._finish_close_if_ready)
+            return
+        self._closing_after_pause = False
+        QTimer.singleShot(0, self.close)
 
     def _update_taskbar_progress(self):
         if not self.download_queue:
@@ -4844,6 +4423,8 @@ class MainWindow(QMainWindow):
     def update_widget_progress(self, widget: QueueItemWidget, d: dict):
         if widget not in self.download_queue:
             return
+        if self._stop_requested:
+            return
 
         if d['status'] == 'downloading':
             msg = d.get('msg')
@@ -4860,13 +4441,23 @@ class MainWindow(QMainWindow):
         elif d['status'] == 'finished':
             widget.set_status("Post-processing...", "Downloading")
 
-    def task_finished(self, widget: QueueItemWidget, success: bool, error_msg: str = "", was_skipped: bool = False):
+    def task_finished(self, widget: QueueItemWidget, success: bool, error_msg: str = "", was_skipped: bool = False, was_cancelled: bool = False):
         # Remove from active workers
         if widget in self.active_workers:
-            del self.active_workers[widget]
+            worker = self.active_workers.pop(widget)
+            if worker.isRunning():
+                self._ending_workers.append(worker)
 
         # Calculate duration for dynamic ETA estimation
         start_t = self.widget_start_times.pop(widget, None)
+        if was_cancelled:
+            widget.set_status("Paused" if self._pause_requested else "Stopped", "Pending")
+            self._save_queue()
+            self.update_queue_ui()
+            self._update_taskbar_progress()
+            self.process_queue()
+            return
+
         if start_t and not was_skipped and success:
             dur = time.time() - start_t
             if dur > 0.4:
@@ -4875,7 +4466,12 @@ class MainWindow(QMainWindow):
         item_data = widget.item_data
         title = item_data.get('title', 'Unknown')
         author = item_data.get('uploader') or item_data.get('channel') or item_data.get('artist') or 'Unknown'
-        url = item_data.get('url', '')
+        download_options = sanitize_download_options(item_data.get('download_options')) or {}
+        url = (
+            download_options.get('source_url')
+            or item_data.get('original_url')
+            or item_data.get('url', '')
+        )
         platform = detect_platform_name(url)
 
         if success:
@@ -4909,8 +4505,17 @@ class MainWindow(QMainWindow):
             if out_dir:
                 log_failed_download(out_dir, title=title, author=author, url=url, reason=error_msg)
 
-        self.history.add_entry(title, author, platform, status_text, url=url, media_type=widget.format_type)
+        self.history.add_entry(
+            title,
+            author,
+            platform,
+            status_text,
+            url=url,
+            media_type=item_data.get('media_type', 'Audio'),
+            download_options=download_options,
+        )
         self.refresh_history()
+        self._save_queue()
         self.update_queue_ui()
         self._update_taskbar_progress()
 
@@ -4935,7 +4540,7 @@ class MainWindow(QMainWindow):
                 self.setFixedSize(360, 160)
                 layout = QVBoxLayout(self)
 
-                self.lbl = QLabel(f"All downloads finished!\n\nSystem will {act_name.lower()} in {self.seconds_left} seconds...")
+                self.lbl = QLabel(f"Queue completed.\n\nScheduled action: {act_name}.\nTime remaining: {self.seconds_left} seconds.")
                 self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.lbl.setStyleSheet("font-size: 13px; font-weight: 500;")
                 layout.addWidget(self.lbl)
@@ -4955,7 +4560,7 @@ class MainWindow(QMainWindow):
 
             def tick(self):
                 self.seconds_left -= 1
-                self.lbl.setText(f"All downloads finished!\n\nSystem will {self.act_name.lower()} in {self.seconds_left} seconds...")
+                self.lbl.setText(f"Queue completed.\n\nScheduled action: {self.act_name}.\nTime remaining: {self.seconds_left} seconds.")
                 if self.seconds_left <= 0:
                     self.timer.stop()
                     self.do_action()

@@ -1,156 +1,54 @@
-# Logovo Downloads
+﻿# Logovo Downloads
 
-<p align="center">
-  <img src="media/icon.ico" width="80" height="80" alt="Logovo Downloads Logo" />
-  <br>
-  <b>Desktop audio and video downloader with playlist synchronization and metadata embedding.</b>
-  <br>
-  <sub>Built with Python 3.10+, PyQt6, and yt-dlp.</sub>
-</p>
+Logovo Downloads is a Windows desktop app for downloading audio and video and keeping local folders in sync with online playlists. It uses yt-dlp for downloads and PyQt6 for the interface. The current application version is **1.8.11**; changes since the last release are still unreleased.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/version-1.8.11-007acc.svg?style=flat-square" alt="Version 1.8.11" />
-  <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
-  <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52.svg?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
-  <img src="https://img.shields.io/badge/Core-yt--dlp-red.svg?style=flat-square" alt="yt-dlp" />
-  <img src="https://img.shields.io/badge/Audio-FFmpeg-007808.svg?style=flat-square&logo=ffmpeg&logoColor=white" alt="FFmpeg" />
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License MIT" /></a>
-</p>
+## What it does
 
----
+- Downloads individual links and playlists as audio or video. Supported sites depend on yt-dlp and can change when a site changes its player or access rules.
+- Keeps a queue of downloads. You can pause it, close the app, restore unfinished items on the next launch, or remove one item without deleting its downloaded files. Resuming a partial download depends on the source.
+- Tracks playlist folders and compares them with the online playlist before applying changes. Removed local tracks are shown in a preview; deleting selected files requires a separate confirmation.
+- Writes audio and video metadata, artwork and subtitles where the source and chosen format allow it. Includes a history view and tools for comparing tracked playlists.
+- Provides seven color themes and settings grouped under General, Audio, Video, Quality, Access and Maintenance.
+- Offers a manual cleanup view for `.part` files and old yt-dlp backups. Nothing is preselected or removed automatically. The active yt-dlp core and the most recent working backup are excluded.
+- Exports and imports settings, playlist records, history and logs as a ZIP backup. The backup does **not** include downloaded media.
 
-## Overview
+Settings, history and logs live under `%APPDATA%\Logovo-Dushnil\Logovo-Downloads`. Downloads go to the folder selected in General. Cookies can be supplied from a browser or a file when a site requires them; do not commit cookie files or exported backups.
 
-**Logovo Downloads** is a desktop application for downloading media and keeping local audio and video directories synchronized with online playlists across YouTube, Spotify, SoundCloud, Bandcamp, and other platforms.
+## Run from source
 
-It is designed for managing offline music libraries with accurate metadata extraction, duplicate avoidance, and fast playlist verification.
+Use Python 3.10 or newer on Windows. FFmpeg and FFprobe must be available in `PATH` or in the local `bin/` directory for media conversion and probing. Some sites may also require Deno for yt-dlp's JavaScript challenges.
 
----
-
-## Key Features
-
-### Media Downloads & Platform Support
-- **Multi-Platform:** Native support for YouTube, Spotify, SoundCloud, Bandcamp, Twitch, TikTok, Vimeo, VK, and more.
-- **Spotify DRM Bypass & Authentic Covers:** Automatically resolves Spotify tracks, albums, and playlists to high-quality audio streams while retaining original Spotify metadata, artist tags, and individual song artwork (without inheriting playlist thumbnails).
-- **Formats:** Audio (MP3 320 kbps, FLAC, M4A, Opus, Ogg, WAV, ALAC) and Video (up to 4K/8K 60fps, MP4/MKV).
-- **Fast Metadata Enrichment:** Automatically resolves titles, artist names, and HD thumbnails in 50ms when importing links from text files or pasting raw URLs.
-- **Widescreen & Square Covers:** Native 16:9 thumbnails for video containers and high-resolution square 1:1 artwork for audio files.
-- **Multi-Threaded Queue:** Concurrent download queue with configurable stream limits (up to 6 workers).
-
-### Playlist Synchronization & Library Integrity
-- **OS Format Badges & Directory Persistence:** Visual indicators (`Windows`, `UNIX`, `Unix/Win`) next to playlist titles; automatic persistence via hidden `playlist_format.txt` files inside playlist folders.
-- **Format Mismatch Handling & Scratch Re-downloading:** Interactive modal when syncing playlists downloaded under a different OS format (Windows ↔ UNIX). Choose to keep the original playlist format, mix formats (`Unix/Win`), or wipe old tracks and re-download the playlist cleanly from scratch.
-- **1-Click Re-download from Scratch:** Right-click context menu option (`Re-download from Scratch...`) on any playlist card to safely purge local media files and fetch the entire playlist fresh from the online source.
-- **OS Format Sorting:** Dedicated sorting modes (`OS Format (Windows First)`, `OS Format (UNIX First)`) in the Playlists tab.
-- **Chronological Track Numbering (`#` / `TRCK`):** Continuous 1..N indexing strictly matching playlist add chronology (Track #1 = first added track, Track #N = newest added track).
-- **Automatic Gap Adaptation:** Seamlessly re-indexes local tracks upon sync or deletion, closing gaps and eliminating obsolete index offsets.
-- **1-Click Track Re-indexing:** Instant `Re-index Tracks (1..N)` action in playlist context menus to update tags, track numbers, and covers for existing files in seconds.
-- **`.nomedia` File Creation & Immunity:** Optional setting to generate `.nomedia` files in library directories to prevent image gallery pollution, protected against cleanup routines.
-- **Fast Local Indexing:** Compares local folders against online playlists in seconds using cached file stems and multi-ID tracking.
-- **Fallback & Alternative Auto-Healing:** Automatically links alternative downloads (e.g. tracks unavailable on YouTube found via fallback search) with original playlist entries to eliminate download/delete loops.
-- **Strict Version Match Guard:** Strictly isolates originals from remixes, VIPs, acoustics, and live versions to prevent false positive matches.
-- **Removed Track Detection:** Identifies tracks removed or unlisted from playlists with neutral `-N removed` markers and interactive cleanup dialogs.
-- **Persistent Kept Tracks:** Retains files you choose to keep locally across sync cycles, with a quick-reset action in the card UI.
-- **Zero-Lag Reordering:** Drag-and-drop playlist cards or use arrow buttons with instantaneous in-place reordering.
-- **Title Cleaning:** Automatically strips promotional clutter while preserving genuine version suffixes (`Remix`, `VIP`, `Extended`, `Acoustic`, `Instrumental`, `Live`).
-- **Duplicate Detection:** Identifies duplicate tracks within online playlists without false positives on similar artist tracks.
-
-### User Interface & Experience
-- **Modern Multi-Resolution Squircle Icon:** High-DPI 7-layer application icon (`16×16` up to `256×256`) featuring a smooth squircle tile, ambient drop shadow, and razor-sharp anti-aliasing across Desktop, Taskbar, and Explorer.
-- **Reorganized Downloads Controls:** Swapped bottom control sections for enhanced workflow ergonomicity — stats and quick actions on the left, download triggers and options on the right.
-- **Dynamic Lyrics/Subtitles Visibility:** Automatically hides `Subs/Lyrics` selectors when disabled in Settings, cleanly shifting type options into place, while remembering user language selections.
-- **History Table Alignment:** Symmetrically centered column headers and cells across Date, Author, Title, Platform, and Status.
-
-### Cross-Playlist Comparison & Deduplication
-- **Pairwise Comparison (A ↔ B):** Directly compare any two playlists side by side with instant sub-filters (`Common / Overlaps`, `Only in A`, `Only in B`, `All Tracks`).
-- **Safe In-Place File Deletion:** Clean up duplicate files directly from the comparison table with confirmation dialogs and instant UI updates.
-- **Fast Hash Indexing:** Inverted indexing matches thousands of tracks across collections in milliseconds without UI freezes.
-- **Single Playlist & Library Audit:** Inspect how an individual playlist intersects with the rest of your library, or cluster duplicates across all tracked folders.
-
-### App Updates & Maintenance
-- **GitHub Release Checker:** Background check for new app versions on GitHub with non-intrusive KDE Plasma style toasts.
-- **In-App `yt-dlp` Updater:** Upgrades the underlying downloader core directly within the UI without external package managers.
-- **Clean AppData Hierarchy:** Settings and logs stored in `AppData/Roaming/Logovo-Dushnil/Logovo-Downloads`.
-- **Backup & Restore:** Full backup and restore of playlists, settings, and history via zip archive.
-
----
-
-## Tech Stack
-
-- **GUI:** PyQt6
-- **Download Engine:** `yt-dlp` (with `curl-cffi`)
-- **Media Backend:** FFmpeg / FFprobe
-- **Audio Tagging:** Mutagen
-- **Image Processing:** Pillow (PIL)
-- **JS Challenge Solver:** Deno (bundled)
-
----
-
-## Project Structure
-
-```text
-Logovo-Downloads/
-├── core/                             # Core services and business logic
-│   ├── constants.py                  # App constants and format definitions
-│   ├── downloader.py                 # Download engine, tagger, and URL sanitizers
-│   ├── preview.py                    # Metadata parser (YouTube, Spotify, SoundCloud)
-│   ├── playlists_manager.py          # Tracked playlists storage and persistence
-│   ├── playlist_comparator.py        # Cross-playlist duplicate analysis
-│   ├── history.py                    # Download history persistence
-│   ├── logger.py                     # Centralized logging setup
-│   ├── settings.py                   # App configuration manager
-│   ├── taskbar.py                    # Windows Taskbar progress integration
-│   └── updater.py                    # yt-dlp core auto-updater
-│
-├── ui/                               # GUI components (PyQt6)
-│   ├── main_window.py                # Main window layout and tab controllers
-│   ├── queue_item.py                 # Queue card widget and background enricher
-│   ├── playlist_comparison_dialog.py # Duplicate analysis dialog
-│   ├── log_viewer_dialog.py          # Dual log viewer modal
-│   └── styles.py                     # Dark theme stylesheet
-│
-├── bin/                              # Bundled binaries (FFmpeg / FFprobe / Deno)
-├── media/                            # App icons and graphics
-├── downloads/                        # Default download output directory
-├── main.py                           # Application entrypoint
-├── requirements.txt                  # Python dependencies
-└── README.md                         # Documentation
-```
-
----
-
-## Installation & Running from Source
-
-### Prerequisites
-- **Python 3.10+** (64-bit)
-- **FFmpeg** (in system `PATH` or placed inside `bin/`)
-
-### Setup
-
-```bash
-# 1. Clone repository
+```powershell
 git clone https://github.com/Helvior-dev/Logovo-Downloads.git
 cd Logovo-Downloads
-
-# 2. Create virtual environment
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Run application
-python main.py
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe main.py
 ```
 
----
+To run the tests:
 
-## Acknowledgements
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+```
 
-Developed independently with the assistance of AI, inspired by Magerko's [Universal Media Downloader](https://github.com/Magerko/universal-media-downloader).
+## Build for Windows
 
----
+Install the build requirements in the same virtual environment, prepare the external binaries, then build the one-folder distribution:
 
-## License
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+.\.venv\Scripts\python.exe tools/prepare_build_assets.py
+.\.venv\Scripts\python.exe -m PyInstaller LogovoDownloads.spec
+```
 
-This project is licensed under the [MIT License](LICENSE).
+The preparation script downloads pinned FFmpeg, FFprobe and Deno archives, verifies their SHA-256 hashes and puts the files under `.build-assets/`. Build output is written to `dist/Logovo-Downloads/`. These generated directories and local environments are ignored by Git. If distributing a build, include the bundled licenses and review [third-party notices](THIRD_PARTY_NOTICES.md); the included FFmpeg build is GPLv3.
+
+## Notes
+
+- Pause and stop are cooperative. A worker can take time to finish a network request or post-processing step.
+- Playlist synchronization has a read-only planning stage, but confirming cleanup can permanently delete selected local files. Check the preview before proceeding.
+- yt-dlp updates are staged for the next app launch. The previous working core is retained for rollback.
+- Network diagnostics run only when requested. Automatic update checks can be disabled in settings.
+
+Licensed under [MIT](LICENSE).

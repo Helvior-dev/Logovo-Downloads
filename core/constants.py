@@ -2,6 +2,8 @@
 
 APP_NAME = "Logovo Downloads"
 APP_VERSION = "1.8.11"
+# Keep stable across releases so Windows preserves the app's taskbar identity.
+APP_USER_MODEL_ID = "logovo.downloads.app"
 
 # Media file extensions for audio files
 AUDIO_EXTS = frozenset({".mp3", ".flac", ".m4a", ".opus", ".ogg", ".wav", ".aac", ".alac"})

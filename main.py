@@ -3,10 +3,11 @@ import os
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
+from core.constants import APP_USER_MODEL_ID
 from core.updater import init_ytdlp_core
 
 # Initialize updated yt-dlp core from AppData if available
-init_ytdlp_core()
+init_ytdlp_core(activate_pending=True)
 
 from ui.main_window import MainWindow
 
@@ -18,8 +19,7 @@ def get_resource_path(relative_path: str) -> Path:
 def main():
     try:
         import ctypes
-        myappid = 'logovo.downloads.app.1.4.0'
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
     except Exception:
         pass
 

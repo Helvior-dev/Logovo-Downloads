@@ -312,7 +312,7 @@ class PlaylistComparator:
 
         clusters: list[dict] = []
         vid_index: dict[str, int] = {}    # vid -> cluster_index (O(1) lookup)
-        title_index: dict[str, int] = {}  # clean_title -> cluster_index (O(1) lookup)
+        title_index: dict[str, list[int]] = {}  # clean_title -> candidate cluster indices
 
         for pl_title, tracks in self.pl_index.items():
             for t in tracks:
@@ -329,13 +329,13 @@ class PlaylistComparator:
                         matched_idx = vid_index[v]
                         break
 
-                # 2. Lookup by clean title and verify version tags
-                if matched_idx is None and ct and ct in title_index:
-                    cand_idx = title_index[ct]
-                    cand_cluster = clusters[cand_idx]
-                    cand_tags = cand_cluster.get('tags', set())
-                    if cand_tags == tags:
-                        matched_idx = cand_idx
+                # 2. Lookup by clean title and verify the full artist/title match
+                if matched_idx is None and ct:
+                    for cand_idx in title_index.get(ct, []):
+                        candidate_track = clusters[cand_idx]['tracks'][0]
+                        if self.are_tracks_matching(t, candidate_track):
+                            matched_idx = cand_idx
+                            break
 
                 if matched_idx is not None:
                     clusters[matched_idx]['tracks'].append(t)
@@ -357,7 +357,7 @@ class PlaylistComparator:
                         if v:
                             vid_index[v] = new_idx
                     if ct:
-                        title_index[ct] = new_idx
+                        title_index.setdefault(ct, []).append(new_idx)
 
         # Only return clusters that appear in 2 or more DIFFERENT playlists
         results = []

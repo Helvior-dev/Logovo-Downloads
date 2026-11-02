@@ -7,21 +7,29 @@ __pycache__/
 /build/
 /dist/
 *.spec
+!LogovoDownloads.spec
+/logs/
 
 # Environments
 .env
-.venv
+.env.*
+.venv/
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
 
-# Cookies & sensitive files
-*cookie*
-*cookies*.txt
+# Local application data and credentials
+settings.json
+playlists.json
+history.json
 cookies.txt
+*.cookies.txt
 *.cookie
+*.part
+*.part-*
+*.zip
 
 # App Logs / Settings / Dynamic files
 app_logs.txt
@@ -29,11 +37,12 @@ failed_downloads.txt
 downloaded_archive.txt
 stem_vid_map.json
 playlist_order.txt
+playlist_format.txt
 downloads/
 
 # OS / Temporary
 desktop.ini
-*.ico
+folder_icon.ico
 *.tmp
 .DS_Store
 Thumbs.db
@@ -44,4 +53,10 @@ Thumbs.db
 
 # Scratch & temp test folders
 scratch/
-bin/
+/bin/
+/.build-assets/
+
+# Local development notes and OpenCode permissions
+/AGENTS.md
+/PROJECT_STATE.md
+/opencode.json
